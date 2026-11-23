@@ -9,6 +9,7 @@
   <meta name="theme-color" content="#000000" />
   <title>Wealth — 個人財務管理</title>
   <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%23000000'/%3E%3Crect x='22' y='22' width='136' height='136' rx='30' fill='%23111113' stroke='%23ffffff' stroke-opacity='0.14' stroke-width='2'/%3E%3Cpath d='M48 118 L74 62 L92 98 L112 62 L132 118' fill='none' stroke='%23ffffff' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='132' cy='58' r='8' fill='%2334D399'/%3E%3C/svg%3E" />
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -16,14 +17,25 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     :root { --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px); }
-    html, body { margin: 0; padding: 0; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, Inter, Noto Sans TC, sans-serif; overscroll-behavior-y: none; min-height: 100dvh; }
-    input, select, textarea { font-size: 16px !important; }
+    html, body, #root { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, Inter, Noto Sans TC, sans-serif; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; overscroll-behavior: none; }
+    input, select, textarea { font-size: 16px !important; -webkit-user-select: text; user-select: text; }
+    button { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     .font-mono-num { font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; }
-    .app-shell { min-height: 100dvh; padding-top: var(--safe-top); }
-    .bottom-nav-safe { padding-bottom: calc(var(--safe-bottom) + 8px); }
-    .sheet-safe { padding-bottom: calc(var(--safe-bottom) + 22px); }
+    .app-viewport { position: fixed; inset: 0; width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: #000; }
+    .app-shell-frame { width: 100%; max-width: 440px; height: 100%; margin: 0 auto; display: flex; flex-direction: column; overflow: hidden; padding-top: var(--safe-top); position: relative; }
+    .app-scroll-main { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; }
+    .bottom-nav-safe { padding-top: 8px; padding-bottom: max(10px, calc(var(--safe-bottom) - 10px)); }
+    .sheet-safe { padding-bottom: calc(var(--safe-bottom) + 20px); }
+    .snap-x-rail { scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; }
+    .snap-x-item { scroll-snap-align: start; }
     @keyframes slideUpSheet { from { transform: translateY(100%); opacity: 0.7; } to { transform: translateY(0); opacity: 1; } }
     .animate-sheet-up { animation: slideUpSheet 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+    @keyframes popUpMenu { from { transform: translateY(10px) scale(0.95); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
+    .animate-pop-up { animation: popUpMenu 0.18s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+    @keyframes slideFromRight { from { transform: translateX(18px); opacity: 0.4; } to { transform: translateX(0); opacity: 1; } }
+    .animate-slide-left { animation: slideFromRight 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+    @keyframes slideFromLeft { from { transform: translateX(-18px); opacity: 0.4; } to { transform: translateX(0); opacity: 1; } }
+    .animate-slide-right { animation: slideFromLeft 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     .animate-fade { animation: fadeIn 0.22s ease forwards; }
     ::-webkit-scrollbar { width: 0; height: 0; }

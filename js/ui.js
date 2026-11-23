@@ -1,5 +1,5 @@
 (() => {
-      const { useState, useEffect } = React;
+      const { useState, useEffect, useRef } = React;
 
       // 全站統一極細線條 SVG 圖標集（零功能性 Emoji）
       const Icons = {
@@ -91,6 +91,32 @@
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" />
           </svg>
+        ),
+        ArrowLeftRight: () => (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="17 2 21 6 17 10" /><path d="M3 6h18" />
+            <polyline points="7 22 3 18 7 14" /><path d="M21 18H3" />
+          </svg>
+        ),
+        Wallet: () => (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" /><path d="M3 5v14a2 2 0 0 0 2 2h16v-5" /><path d="M18 12a2 2 0 0 0 0 4h4v-4Z" />
+          </svg>
+        ),
+        ArrowDownLeft: () => (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="17" y1="7" x2="7" y2="17" /><polyline points="17 17 7 17 7 7" />
+          </svg>
+        ),
+        ArrowUpRight: () => (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="7" y1="17" x2="17" y2="7" /><polyline points="7 7 17 7 17 17" />
+          </svg>
+        ),
+        Users: () => (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
         )
       };
 
@@ -99,6 +125,177 @@
         const [state, setState] = useState(() => window.WealthStore.getState());
         useEffect(() => window.WealthStore.subscribe(setState), []);
         return state;
+      }
+
+      // 統一橫向滑動手勢控制器（3 層防誤觸：24px 邊緣豁免、data-no-swipe 豁免、水平位移 > 垂直 1.4x）
+      function useHorizontalSwipe({ onSwipeLeft, onSwipeRight, enabled = true, threshold = 55 }) {
+        const startRef = useRef(null);
+
+        const onTouchStart = (e) => {
+          if (!enabled || !e.touches || e.touches.length !== 1) return;
+          const touch = e.touches[0];
+          // 避開 iPhone 左右邊緣 24px，不干擾 iOS 系統返回手勢
+          if (touch.clientX < 24 || touch.clientX > window.innerWidth - 24) {
+            startRef.current = null;
+            return;
+          }
+          // 若觸控起點在橫向滑動軌道或輸入元件內則豁免
+          if (e.target && e.target.closest && e.target.closest('[data-no-swipe], input, select, textarea')) {
+            startRef.current = null;
+            return;
+          }
+          startRef.current = { x: touch.clientX, y: touch.clientY, t: Date.now() };
+        };
+
+        const onTouchEnd = (e) => {
+          if (!enabled || !startRef.current || !e.changedTouches || !e.changedTouches.length) return;
+          const touch = e.changedTouches[0];
+          const dx = touch.clientX - startRef.current.x;
+          const dy = touch.clientY - startRef.current.y;
+          const dt = Date.now() - startRef.current.t;
+          startRef.current = null;
+
+          if (dt > 650) return;
+          if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * 1.4) {
+            if (dx < 0 && onSwipeLeft) onSwipeLeft();
+            else if (dx > 0 && onSwipeRight) onSwipeRight();
+          }
+        };
+
+        const onTouchCancel = () => {
+          startRef.current = null;
+        };
+
+        return { onTouchStart, onTouchEnd, onTouchCancel };
+      }
+
+      // 統一短按 / 長按控制器（相容 iPhone 觸控與桌面滑鼠，避免雙重觸發）
+      function useLongPress({ onTap, onLongPress, delay = 360 }) {
+        const timerRef = useRef(null);
+        const longFiredRef = useRef(false);
+        const movedRef = useRef(false);
+        const startPosRef = useRef({ x: 0, y: 0 });
+        const lastTouchAtRef = useRef(0);
+
+        const clearTimer = () => {
+          if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+          }
+        };
+
+        const start = (x, y) => {
+          clearTimer();
+          longFiredRef.current = false;
+          movedRef.current = false;
+          startPosRef.current = { x, y };
+          if (onLongPress) {
+            timerRef.current = setTimeout(() => {
+              longFiredRef.current = true;
+              onLongPress();
+            }, delay);
+          }
+        };
+
+        const move = (x, y) => {
+          if (Math.hypot(x - startPosRef.current.x, y - startPosRef.current.y) > 10) {
+            movedRef.current = true;
+            clearTimer();
+          }
+        };
+
+        const end = (shouldTriggerTap) => {
+          clearTimer();
+          if (shouldTriggerTap && !longFiredRef.current && !movedRef.current && onTap) {
+            onTap();
+          }
+        };
+
+        return {
+          onTouchStart: (e) => {
+            lastTouchAtRef.current = Date.now();
+            const t = e.touches[0];
+            if (t) start(t.clientX, t.clientY);
+          },
+          onTouchMove: (e) => {
+            const t = e.touches[0];
+            if (t) move(t.clientX, t.clientY);
+          },
+          onTouchEnd: (e) => {
+            lastTouchAtRef.current = Date.now();
+            if (longFiredRef.current) e.preventDefault();
+            end(true);
+          },
+          onTouchCancel: () => clearTimer(),
+          onMouseDown: (e) => {
+            if (Date.now() - lastTouchAtRef.current < 500) return;
+            if (e.button !== 0) return;
+            start(e.clientX, e.clientY);
+          },
+          onMouseMove: (e) => {
+            if (Date.now() - lastTouchAtRef.current < 500) return;
+            if (timerRef.current) move(e.clientX, e.clientY);
+          },
+          onMouseUp: () => {
+            if (Date.now() - lastTouchAtRef.current < 500) return;
+            end(true);
+          },
+          onMouseLeave: () => clearTimer(),
+          onContextMenu: (e) => e.preventDefault()
+        };
+      }
+
+      // 底部導航長按浮動快捷選單
+      function QuickPopoverMenu({ align = 'center', title, items, onClose }) {
+        const alignClass = align === 'left'
+          ? 'left-4'
+          : align === 'right'
+          ? 'right-4'
+          : 'left-1/2 -translate-x-1/2';
+
+        return (
+          <div
+            onClick={onClose}
+            className="fixed inset-0 z-40 bg-black/50 backdrop-blur-[2px] animate-fade"
+          >
+            <div className="w-full max-w-[440px] mx-auto h-full relative pointer-events-none">
+              <div
+                onClick={e => e.stopPropagation()}
+                style={{ bottom: 'calc(max(10px, var(--safe-bottom) - 10px) + 72px)' }}
+                className={`pointer-events-auto absolute ${alignClass} w-52 rounded-3xl bg-[#1C1C1E]/95 border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl p-2 space-y-1 animate-pop-up`}
+              >
+                {title && (
+                  <div className="px-3 pt-1.5 pb-1 text-[10px] font-semibold text-[#8E8E93] tracking-wide">
+                    {title}
+                  </div>
+                )}
+                {items.map(it => (
+                  <button
+                    key={it.id}
+                    type="button"
+                    onClick={() => {
+                      it.onSelect();
+                      onClose();
+                    }}
+                    className={`w-full min-h-[44px] px-3 rounded-2xl flex items-center justify-between gap-2.5 text-left transition active:scale-[0.98] ${
+                      it.active
+                        ? 'bg-white text-black font-bold'
+                        : 'text-white hover:bg-white/[0.08] font-medium'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className={it.active ? 'text-black' : (it.iconClass || 'text-zinc-300')}>
+                        {it.icon}
+                      </span>
+                      <span className="text-xs truncate">{it.label}</span>
+                    </div>
+                    {it.active && <Icons.Check />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
       }
 
       // 通用檔案下載
@@ -203,112 +400,116 @@
         ];
 
         return (
-          <div className="app-shell max-w-[440px] mx-auto px-6 py-10 flex flex-col justify-between bg-black text-white animate-fade">
-            <div className="space-y-8 pt-6">
-              {/* 品牌標誌與步驟點 */}
-              <div className="flex items-center justify-between">
-                <div className="w-11 h-11 rounded-2xl bg-[#111113] border border-white/10 flex items-center justify-center">
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 17 L8 7 L12 14 L16 7 L21 17" />
-                  </svg>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className={`h-1.5 rounded-full transition-all ${step === 1 ? 'w-6 bg-white' : 'w-2 bg-white/25'}`} />
-                  <span className={`h-1.5 rounded-full transition-all ${step === 2 ? 'w-6 bg-white' : 'w-2 bg-white/25'}`} />
+          <div className="app-viewport">
+            <div className="app-shell-frame bg-black text-white animate-fade">
+              <div className="app-scroll-main px-6 pt-8 pb-6 flex flex-col justify-between">
+                <div className="space-y-8">
+                  {/* 品牌標誌與步驟點 */}
+                  <div className="flex items-center justify-between">
+                    <div className="w-11 h-11 rounded-2xl bg-[#111113] border border-white/10 flex items-center justify-center">
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 17 L8 7 L12 14 L16 7 L21 17" />
+                      </svg>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`h-1.5 rounded-full transition-all ${step === 1 ? 'w-6 bg-white' : 'w-2 bg-white/25'}`} />
+                      <span className={`h-1.5 rounded-full transition-all ${step === 2 ? 'w-6 bg-white' : 'w-2 bg-white/25'}`} />
+                    </div>
+                  </div>
+
+                  {step === 1 ? (
+                    <div className="space-y-6 animate-fade">
+                      <div className="space-y-1.5">
+                        <h1 className="text-[26px] font-bold tracking-tight">選擇主顯示幣種</h1>
+                        <p className="text-sm text-[#8E8E93]">總資產與統計報表將預設以此幣種呈現，日後可隨時於設定修改。</p>
+                      </div>
+
+                      <div className="space-y-2.5">
+                        {CURRENCY_CHOICES.map(c => {
+                          const active = selectedCurrency === c.code;
+                          return (
+                            <button
+                              key={c.code}
+                              type="button"
+                              onClick={() => setSelectedCurrency(c.code)}
+                              className={`w-full min-h-[58px] px-4 rounded-2xl border flex items-center justify-between transition active:scale-[0.99] ${
+                                active
+                                  ? 'bg-white text-black border-white'
+                                  : 'bg-[#111113] text-white border-white/[0.07] hover:border-white/20'
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <span className={`w-12 text-left font-mono-num text-sm font-bold ${active ? 'text-black' : 'text-zinc-300'}`}>
+                                  {c.code}
+                                </span>
+                                <span className="text-sm font-semibold">{c.name}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className={`font-mono-num text-xs ${active ? 'text-zinc-600' : 'text-[#8E8E93]'}`}>{c.symbol}</span>
+                                {active && <Icons.Check />}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-6 animate-fade">
+                      <div className="space-y-1.5">
+                        <h1 className="text-[26px] font-bold tracking-tight">選擇開始方式</h1>
+                        <p className="text-sm text-[#8E8E93]">所有帳本資料僅儲存於你的裝置，並支援匯出備份。</p>
+                      </div>
+
+                      <div className="space-y-3">
+                        <button
+                          type="button"
+                          onClick={() => onComplete(selectedCurrency, 'DEMO')}
+                          className="w-full p-5 rounded-3xl bg-[#111113] border border-white/15 hover:border-white/35 text-left space-y-1.5 active:scale-[0.99] transition"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-base font-bold text-white">載入通用範例體驗</span>
+                            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 text-[11px] font-semibold">推薦體驗</span>
+                          </div>
+                          <p className="text-xs text-[#8E8E93] leading-relaxed">
+                            預載銀行、信用卡、定期存款與投資範例，快速熟悉記帳與跨模組連動。
+                          </p>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => onComplete(selectedCurrency, 'BLANK')}
+                          className="w-full p-5 rounded-3xl bg-[#111113] border border-white/[0.07] hover:border-white/25 text-left space-y-1.5 active:scale-[0.99] transition"
+                        >
+                          <div className="text-base font-bold text-white">開始全新空白帳本</div>
+                          <p className="text-xs text-[#8E8E93] leading-relaxed">
+                            保留標準資金池與常用分類，從零開始建立你的真實帳戶與消費紀錄。
+                          </p>
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {step === 1 ? (
-                <div className="space-y-6 animate-fade">
-                  <div className="space-y-1.5">
-                    <h1 className="text-[26px] font-bold tracking-tight">選擇主顯示幣種</h1>
-                    <p className="text-sm text-[#8E8E93]">總資產與統計報表將預設以此幣種呈現，日後可隨時於設定修改。</p>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {CURRENCY_CHOICES.map(c => {
-                      const active = selectedCurrency === c.code;
-                      return (
-                        <button
-                          key={c.code}
-                          type="button"
-                          onClick={() => setSelectedCurrency(c.code)}
-                          className={`w-full min-h-[58px] px-4 rounded-2xl border flex items-center justify-between transition active:scale-[0.99] ${
-                            active
-                              ? 'bg-white text-black border-white'
-                              : 'bg-[#111113] text-white border-white/[0.07] hover:border-white/20'
-                          }`}
-                        >
-                          <div className="flex items-center gap-3">
-                            <span className={`w-12 text-left font-mono-num text-sm font-bold ${active ? 'text-black' : 'text-zinc-300'}`}>
-                              {c.code}
-                            </span>
-                            <span className="text-sm font-semibold">{c.name}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className={`font-mono-num text-xs ${active ? 'text-zinc-600' : 'text-[#8E8E93]'}`}>{c.symbol}</span>
-                            {active && <Icons.Check />}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-6 animate-fade">
-                  <div className="space-y-1.5">
-                    <h1 className="text-[26px] font-bold tracking-tight">選擇開始方式</h1>
-                    <p className="text-sm text-[#8E8E93]">所有帳本資料僅儲存於你的裝置，並支援匯出備份。</p>
-                  </div>
-
-                  <div className="space-y-3">
-                    <button
-                      type="button"
-                      onClick={() => onComplete(selectedCurrency, 'DEMO')}
-                      className="w-full p-5 rounded-3xl bg-[#111113] border border-white/15 hover:border-white/35 text-left space-y-1.5 active:scale-[0.99] transition"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-base font-bold text-white">載入通用範例體驗</span>
-                        <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 text-[11px] font-semibold">推薦體驗</span>
-                      </div>
-                      <p className="text-xs text-[#8E8E93] leading-relaxed">
-                        預載銀行、信用卡、定期存款與投資範例，快速熟悉記帳與跨模組連動。
-                      </p>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => onComplete(selectedCurrency, 'BLANK')}
-                      className="w-full p-5 rounded-3xl bg-[#111113] border border-white/[0.07] hover:border-white/25 text-left space-y-1.5 active:scale-[0.99] transition"
-                    >
-                      <div className="text-base font-bold text-white">開始全新空白帳本</div>
-                      <p className="text-xs text-[#8E8E93] leading-relaxed">
-                        保留標準資金池與常用分類，從零開始建立你的真實帳戶與消費紀錄。
-                      </p>
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="pt-6 pb-4">
-              {step === 1 ? (
-                <button
-                  type="button"
-                  onClick={() => setStep(2)}
-                  className="w-full min-h-[52px] rounded-2xl bg-white text-black text-sm font-bold active:scale-[0.98] transition"
-                >
-                  下一步
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setStep(1)}
-                  className="w-full min-h-[48px] rounded-2xl bg-[#161618] text-zinc-300 text-sm font-semibold active:scale-[0.98] transition"
-                >
-                  返回重選幣種 ({selectedCurrency})
-                </button>
-              )}
+              <div className="shrink-0 px-6 pt-3 sheet-safe bg-black">
+                {step === 1 ? (
+                  <button
+                    type="button"
+                    onClick={() => setStep(2)}
+                    className="w-full min-h-[52px] rounded-2xl bg-white text-black text-sm font-bold active:scale-[0.98] transition"
+                  >
+                    下一步
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setStep(1)}
+                    className="w-full min-h-[48px] rounded-2xl bg-[#161618] text-zinc-300 text-sm font-semibold active:scale-[0.98] transition"
+                  >
+                    返回重選幣種 ({selectedCurrency})
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         );
@@ -332,30 +533,32 @@
         render() {
           if (this.state.hasError) {
             return (
-              <div className="app-shell max-w-[440px] mx-auto px-6 flex flex-col items-center justify-center bg-black text-white text-center space-y-5">
-                <div className="w-14 h-14 rounded-3xl bg-rose-500/15 border border-rose-500/30 text-rose-400 flex items-center justify-center">
-                  <Icons.Shield />
-                </div>
-                <div className="space-y-1.5">
-                  <h2 className="text-lg font-bold">安全恢復模式</h2>
-                  <p className="text-xs text-[#8E8E93] leading-relaxed">{this.state.message}</p>
-                </div>
-                <div className="w-full space-y-2.5">
-                  <button
-                    type="button"
-                    onClick={this.handleEmergencyExport}
-                    className="w-full min-h-[48px] rounded-2xl bg-white text-black text-sm font-bold flex items-center justify-center gap-2"
-                  >
-                    <Icons.Download />
-                    <span>緊急匯出目前帳本 JSON</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => window.location.reload()}
-                    className="w-full min-h-[48px] rounded-2xl bg-[#161618] border border-white/10 text-white text-sm font-semibold"
-                  >
-                    安全重新整理
-                  </button>
+              <div className="app-viewport">
+                <div className="app-shell-frame px-6 items-center justify-center bg-black text-white text-center space-y-5">
+                  <div className="w-14 h-14 rounded-3xl bg-rose-500/15 border border-rose-500/30 text-rose-400 flex items-center justify-center">
+                    <Icons.Shield />
+                  </div>
+                  <div className="space-y-1.5">
+                    <h2 className="text-lg font-bold">安全恢復模式</h2>
+                    <p className="text-xs text-[#8E8E93] leading-relaxed">{this.state.message}</p>
+                  </div>
+                  <div className="w-full space-y-2.5">
+                    <button
+                      type="button"
+                      onClick={this.handleEmergencyExport}
+                      className="w-full min-h-[48px] rounded-2xl bg-white text-black text-sm font-bold flex items-center justify-center gap-2"
+                    >
+                      <Icons.Download />
+                      <span>緊急匯出目前帳本 JSON</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => window.location.reload()}
+                      className="w-full min-h-[48px] rounded-2xl bg-[#161618] border border-white/10 text-white text-sm font-semibold"
+                    >
+                      安全重新整理
+                    </button>
+                  </div>
                 </div>
               </div>
             );
@@ -367,6 +570,9 @@
       window.WealthUI = {
         Icons,
         useWealthStore,
+        useHorizontalSwipe,
+        useLongPress,
+        QuickPopoverMenu,
         downloadFile,
         BottomSheet,
         SegmentedControl,

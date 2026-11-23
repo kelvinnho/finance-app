@@ -1,7 +1,21 @@
 (() => {
       const { useState, useMemo, useRef } = React;
-      const { Icons, useWealthStore, downloadFile, BottomSheet, SegmentedControl, Toast, OnboardingFlow, EmergencyRecoveryBoundary } = window.WealthUI;
+      const {
+        Icons,
+        useWealthStore,
+        useHorizontalSwipe,
+        useLongPress,
+        QuickPopoverMenu,
+        downloadFile,
+        BottomSheet,
+        SegmentedControl,
+        Toast,
+        OnboardingFlow,
+        EmergencyRecoveryBoundary
+      } = window.WealthUI;
       const Store = window.WealthStore;
+
+      const ASSET_SUB_TABS = ['WALLET', 'CARDS', 'WEALTH'];
 
       // 生成 GitHub Pages 零編譯多檔案部署檔案內容（零重複程式碼，直接抽取 DOM 內的模組腳本）
       function buildGitHubKitFiles() {
@@ -10,6 +24,8 @@
           return el ? el.textContent.trim() + '\n' : '';
         };
 
+        const iconDataUri = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%23000000'/%3E%3Crect x='22' y='22' width='136' height='136' rx='30' fill='%23111113' stroke='%23ffffff' stroke-opacity='0.14' stroke-width='2'/%3E%3Cpath d='M48 118 L74 62 L92 98 L112 62 L132 118' fill='none' stroke='%23ffffff' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='132' cy='58' r='8' fill='%2334D399'/%3E%3C/svg%3E";
+
         const manifestJson = JSON.stringify({
           name: 'Wealth 個人財務管理',
           short_name: 'Wealth',
@@ -17,17 +33,11 @@
           display: 'standalone',
           background_color: '#000000',
           theme_color: '#000000',
-          icons: [
-            {
-              src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%23000000'/%3E%3Crect x='22' y='22' width='136' height='136' rx='30' fill='%23111113' stroke='%23ffffff' stroke-opacity='0.14' stroke-width='2'/%3E%3Cpath d='M48 118 L74 62 L92 98 L112 62 L132 118' fill='none' stroke='%23ffffff' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='132' cy='58' r='8' fill='%2334D399'/%3E%3C/svg%3E",
-              sizes: '180x180',
-              type: 'image/svg+xml'
-            }
-          ]
+          icons: [{ src: iconDataUri, sizes: '180x180', type: 'image/svg+xml' }]
         }, null, 2);
 
         const swJs = [
-          "const CACHE_NAME = 'wealth-app-v1.9-stage0';",
+          "const CACHE_NAME = 'wealth-app-v1.9-stage0-r2';",
           "const CORE_ASSETS = ['./', './index.html', './manifest.json', './js/store.js', './js/ui.js', './js/app.js'];",
           "self.addEventListener('install', e => {",
           "  e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(CORE_ASSETS)).then(() => self.skipWaiting()));",
@@ -58,6 +68,7 @@
           '  <meta name="theme-color" content="#000000" />',
           '  <title>Wealth — 個人財務管理</title>',
           '  <link rel="manifest" href="./manifest.json" />',
+          '  <link rel="apple-touch-icon" href="' + iconDataUri + '" />',
           '  <script src="https://cdn.tailwindcss.com">' + sClose,
           '  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet" />',
           '  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin>' + sClose,
@@ -65,14 +76,25 @@
           '  <script src="https://unpkg.com/@babel/standalone/babel.min.js">' + sClose,
           '  <style>',
           '    :root { --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px); }',
-          '    html, body { margin: 0; padding: 0; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, Inter, Noto Sans TC, sans-serif; overscroll-behavior-y: none; min-height: 100dvh; }',
-          '    input, select, textarea { font-size: 16px !important; }',
+          '    html, body, #root { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, Inter, Noto Sans TC, sans-serif; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; overscroll-behavior: none; }',
+          '    input, select, textarea { font-size: 16px !important; -webkit-user-select: text; user-select: text; }',
+          '    button { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }',
           '    .font-mono-num { font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; }',
-          '    .app-shell { min-height: 100dvh; padding-top: var(--safe-top); }',
-          '    .bottom-nav-safe { padding-bottom: calc(var(--safe-bottom) + 8px); }',
-          '    .sheet-safe { padding-bottom: calc(var(--safe-bottom) + 22px); }',
+          '    .app-viewport { position: fixed; inset: 0; width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: #000; }',
+          '    .app-shell-frame { width: 100%; max-width: 440px; height: 100%; margin: 0 auto; display: flex; flex-direction: column; overflow: hidden; padding-top: var(--safe-top); position: relative; }',
+          '    .app-scroll-main { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; }',
+          '    .bottom-nav-safe { padding-top: 8px; padding-bottom: max(10px, calc(var(--safe-bottom) - 10px)); }',
+          '    .sheet-safe { padding-bottom: calc(var(--safe-bottom) + 20px); }',
+          '    .snap-x-rail { scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; }',
+          '    .snap-x-item { scroll-snap-align: start; }',
           '    @keyframes slideUpSheet { from { transform: translateY(100%); opacity: 0.7; } to { transform: translateY(0); opacity: 1; } }',
           '    .animate-sheet-up { animation: slideUpSheet 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards; }',
+          '    @keyframes popUpMenu { from { transform: translateY(10px) scale(0.95); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }',
+          '    .animate-pop-up { animation: popUpMenu 0.18s cubic-bezier(0.22, 1, 0.36, 1) forwards; }',
+          '    @keyframes slideFromRight { from { transform: translateX(18px); opacity: 0.4; } to { transform: translateX(0); opacity: 1; } }',
+          '    .animate-slide-left { animation: slideFromRight 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards; }',
+          '    @keyframes slideFromLeft { from { transform: translateX(-18px); opacity: 0.4; } to { transform: translateX(0); opacity: 1; } }',
+          '    .animate-slide-right { animation: slideFromLeft 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards; }',
           '    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }',
           '    .animate-fade { animation: fadeIn 0.22s ease forwards; }',
           '    ::-webkit-scrollbar { width: 0; height: 0; }',
@@ -91,33 +113,46 @@
         ].join('\n');
 
         return [
-          { path: 'index.html',    desc: 'GitHub Pages 零編譯載入外殼 (~45 行)', content: loaderHtml, mime: 'text/html;charset=utf-8;' },
-          { path: 'manifest.json', desc: 'iPhone 主畫面 PWA 設定檔',            content: manifestJson, mime: 'application/json;charset=utf-8;' },
-          { path: 'sw.js',         desc: '離線快取 Service Worker',              content: swJs, mime: 'application/javascript;charset=utf-8;' },
-          { path: 'js/store.js',   desc: 'Schema v1.9 狀態中心、回滾與診斷引擎',  content: readModule('js/store.js'), mime: 'application/javascript;charset=utf-8;' },
-          { path: 'js/ui.js',      desc: '純黑設計系統、SVG 圖標與引導元件',     content: readModule('js/ui.js'), mime: 'application/javascript;charset=utf-8;' },
-          { path: 'js/app.js',     desc: '主導航外殼與分頁路由',                 content: readModule('js/app.js'), mime: 'application/javascript;charset=utf-8;' }
+          { path: 'index.html',    desc: 'GitHub Pages 載入外殼 (含 iPhone 14 貼底適配)', content: loaderHtml, mime: 'text/html;charset=utf-8;' },
+          { path: 'manifest.json', desc: 'iPhone 主畫面 PWA 設定檔',                        content: manifestJson, mime: 'application/json;charset=utf-8;' },
+          { path: 'sw.js',         desc: '離線快取 Service Worker (v1.9-r2)',               content: swJs, mime: 'application/javascript;charset=utf-8;' },
+          { path: 'js/store.js',   desc: 'Schema v1.9 狀態中心、回滾與診斷引擎',             content: readModule('js/store.js'), mime: 'application/javascript;charset=utf-8;' },
+          { path: 'js/ui.js',      desc: '純黑設計系統、手勢控制器與長按選單元件',           content: readModule('js/ui.js'), mime: 'application/javascript;charset=utf-8;' },
+          { path: 'js/app.js',     desc: '主導航外殼、左右滑動與單手快捷路由',               content: readModule('js/app.js'), mime: 'application/javascript;charset=utf-8;' }
         ];
       }
 
-      // 階段 0 置中「＋」快速記帳驗證抽屜（驗證 16px 防縮放輸入框 ＋ 寫入 Store 即時連動餘額與凍結提醒）
-      function QuickAddTestSheet({ state, onClose, onSaved }) {
+      // 階段 0 置中「＋」快速記帳驗證抽屜（支援支出／收入／轉帳／應收與長按直達預選）
+      function QuickAddTestSheet({ state, initialType = 'EXPENSE', onClose, onSaved }) {
         const flatAccounts = useMemo(() => Store.getFlatAccounts(state), [state]);
+        const cashAccounts = useMemo(() => flatAccounts.filter(a => a.kind !== 'CREDIT'), [flatAccounts]);
         const buckets = state.settings.buckets.filter(b => !b.archived);
-        const [type, setType] = useState('EXPENSE');
+        const [type, setType] = useState(initialType || 'EXPENSE');
         const [amount, setAmount] = useState('');
         const [title, setTitle] = useState('');
+        const [counterparty, setCounterparty] = useState('');
         const [accountId, setAccountId] = useState(flatAccounts[0]?.id || '');
+        const [toAccountId, setToAccountId] = useState(cashAccounts[1]?.id || cashAccounts[0]?.id || '');
         const [bucketId, setBucketId] = useState(buckets[0]?.id || 'PUBLIC');
 
-        const selectedAcc = flatAccounts.find(a => a.id === accountId);
+        const activeAccountPool = type === 'TRANSFER' ? cashAccounts : flatAccounts;
+        const selectedAcc = activeAccountPool.find(a => a.id === accountId) || activeAccountPool[0];
+        const selectedToAcc = cashAccounts.find(a => a.id === toAccountId) || cashAccounts[0];
 
         const handleSubmit = (e) => {
           e.preventDefault();
           const num = Number(amount);
           if (!num || num <= 0 || !selectedAcc) return;
+          if (type === 'TRANSFER' && (!selectedToAcc || selectedToAcc.id === selectedAcc.id)) return;
 
           const now = new Date();
+          const defaultTitles = {
+            EXPENSE: '日常消費',
+            INCOME: '快速入帳',
+            TRANSFER: `${selectedAcc.name} ➔ ${selectedToAcc?.name || ''}`,
+            RECEIVABLE: counterparty.trim() ? `代墊 · ${counterparty.trim()}` : '應收代墊款項'
+          };
+
           const tx = {
             id: 'tx_' + Date.now(),
             date: Store.todayISO(),
@@ -125,16 +160,16 @@
             type,
             mainCatId: type === 'INCOME' ? 'cat_salary' : 'cat_food',
             subCatId: type === 'INCOME' ? 'sub_main_sal' : 'sub_dining',
-            title: title.trim() || (type === 'INCOME' ? '快速入帳' : '日常消費'),
+            title: title.trim() || defaultTitles[type],
             merchant: '',
             bucketId,
             accountId: selectedAcc.id,
-            toAccountId: null,
+            toAccountId: type === 'TRANSFER' ? selectedToAcc.id : null,
             currency: selectedAcc.currency,
             amount: num,
             accountAmount: num,
             creditCycle: selectedAcc.kind === 'CREDIT' ? 'UNBILLED' : null,
-            counterparty: '',
+            counterparty: type === 'RECEIVABLE' ? (counterparty.trim() || '未指定對象') : '',
             receivableMode: 'NEW',
             isLoanSettled: false,
             isLockedSettled: false,
@@ -152,8 +187,10 @@
                 value={type}
                 onChange={setType}
                 options={[
-                  { id: 'EXPENSE', label: '支出' },
-                  { id: 'INCOME',  label: '收入' }
+                  { id: 'EXPENSE',    label: '支出' },
+                  { id: 'INCOME',     label: '收入' },
+                  { id: 'TRANSFER',   label: '轉帳' },
+                  { id: 'RECEIVABLE', label: '應收' }
                 ]}
               />
 
@@ -170,11 +207,24 @@
                 />
               </div>
 
+              {type === 'RECEIVABLE' && (
+                <div className="space-y-1.5">
+                  <label className="text-xs text-[#8E8E93]">收款對象</label>
+                  <input
+                    type="text"
+                    placeholder="例如：同事 A、朋友"
+                    value={counterparty}
+                    onChange={e => setCounterparty(e.target.value)}
+                    className="w-full min-h-[48px] px-4 rounded-2xl bg-[#111113] border border-white/10 text-white focus:outline-none focus:border-white/35"
+                  />
+                </div>
+              )}
+
               <div className="space-y-1.5">
                 <label className="text-xs text-[#8E8E93]">項目名稱</label>
                 <input
                   type="text"
-                  placeholder="例如：午餐、交通"
+                  placeholder={type === 'TRANSFER' ? '選填（預設顯示帳戶流向）' : '例如：午餐、交通'}
                   value={title}
                   onChange={e => setTitle(e.target.value)}
                   className="w-full min-h-[48px] px-4 rounded-2xl bg-[#111113] border border-white/10 text-white focus:outline-none focus:border-white/35"
@@ -182,13 +232,13 @@
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-xs text-[#8E8E93]">帳戶</label>
+                <label className="text-xs text-[#8E8E93]">{type === 'TRANSFER' ? '轉出帳戶' : '帳戶'}</label>
                 <select
-                  value={accountId}
+                  value={selectedAcc?.id || ''}
                   onChange={e => setAccountId(e.target.value)}
                   className="w-full min-h-[48px] px-4 rounded-2xl bg-[#111113] border border-white/10 text-white focus:outline-none"
                 >
-                  {flatAccounts.map(acc => (
+                  {activeAccountPool.map(acc => (
                     <option key={acc.id} value={acc.id} className="bg-zinc-900">
                       {acc.displayName} ({Store.formatMoney(acc.balance, acc.currency)})
                     </option>
@@ -196,9 +246,26 @@
                 </select>
               </div>
 
+              {type === 'TRANSFER' && (
+                <div className="space-y-1.5">
+                  <label className="text-xs text-[#8E8E93]">轉入帳戶</label>
+                  <select
+                    value={selectedToAcc?.id || ''}
+                    onChange={e => setToAccountId(e.target.value)}
+                    className="w-full min-h-[48px] px-4 rounded-2xl bg-[#111113] border border-white/10 text-white focus:outline-none"
+                  >
+                    {cashAccounts.map(acc => (
+                      <option key={acc.id} value={acc.id} className="bg-zinc-900">
+                        {acc.displayName} ({Store.formatMoney(acc.balance, acc.currency)})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div className="space-y-1.5">
                 <label className="text-xs text-[#8E8E93]">資金池</label>
-                <div className="flex gap-2 overflow-x-auto snap-x-rail pb-1">
+                <div data-no-swipe="true" className="flex gap-2 overflow-x-auto snap-x-rail pb-1">
                   {buckets.map(b => {
                     const sel = bucketId === b.id;
                     return (
@@ -298,19 +365,76 @@
         const state = useWealthStore();
         const [activeTab, setActiveTab] = useState('LEDGER'); // LEDGER | ASSETS | REPORT | SETTINGS
         const [assetSubTab, setAssetSubTab] = useState('WALLET'); // WALLET | CARDS | WEALTH
+        const [assetSlideAnim, setAssetSlideAnim] = useState('animate-fade');
         const [hideMoney, setHideMoney] = useState(() => !!state.settings?.preferences?.hideBalancesOnLaunch);
-        const [showQuickAdd, setShowQuickAdd] = useState(false);
+        const [quickAddState, setQuickAddState] = useState({ open: false, initialType: 'EXPENSE' });
+        const [quickMenu, setQuickMenu] = useState(null); // null | 'ASSETS' | 'ADD'
         const [showDiagnostics, setShowDiagnostics] = useState(false);
         const [showGitHubKit, setShowGitHubKit] = useState(false);
         const [toastMsg, setToastMsg] = useState('');
         const toastRef = useRef(null);
         const fileInputRef = useRef(null);
+        const scrollMainRef = useRef(null);
 
         const notify = (msg) => {
           setToastMsg(msg);
           if (toastRef.current) clearTimeout(toastRef.current);
           toastRef.current = setTimeout(() => setToastMsg(''), 3000);
         };
+
+        // 切換資產子分頁（附帶方向過渡動畫）
+        const selectAssetSubTab = (nextId, dir = null) => {
+          const curIdx = ASSET_SUB_TABS.indexOf(assetSubTab);
+          const nextIdx = ASSET_SUB_TABS.indexOf(nextId);
+          if (dir === 'LEFT' || (dir === null && nextIdx > curIdx)) {
+            setAssetSlideAnim('animate-slide-left');
+          } else if (dir === 'RIGHT' || (dir === null && nextIdx < curIdx)) {
+            setAssetSlideAnim('animate-slide-right');
+          } else {
+            setAssetSlideAnim('animate-fade');
+          }
+          setAssetSubTab(nextId);
+        };
+
+        // 資產頁左右滑動手勢切換：銀包 ⇄ 信用卡 ⇄ 定存投資
+        const assetSwipeHandlers = useHorizontalSwipe({
+          enabled: activeTab === 'ASSETS',
+          onSwipeLeft: () => {
+            const idx = ASSET_SUB_TABS.indexOf(assetSubTab);
+            if (idx < ASSET_SUB_TABS.length - 1) {
+              selectAssetSubTab(ASSET_SUB_TABS[idx + 1], 'LEFT');
+            }
+          },
+          onSwipeRight: () => {
+            const idx = ASSET_SUB_TABS.indexOf(assetSubTab);
+            if (idx > 0) {
+              selectAssetSubTab(ASSET_SUB_TABS[idx - 1], 'RIGHT');
+            }
+          }
+        });
+
+        // 底部「資產」按鈕：短按進入 / 再點循環切換子頁；長按彈出直達氣泡選單
+        const assetsNavPress = useLongPress({
+          onTap: () => {
+            if (activeTab === 'ASSETS') {
+              const idx = ASSET_SUB_TABS.indexOf(assetSubTab);
+              const next = ASSET_SUB_TABS[(idx + 1) % ASSET_SUB_TABS.length];
+              selectAssetSubTab(next, 'LEFT');
+            } else {
+              setActiveTab('ASSETS');
+              if (scrollMainRef.current) scrollMainRef.current.scrollTop = 0;
+            }
+          },
+          onLongPress: () => {
+            setQuickMenu('ASSETS');
+          }
+        });
+
+        // 底部置中「＋」按鈕：短按開啟記帳；長按彈出快速類型選單（支出／收入／轉帳／應收）
+        const addNavPress = useLongPress({
+          onTap: () => setQuickAddState({ open: true, initialType: 'EXPENSE' }),
+          onLongPress: () => setQuickMenu('ADD')
+        });
 
         // 若尚未完成首次 2 步驟引導，顯示 Onboarding
         if (!state.onboardingCompleted) {
@@ -359,475 +483,610 @@
           e.target.value = '';
         };
 
+        const switchPrimaryTab = (tabId) => {
+          setActiveTab(tabId);
+          if (scrollMainRef.current) scrollMainRef.current.scrollTop = 0;
+        };
+
         return (
-          <div className="app-shell max-w-[440px] mx-auto flex flex-col bg-black text-white relative">
-            <Toast message={toastMsg} />
+          <div className="app-viewport">
+            <div className="app-shell-frame bg-black text-white">
+              <Toast message={toastMsg} />
 
-            {/* =====================================================
-                主內容滾動視區（底部預留導航安全間距）
-               ===================================================== */}
-            <main className="flex-1 px-4 pt-4 pb-28 space-y-5">
+              {/* =====================================================
+                  獨立內部主滾動視區（底部導航永不飄浮、不抖動）
+                 ===================================================== */}
+              <main
+                ref={scrollMainRef}
+                {...assetSwipeHandlers}
+                className="app-scroll-main px-4 pt-4 pb-6 space-y-5"
+              >
 
-              {/* ==================== 分頁 1：明細 ==================== */}
-              {activeTab === 'LEDGER' && (
-                <div className="space-y-4 animate-fade">
-                  <header className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <h1 className="text-[22px] font-bold tracking-tight">明細</h1>
-                      {pendingLoansCount > 0 && (
-                        <span className="px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-400/30 text-[11px] font-semibold text-amber-300">
-                          待收 {pendingLoansCount} 筆
-                        </span>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setHideMoney(!hideMoney)}
-                      className="w-10 h-10 rounded-full bg-[#161618] border border-white/[0.07] text-zinc-400 hover:text-white flex items-center justify-center transition"
-                      aria-label="切換金額顯示"
-                    >
-                      {hideMoney ? <Icons.EyeOff /> : <Icons.Eye />}
-                    </button>
-                  </header>
-
-                  {/* 階段 0 即時連結狀態卡 */}
-                  <section className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] flex items-center justify-between">
-                    <div>
-                      <div className="text-xs text-[#8E8E93]">總淨資產</div>
-                      <div className="text-2xl font-bold font-mono-num mt-0.5">
-                        {Store.formatMoney(nw.netWorth, baseCurr, hideMoney)}
+                {/* ==================== 分頁 1：明細 ==================== */}
+                {activeTab === 'LEDGER' && (
+                  <div className="space-y-4 animate-fade">
+                    <header className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <h1 className="text-[22px] font-bold tracking-tight">明細</h1>
+                        {pendingLoansCount > 0 && (
+                          <span className="px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-400/30 text-[11px] font-semibold text-amber-300">
+                            待收 {pendingLoansCount} 筆
+                          </span>
+                        )}
                       </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-[11px] text-[#8E8E93]">可動用現金</div>
-                      <div className="text-sm font-mono-num font-semibold text-emerald-400 mt-0.5">
-                        {Store.formatMoney(nw.liquidCash, baseCurr, hideMoney)}
-                      </div>
-                    </div>
-                  </section>
+                      <button
+                        type="button"
+                        onClick={() => setHideMoney(!hideMoney)}
+                        className="w-10 h-10 rounded-full bg-[#161618] border border-white/[0.07] text-zinc-400 hover:text-white flex items-center justify-center transition"
+                        aria-label="切換金額顯示"
+                      >
+                        {hideMoney ? <Icons.EyeOff /> : <Icons.Eye />}
+                      </button>
+                    </header>
 
-                  {/* 即時帳目清單（點擊置中 ＋ 新增會立刻出現並扣減餘額） */}
-                  <section className="space-y-2.5">
-                    <div className="flex items-center justify-between px-0.5">
-                      <h2 className="text-xs font-semibold text-[#8E8E93]">最近紀錄 ({state.transactions.length})</h2>
-                      <span className="text-[11px] text-[#636366]">階段 1 將接上完整日曆明細</span>
-                    </div>
-
-                    {state.transactions.length === 0 ? (
-                      <div className="py-14 rounded-3xl bg-[#111113] border border-white/[0.06] text-center space-y-2">
-                        <div className="text-sm font-semibold text-zinc-300">尚無交易紀錄</div>
-                        <div className="text-xs text-[#8E8E93]">點擊底部中央「＋」立即記錄第一筆</div>
-                      </div>
-                    ) : (
-                      <div className="rounded-3xl bg-[#111113] border border-white/[0.07] divide-y divide-white/[0.06] overflow-hidden">
-                        {state.transactions.map(tx => {
-                          const bucket = state.settings.buckets.find(b => b.id === tx.bucketId);
-                          const acc = Store.getFlatAccounts(state).find(a => a.id === tx.accountId);
-                          return (
-                            <div key={tx.id} className="px-4 py-3.5 flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: bucket?.color || '#38BDF8' }} />
-                                  <span className="text-sm font-semibold text-white truncate">{tx.title}</span>
-                                  {tx.type === 'RECEIVABLE' && !tx.isLoanSettled && (
-                                    <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-[10px] font-semibold text-amber-300 shrink-0">
-                                      待收
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-[11px] text-[#8E8E93] mt-0.5 truncate">
-                                  {acc?.name || '帳戶'} · {tx.date.slice(5)} {tx.time}
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2.5 shrink-0">
-                                <span className={`text-sm font-bold font-mono-num ${
-                                  tx.type === 'INCOME' ? 'text-emerald-400' : tx.type === 'RECEIVABLE' ? 'text-amber-300' : 'text-white'
-                                }`}>
-                                  {tx.type === 'INCOME' ? '+' : '-'}{Store.formatMoney(tx.amount, tx.currency, hideMoney)}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    Store.deleteTransaction(tx.id);
-                                    notify('已刪除並精準回滾帳戶餘額');
-                                  }}
-                                  className="w-7 h-7 rounded-full bg-white/[0.06] text-zinc-400 hover:text-rose-400 flex items-center justify-center"
-                                  title="測試刪除回滾"
-                                >
-                                  <Icons.X />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </section>
-                </div>
-              )}
-
-              {/* ==================== 分頁 2：資產 (三段切換：銀包 / 信用卡 / 定存投資) ==================== */}
-              {activeTab === 'ASSETS' && (
-                <div className="space-y-4 animate-fade">
-                  <header className="flex items-center justify-between">
-                    <h1 className="text-[22px] font-bold tracking-tight">資產</h1>
-                    <button
-                      type="button"
-                      onClick={() => setHideMoney(!hideMoney)}
-                      className="w-10 h-10 rounded-full bg-[#161618] border border-white/[0.07] text-zinc-400 hover:text-white flex items-center justify-center"
-                    >
-                      {hideMoney ? <Icons.EyeOff /> : <Icons.Eye />}
-                    </button>
-                  </header>
-
-                  {/* 方案 A 資產 3 格原生分段切換 */}
-                  <SegmentedControl
-                    value={assetSubTab}
-                    onChange={setAssetSubTab}
-                    options={[
-                      { id: 'WALLET', label: '銀包' },
-                      { id: 'CARDS',  label: '信用卡' },
-                      { id: 'WEALTH', label: '定存投資' }
-                    ]}
-                  />
-
-                  {assetSubTab === 'WALLET' && (
-                    <div className="space-y-3 animate-fade">
-                      <div className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] flex items-center justify-between">
-                        <div>
-                          <div className="text-xs text-[#8E8E93]">活期與錢包可用</div>
-                          <div className="text-2xl font-bold font-mono-num mt-0.5">
-                            {Store.formatMoney(nw.liquidCash, baseCurr, hideMoney)}
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-[11px] text-[#8E8E93]">凍結與定存鎖定</div>
-                          <div className="text-sm font-mono-num font-semibold text-zinc-300 mt-0.5">
-                            {Store.formatMoney(nw.lockedAndFrozen, baseCurr, hideMoney)}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="rounded-3xl bg-[#111113] border border-white/[0.07] divide-y divide-white/[0.06] overflow-hidden">
-                        {state.walletCards.map(card => (
-                          <div key={card.id} className="p-4 flex items-center justify-between gap-3">
-                            <div>
-                              <div className="text-sm font-semibold text-white">{card.institution}</div>
-                              <div className="text-xs text-[#8E8E93] mt-0.5">
-                                {card.accounts.map(a => a.currency).join(' / ')} · {card.accounts[0]?.name}
-                              </div>
-                            </div>
-                            <div className="text-right font-mono-num">
-                              <div className="text-sm font-bold text-white">
-                                {Store.formatMoney(card.accounts[0]?.balance, card.accounts[0]?.currency, hideMoney)}
-                              </div>
-                              {card.accounts[0]?.subBuckets?.some(s => s.isFrozen) && (
-                                <div className="text-[10px] text-[#8E8E93] mt-0.5">含凍結底倉</div>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <p className="text-[11px] text-[#636366] text-center pt-1">階段 1 將接入完整 Apple Wallet 層疊卡包與份額滑桿</p>
-                    </div>
-                  )}
-
-                  {assetSubTab === 'CARDS' && (
-                    <div className="space-y-3 animate-fade">
-                      {state.creditCards.length === 0 ? (
-                        <div className="py-12 rounded-3xl bg-[#111113] border border-white/[0.06] text-center text-xs text-[#8E8E93]">
-                          尚未新增信用卡
-                        </div>
-                      ) : (
-                        state.creditCards.map(cc => {
-                          const cycle = Store.computeDynamicCardCycle(cc.billingDay, cc.dueDay);
-                          const curr = Object.keys(cc.statements)[0] || baseCurr;
-                          const st = cc.statements[curr];
-                          return (
-                            <div key={cc.id} className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] space-y-2.5">
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-zinc-400"><Icons.CreditCard /></span>
-                                  <span className="text-sm font-bold text-white">{cc.name}</span>
-                                  <span className="text-xs font-mono-num text-[#8E8E93]">•••• {cc.last4}</span>
-                                </div>
-                                <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono-num font-semibold ${
-                                  st.isSettled || st.billedAmount === 0
-                                    ? 'bg-emerald-500/15 text-emerald-400'
-                                    : cycle.daysUntilDue <= 5
-                                    ? 'bg-rose-500/20 text-rose-300'
-                                    : 'bg-white/[0.08] text-zinc-200'
-                                }`}>
-                                  {st.isSettled || st.billedAmount === 0
-                                    ? '已結清'
-                                    : cycle.daysUntilDue < 0
-                                    ? `逾期 ${Math.abs(cycle.daysUntilDue)} 天`
-                                    : cycle.daysUntilDue === 0
-                                    ? '今日到期'
-                                    : `剩 ${cycle.daysUntilDue} 天`}
-                                </span>
-                              </div>
-                              <div className="grid grid-cols-2 gap-2 text-xs">
-                                <div className="p-2.5 rounded-2xl bg-black/45 border border-white/[0.05]">
-                                  <div className="text-[10px] text-[#8E8E93]">本期應繳</div>
-                                  <div className="text-sm font-bold font-mono-num mt-0.5">
-                                    {Store.formatMoney(st.billedAmount, curr, hideMoney)}
-                                  </div>
-                                  <div className="text-[10px] font-mono-num text-[#636366] mt-0.5">{cycle.billedRange}</div>
-                                </div>
-                                <div className="p-2.5 rounded-2xl bg-black/45 border border-white/[0.05]">
-                                  <div className="text-[10px] text-[#8E8E93]">進行中下期</div>
-                                  <div className="text-sm font-bold font-mono-num mt-0.5">
-                                    {Store.formatMoney(st.unbilledAmount, curr, hideMoney)}
-                                  </div>
-                                  <div className="text-[10px] font-mono-num text-[#636366] mt-0.5">{cycle.unbilledRange}</div>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                      <p className="text-[11px] text-[#636366] text-center pt-1">階段 2 將接入實體晶片卡面與跨行補水導航</p>
-                    </div>
-                  )}
-
-                  {assetSubTab === 'WEALTH' && (
-                    <div className="space-y-3 animate-fade">
-                      <div className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] flex items-center justify-between">
-                        <div>
-                          <div className="text-xs text-[#8E8E93]">投資持倉總市值</div>
-                          <div className="text-2xl font-bold font-mono-num mt-0.5">
-                            {Store.formatMoney(nw.investments, baseCurr, hideMoney)}
-                          </div>
-                        </div>
-                        <span className="text-emerald-400"><Icons.TrendingUp /></span>
-                      </div>
-                      <div className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] flex items-center justify-between text-xs">
-                        <span className="text-[#8E8E93]">進行中定期存款</span>
-                        <span className="font-mono-num font-bold text-white">{state.timeDeposits.length} 筆</span>
-                      </div>
-                      <p className="text-[11px] text-[#636366] text-center pt-1">階段 2 將接入定存到期結算、投資買賣與 AI 季報 Skill v2.1</p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ==================== 分頁 3：報表 ==================== */}
-              {activeTab === 'REPORT' && (
-                <div className="space-y-4 animate-fade">
-                  <header className="flex items-center justify-between">
-                    <h1 className="text-[22px] font-bold tracking-tight">報表</h1>
-                    <button
-                      type="button"
-                      onClick={() => setHideMoney(!hideMoney)}
-                      className="w-10 h-10 rounded-full bg-[#161618] border border-white/[0.07] text-zinc-400 hover:text-white flex items-center justify-center"
-                    >
-                      {hideMoney ? <Icons.EyeOff /> : <Icons.Eye />}
-                    </button>
-                  </header>
-
-                  <section className="p-5 rounded-3xl bg-[#111113] border border-white/[0.07] space-y-3">
-                    <div className="text-xs text-[#8E8E93]">總淨資產</div>
-                    <div className="text-3xl font-bold font-mono-num">
-                      {Store.formatMoney(nw.netWorth, baseCurr, hideMoney)}
-                    </div>
-                    <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-white/[0.06] text-xs">
+                    {/* 階段 0 即時連結狀態卡 */}
+                    <section className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] flex items-center justify-between">
                       <div>
-                        <div className="text-[#8E8E93]">總資產</div>
-                        <div className="font-mono-num font-semibold text-white mt-0.5">
-                          {Store.formatMoney(nw.grossAssets, baseCurr, hideMoney)}
+                        <div className="text-xs text-[#8E8E93]">總淨資產</div>
+                        <div className="text-2xl font-bold font-mono-num mt-0.5">
+                          {Store.formatMoney(nw.netWorth, baseCurr, hideMoney)}
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="text-[#8E8E93]">信用卡未繳</div>
-                        <div className="font-mono-num font-semibold text-rose-400 mt-0.5">
-                          -{Store.formatMoney(nw.debt, baseCurr, hideMoney)}
+                        <div className="text-[11px] text-[#8E8E93]">可動用現金</div>
+                        <div className="text-sm font-mono-num font-semibold text-emerald-400 mt-0.5">
+                          {Store.formatMoney(nw.liquidCash, baseCurr, hideMoney)}
                         </div>
                       </div>
-                    </div>
-                  </section>
+                    </section>
 
-                  <div className="p-4 rounded-3xl bg-[#111113] border border-white/[0.06] text-xs text-[#8E8E93] leading-relaxed">
-                    階段 3 將完整接通 MOZE 包含／排除篩選、資金池⇄類別雙向拆解、投資與定存深度圖表，以及 CSV／Markdown 報表匯出。
-                  </div>
-                </div>
-              )}
+                    {/* 即時帳目清單（點擊置中 ＋ 新增會立刻出現並扣減餘額） */}
+                    <section className="space-y-2.5">
+                      <div className="flex items-center justify-between px-0.5">
+                        <h2 className="text-xs font-semibold text-[#8E8E93]">最近紀錄 ({state.transactions.length})</h2>
+                        <span className="text-[11px] text-[#636366]">階段 1 將接上完整日曆明細</span>
+                      </div>
 
-              {/* ==================== 分頁 4：設定 ==================== */}
-              {activeTab === 'SETTINGS' && (
-                <div className="space-y-5 animate-fade">
-                  <header className="flex items-center justify-between">
-                    <h1 className="text-[22px] font-bold tracking-tight">設定</h1>
-                  </header>
-
-                  {/* 數據與備份 */}
-                  <section className="space-y-2">
-                    <h2 className="text-[11px] font-semibold text-[#8E8E93] px-1">數據安全與診斷</h2>
-                    <div className="rounded-3xl bg-[#111113] border border-white/[0.07] divide-y divide-white/[0.06] overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => setShowDiagnostics(true)}
-                        className="w-full min-h-[56px] px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.02] active:bg-white/[0.04] transition"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="w-9 h-9 rounded-2xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center">
-                            <Icons.Shield />
-                          </span>
-                          <div>
-                            <div className="text-sm font-semibold text-white">帳務一致性診斷</div>
-                            <div className="text-[11px] text-[#8E8E93]">檢查數值、ID 參照與差額回滾對稱性</div>
-                          </div>
+                      {state.transactions.length === 0 ? (
+                        <div className="py-14 rounded-3xl bg-[#111113] border border-white/[0.06] text-center space-y-2">
+                          <div className="text-sm font-semibold text-zinc-300">尚無交易紀錄</div>
+                          <div className="text-xs text-[#8E8E93]">點擊底部中央「＋」立即記錄第一筆</div>
                         </div>
-                        <span className="text-[#636366]"><Icons.ChevronRight /></span>
-                      </button>
+                      ) : (
+                        <div className="rounded-3xl bg-[#111113] border border-white/[0.07] divide-y divide-white/[0.06] overflow-hidden">
+                          {state.transactions.map(tx => {
+                            const bucket = state.settings.buckets.find(b => b.id === tx.bucketId);
+                            const acc = Store.getFlatAccounts(state).find(a => a.id === tx.accountId);
+                            return (
+                              <div key={tx.id} className="px-4 py-3.5 flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: bucket?.color || '#38BDF8' }} />
+                                    <span className="text-sm font-semibold text-white truncate">{tx.title}</span>
+                                    {tx.type === 'RECEIVABLE' && !tx.isLoanSettled && (
+                                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-[10px] font-semibold text-amber-300 shrink-0">
+                                        待收
+                                      </span>
+                                    )}
+                                    {tx.type === 'TRANSFER' && (
+                                      <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-[10px] font-semibold text-sky-300 shrink-0">
+                                        轉帳
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[11px] text-[#8E8E93] mt-0.5 truncate">
+                                    {acc?.name || '帳戶'} · {tx.date.slice(5)} {tx.time}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2.5 shrink-0">
+                                  <span className={`text-sm font-bold font-mono-num ${
+                                    tx.type === 'INCOME'
+                                      ? 'text-emerald-400'
+                                      : tx.type === 'TRANSFER'
+                                      ? 'text-sky-400'
+                                      : tx.type === 'RECEIVABLE'
+                                      ? 'text-amber-300'
+                                      : 'text-white'
+                                  }`}>
+                                    {tx.type === 'INCOME' ? '+' : tx.type === 'TRANSFER' ? '' : '-'}{Store.formatMoney(tx.amount, tx.currency, hideMoney)}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      Store.deleteTransaction(tx.id);
+                                      notify('已刪除並精準回滾帳戶餘額');
+                                    }}
+                                    className="w-7 h-7 rounded-full bg-white/[0.06] text-zinc-400 hover:text-rose-400 flex items-center justify-center"
+                                    title="測試刪除回滾"
+                                  >
+                                    <Icons.X />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                )}
 
+                {/* ==================== 分頁 2：資產 (支援左右滑動 / 再點資產循環 / 長按直達) ==================== */}
+                {activeTab === 'ASSETS' && (
+                  <div className="space-y-4 animate-fade min-h-full">
+                    <header className="flex items-center justify-between">
+                      <h1 className="text-[22px] font-bold tracking-tight">資產</h1>
                       <button
                         type="button"
-                        onClick={handleBackupExport}
-                        className="w-full min-h-[56px] px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.02] active:bg-white/[0.04] transition"
+                        onClick={() => setHideMoney(!hideMoney)}
+                        className="w-10 h-10 rounded-full bg-[#161618] border border-white/[0.07] text-zinc-400 hover:text-white flex items-center justify-center"
                       >
-                        <div className="flex items-center gap-3">
-                          <span className="w-9 h-9 rounded-2xl bg-sky-500/15 text-sky-400 flex items-center justify-center">
-                            <Icons.Download />
-                          </span>
-                          <div>
-                            <div className="text-sm font-semibold text-white">匯出整機 JSON 備份</div>
-                            <div className="text-[11px] text-[#8E8E93] font-mono-num">
-                              {state.settings.lastBackupAt ? `上次備份 ${state.settings.lastBackupAt}` : '尚未匯出備份'}
+                        {hideMoney ? <Icons.EyeOff /> : <Icons.Eye />}
+                      </button>
+                    </header>
+
+                    {/* 方案 A 資產 3 格原生分段切換（視覺定位 ＋ 點選 / 左右滑動同步） */}
+                    <SegmentedControl
+                      value={assetSubTab}
+                      onChange={(id) => selectAssetSubTab(id)}
+                      options={[
+                        { id: 'WALLET', label: '銀包' },
+                        { id: 'CARDS',  label: '信用卡' },
+                        { id: 'WEALTH', label: '定存投資' }
+                      ]}
+                    />
+
+                    <div key={assetSubTab} className={assetSlideAnim}>
+                      {assetSubTab === 'WALLET' && (
+                        <div className="space-y-3">
+                          <div className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] flex items-center justify-between">
+                            <div>
+                              <div className="text-xs text-[#8E8E93]">活期與錢包可用</div>
+                              <div className="text-2xl font-bold font-mono-num mt-0.5">
+                                {Store.formatMoney(nw.liquidCash, baseCurr, hideMoney)}
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-[11px] text-[#8E8E93]">凍結與定存鎖定</div>
+                              <div className="text-sm font-mono-num font-semibold text-zinc-300 mt-0.5">
+                                {Store.formatMoney(nw.lockedAndFrozen, baseCurr, hideMoney)}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                        <span className="text-[#636366]"><Icons.ChevronRight /></span>
-                      </button>
 
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="w-full min-h-[56px] px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.02] active:bg-white/[0.04] transition"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="w-9 h-9 rounded-2xl bg-purple-500/15 text-purple-400 flex items-center justify-center">
-                            <Icons.Refresh />
-                          </span>
-                          <div>
-                            <div className="text-sm font-semibold text-white">從 JSON 備份檔還原</div>
-                            <div className="text-[11px] text-[#8E8E93]">自動執行無損版本遷移</div>
+                          <div className="rounded-3xl bg-[#111113] border border-white/[0.07] divide-y divide-white/[0.06] overflow-hidden">
+                            {state.walletCards.map(card => (
+                              <div key={card.id} className="p-4 flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-sm font-semibold text-white">{card.institution}</div>
+                                  <div className="text-xs text-[#8E8E93] mt-0.5">
+                                    {card.accounts.map(a => a.currency).join(' / ')} · {card.accounts[0]?.name}
+                                  </div>
+                                </div>
+                                <div className="text-right font-mono-num">
+                                  <div className="text-sm font-bold text-white">
+                                    {Store.formatMoney(card.accounts[0]?.balance, card.accounts[0]?.currency, hideMoney)}
+                                  </div>
+                                  {card.accounts[0]?.subBuckets?.some(s => s.isFrozen) && (
+                                    <div className="text-[10px] text-[#8E8E93] mt-0.5">含凍結底倉</div>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
-                        <span className="text-[#636366]"><Icons.ChevronRight /></span>
-                      </button>
-                      <input ref={fileInputRef} type="file" accept=".json,application/json" onChange={handleBackupImport} className="hidden" />
-                    </div>
-                  </section>
+                      )}
 
-                  {/* 階段 0 開發與 GitHub Pages 部署工具 */}
-                  <section className="space-y-2">
-                    <h2 className="text-[11px] font-semibold text-[#8E8E93] px-1">GitHub 部署與階段驗證</h2>
-                    <div className="rounded-3xl bg-[#111113] border border-white/[0.07] divide-y divide-white/[0.06] overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => setShowGitHubKit(true)}
-                        className="w-full min-h-[56px] px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.02] active:bg-white/[0.04] transition"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="w-9 h-9 rounded-2xl bg-white/10 text-white flex items-center justify-center">
-                            <Icons.Code />
-                          </span>
-                          <div>
-                            <div className="text-sm font-semibold text-white">匯出 GitHub 零編譯多檔結構</div>
-                            <div className="text-[11px] text-[#8E8E93]">下載 index.html、manifest、sw 與 js/*</div>
+                      {assetSubTab === 'CARDS' && (
+                        <div className="space-y-3">
+                          {state.creditCards.length === 0 ? (
+                            <div className="py-12 rounded-3xl bg-[#111113] border border-white/[0.06] text-center text-xs text-[#8E8E93]">
+                              尚未新增信用卡
+                            </div>
+                          ) : (
+                            state.creditCards.map(cc => {
+                              const cycle = Store.computeDynamicCardCycle(cc.billingDay, cc.dueDay);
+                              const curr = Object.keys(cc.statements)[0] || baseCurr;
+                              const st = cc.statements[curr];
+                              return (
+                                <div key={cc.id} className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] space-y-2.5">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-zinc-400"><Icons.CreditCard /></span>
+                                      <span className="text-sm font-bold text-white">{cc.name}</span>
+                                      <span className="text-xs font-mono-num text-[#8E8E93]">•••• {cc.last4}</span>
+                                    </div>
+                                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono-num font-semibold ${
+                                      st.isSettled || st.billedAmount === 0
+                                        ? 'bg-emerald-500/15 text-emerald-400'
+                                        : cycle.daysUntilDue <= 5
+                                        ? 'bg-rose-500/20 text-rose-300'
+                                        : 'bg-white/[0.08] text-zinc-200'
+                                    }`}>
+                                      {st.isSettled || st.billedAmount === 0
+                                        ? '已結清'
+                                        : cycle.daysUntilDue < 0
+                                        ? `逾期 ${Math.abs(cycle.daysUntilDue)} 天`
+                                        : cycle.daysUntilDue === 0
+                                        ? '今日到期'
+                                        : `剩 ${cycle.daysUntilDue} 天`}
+                                    </span>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2 text-xs">
+                                    <div className="p-2.5 rounded-2xl bg-black/45 border border-white/[0.05]">
+                                      <div className="text-[10px] text-[#8E8E93]">本期應繳</div>
+                                      <div className="text-sm font-bold font-mono-num mt-0.5">
+                                        {Store.formatMoney(st.billedAmount, curr, hideMoney)}
+                                      </div>
+                                      <div className="text-[10px] font-mono-num text-[#636366] mt-0.5">{cycle.billedRange}</div>
+                                    </div>
+                                    <div className="p-2.5 rounded-2xl bg-black/45 border border-white/[0.05]">
+                                      <div className="text-[10px] text-[#8E8E93]">進行中下期</div>
+                                      <div className="text-sm font-bold font-mono-num mt-0.5">
+                                        {Store.formatMoney(st.unbilledAmount, curr, hideMoney)}
+                                      </div>
+                                      <div className="text-[10px] font-mono-num text-[#636366] mt-0.5">{cycle.unbilledRange}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      )}
+
+                      {assetSubTab === 'WEALTH' && (
+                        <div className="space-y-3">
+                          <div className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] flex items-center justify-between">
+                            <div>
+                              <div className="text-xs text-[#8E8E93]">投資持倉總市值</div>
+                              <div className="text-2xl font-bold font-mono-num mt-0.5">
+                                {Store.formatMoney(nw.investments, baseCurr, hideMoney)}
+                              </div>
+                            </div>
+                            <span className="text-emerald-400"><Icons.TrendingUp /></span>
+                          </div>
+                          <div className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] flex items-center justify-between text-xs">
+                            <span className="text-[#8E8E93]">進行中定期存款</span>
+                            <span className="font-mono-num font-bold text-white">{state.timeDeposits.length} 筆</span>
                           </div>
                         </div>
-                        <span className="text-[#636366]"><Icons.ChevronRight /></span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => Store.resetToOnboarding()}
-                        className="w-full min-h-[52px] px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.02] active:bg-white/[0.04] transition"
-                      >
-                        <span className="text-sm font-semibold text-amber-300">重新體驗首次 2 步驟引導</span>
-                        <span className="text-[#636366]"><Icons.ChevronRight /></span>
-                      </button>
+                      )}
                     </div>
-                  </section>
 
-                  <div className="text-center text-[11px] font-mono-num text-[#636366] pt-2">
-                    Wealth v{Store.SCHEMA_VERSION} · Stage 0 Ready · Rev #{state.revision}
+                    {/* 極簡 3 點滑動進度指示器 */}
+                    <div className="flex items-center justify-center gap-1.5 pt-2">
+                      {ASSET_SUB_TABS.map(id => (
+                        <span
+                          key={id}
+                          className={`h-1 rounded-full transition-all ${
+                            assetSubTab === id ? 'w-4 bg-white/70' : 'w-1.5 bg-white/20'
+                          }`}
+                        />
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
-            </main>
+                )}
 
-            {/* =====================================================
-                方案 A：iPhone 14 底部 5 格導航列（置中大 ＋ 記帳鍵）
-               ===================================================== */}
-            <nav className="fixed bottom-0 left-0 right-0 z-30 flex justify-center pointer-events-none">
-              <div className="pointer-events-auto w-full max-w-[440px] bg-[#0B0B0D]/92 backdrop-blur-2xl border-t border-white/[0.08] px-2 pt-2 bottom-nav-safe grid grid-cols-5 items-end">
-                {[
-                  { id: 'LEDGER', label: '明細', Icon: Icons.Ledger },
-                  { id: 'ASSETS', label: '資產', Icon: Icons.Assets },
-                  { id: 'ADD',    label: '記一筆', isCenter: true },
-                  { id: 'REPORT', label: '報表', Icon: Icons.Report },
-                  { id: 'SETTINGS', label: '設定', Icon: Icons.Settings }
-                ].map(item => {
-                  if (item.isCenter) {
-                    return (
-                      <div key="ADD" className="flex flex-col items-center justify-center -mt-2">
+                {/* ==================== 分頁 3：報表 ==================== */}
+                {activeTab === 'REPORT' && (
+                  <div className="space-y-4 animate-fade">
+                    <header className="flex items-center justify-between">
+                      <h1 className="text-[22px] font-bold tracking-tight">報表</h1>
+                      <button
+                        type="button"
+                        onClick={() => setHideMoney(!hideMoney)}
+                        className="w-10 h-10 rounded-full bg-[#161618] border border-white/[0.07] text-zinc-400 hover:text-white flex items-center justify-center"
+                      >
+                        {hideMoney ? <Icons.EyeOff /> : <Icons.Eye />}
+                      </button>
+                    </header>
+
+                    <section className="p-5 rounded-3xl bg-[#111113] border border-white/[0.07] space-y-3">
+                      <div className="text-xs text-[#8E8E93]">總淨資產</div>
+                      <div className="text-3xl font-bold font-mono-num">
+                        {Store.formatMoney(nw.netWorth, baseCurr, hideMoney)}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-white/[0.06] text-xs">
+                        <div>
+                          <div className="text-[#8E8E93]">總資產</div>
+                          <div className="font-mono-num font-semibold text-white mt-0.5">
+                            {Store.formatMoney(nw.grossAssets, baseCurr, hideMoney)}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-[#8E8E93]">信用卡未繳</div>
+                          <div className="font-mono-num font-semibold text-rose-400 mt-0.5">
+                            -{Store.formatMoney(nw.debt, baseCurr, hideMoney)}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <div className="p-4 rounded-3xl bg-[#111113] border border-white/[0.06] text-xs text-[#8E8E93] leading-relaxed">
+                      階段 3 將完整接通 MOZE 包含／排除篩選、資金池⇄類別雙向拆解、投資與定存深度圖表，以及 CSV／Markdown 報表匯出。
+                    </div>
+                  </div>
+                )}
+
+                {/* ==================== 分頁 4：設定 ==================== */}
+                {activeTab === 'SETTINGS' && (
+                  <div className="space-y-5 animate-fade">
+                    <header className="flex items-center justify-between">
+                      <h1 className="text-[22px] font-bold tracking-tight">設定</h1>
+                    </header>
+
+                    {/* 數據與備份 */}
+                    <section className="space-y-2">
+                      <h2 className="text-[11px] font-semibold text-[#8E8E93] px-1">數據安全與診斷</h2>
+                      <div className="rounded-3xl bg-[#111113] border border-white/[0.07] divide-y divide-white/[0.06] overflow-hidden">
                         <button
                           type="button"
-                          onClick={() => setShowQuickAdd(true)}
-                          className="w-13 h-11 px-4 rounded-2xl bg-white text-black shadow-[0_6px_22px_rgba(255,255,255,0.22)] flex items-center justify-center active:scale-92 transition"
-                          aria-label="記一筆"
+                          onClick={() => setShowDiagnostics(true)}
+                          className="w-full min-h-[56px] px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.02] active:bg-white/[0.04] transition"
                         >
-                          <Icons.Plus />
+                          <div className="flex items-center gap-3">
+                            <span className="w-9 h-9 rounded-2xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center">
+                              <Icons.Shield />
+                            </span>
+                            <div>
+                              <div className="text-sm font-semibold text-white">帳務一致性診斷</div>
+                              <div className="text-[11px] text-[#8E8E93]">檢查數值、ID 參照與差額回滾對稱性</div>
+                            </div>
+                          </div>
+                          <span className="text-[#636366]"><Icons.ChevronRight /></span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleBackupExport}
+                          className="w-full min-h-[56px] px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.02] active:bg-white/[0.04] transition"
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="w-9 h-9 rounded-2xl bg-sky-500/15 text-sky-400 flex items-center justify-center">
+                              <Icons.Download />
+                            </span>
+                            <div>
+                              <div className="text-sm font-semibold text-white">匯出整機 JSON 備份</div>
+                              <div className="text-[11px] text-[#8E8E93] font-mono-num">
+                                {state.settings.lastBackupAt ? `上次備份 ${state.settings.lastBackupAt}` : '尚未匯出備份'}
+                              </div>
+                            </div>
+                          </div>
+                          <span className="text-[#636366]"><Icons.ChevronRight /></span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="w-full min-h-[56px] px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.02] active:bg-white/[0.04] transition"
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="w-9 h-9 rounded-2xl bg-purple-500/15 text-purple-400 flex items-center justify-center">
+                              <Icons.Refresh />
+                            </span>
+                            <div>
+                              <div className="text-sm font-semibold text-white">從 JSON 備份檔還原</div>
+                              <div className="text-[11px] text-[#8E8E93]">自動執行無損版本遷移</div>
+                            </div>
+                          </div>
+                          <span className="text-[#636366]"><Icons.ChevronRight /></span>
+                        </button>
+                        <input ref={fileInputRef} type="file" accept=".json,application/json" onChange={handleBackupImport} className="hidden" />
+                      </div>
+                    </section>
+
+                    {/* 階段 0 開發與 GitHub Pages 部署工具 */}
+                    <section className="space-y-2">
+                      <h2 className="text-[11px] font-semibold text-[#8E8E93] px-1">GitHub 部署與階段驗證</h2>
+                      <div className="rounded-3xl bg-[#111113] border border-white/[0.07] divide-y divide-white/[0.06] overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setShowGitHubKit(true)}
+                          className="w-full min-h-[56px] px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.02] active:bg-white/[0.04] transition"
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="w-9 h-9 rounded-2xl bg-white/10 text-white flex items-center justify-center">
+                              <Icons.Code />
+                            </span>
+                            <div>
+                              <div className="text-sm font-semibold text-white">匯出 GitHub 零編譯多檔結構</div>
+                              <div className="text-[11px] text-[#8E8E93]">下載 index.html、manifest、sw 與 js/*</div>
+                            </div>
+                          </div>
+                          <span className="text-[#636366]"><Icons.ChevronRight /></span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => Store.resetToOnboarding()}
+                          className="w-full min-h-[52px] px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.02] active:bg-white/[0.04] transition"
+                        >
+                          <span className="text-sm font-semibold text-amber-300">重新體驗首次 2 步驟引導</span>
+                          <span className="text-[#636366]"><Icons.ChevronRight /></span>
                         </button>
                       </div>
-                    );
-                  }
+                    </section>
 
-                  const active = activeTab === item.id;
-                  const IconComp = item.Icon;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setActiveTab(item.id)}
-                      className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition ${
-                        active ? 'text-white' : 'text-[#636366] hover:text-zinc-300'
-                      }`}
-                    >
-                      <IconComp active={active} />
-                      <span className="text-[10px] font-semibold leading-none">{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </nav>
+                    <div className="text-center text-[11px] font-mono-num text-[#636366] pt-2">
+                      Wealth v{Store.SCHEMA_VERSION} · Stage 0 r2 · Rev #{state.revision}
+                    </div>
+                  </div>
+                )}
+              </main>
 
-            {/* 彈出抽屜群 */}
-            {showQuickAdd && (
-              <QuickAddTestSheet
-                state={state}
-                onClose={() => setShowQuickAdd(false)}
-                onSaved={(tx, warnings) => {
-                  setShowQuickAdd(false);
-                  if (warnings.length > 0) {
-                    notify(`已記帳 · 注意：${warnings[0]}`);
-                  } else {
-                    notify(`已記帳 ${Store.formatMoney(tx.amount, tx.currency)} 並即時更新餘額`);
-                  }
-                }}
-              />
-            )}
+              {/* =====================================================
+                  方案 A：緊貼 iPhone 14 螢幕底緣的 5 格導航列
+                  - 資產：短按再點循環子頁 / 長按直達氣泡選單
+                  - 置中 ＋：短按記一筆 / 長按快速選支出、收入、轉帳、應收
+                 ===================================================== */}
+              <nav className="shrink-0 z-30 w-full bg-[#0B0B0D]/95 backdrop-blur-2xl border-t border-white/[0.08] px-2 bottom-nav-safe grid grid-cols-5 items-end">
+                {/* 1. 明細 */}
+                <button
+                  type="button"
+                  onClick={() => switchPrimaryTab('LEDGER')}
+                  className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition active:scale-95 ${
+                    activeTab === 'LEDGER' ? 'text-white' : 'text-[#636366] hover:text-zinc-300'
+                  }`}
+                >
+                  <Icons.Ledger active={activeTab === 'LEDGER'} />
+                  <span className="text-[10px] font-semibold leading-none">明細</span>
+                </button>
 
-            {showDiagnostics && (
-              <DiagnosticsSheet state={state} onClose={() => setShowDiagnostics(false)} />
-            )}
+                {/* 2. 資產（支援再點循環 ＋ 長按快捷選單） */}
+                <button
+                  type="button"
+                  {...assetsNavPress}
+                  className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition active:scale-95 ${
+                    activeTab === 'ASSETS' ? 'text-white' : 'text-[#636366] hover:text-zinc-300'
+                  }`}
+                >
+                  <Icons.Assets active={activeTab === 'ASSETS'} />
+                  <span className="text-[10px] font-semibold leading-none">資產</span>
+                </button>
 
-            {showGitHubKit && (
-              <GitHubKitSheet onClose={() => setShowGitHubKit(false)} onNotify={notify} />
-            )}
+                {/* 3. 置中大 ＋ 記帳鍵（支援短按開記 ＋ 長按快捷選單） */}
+                <div className="flex flex-col items-center justify-center -mt-1.5">
+                  <button
+                    type="button"
+                    {...addNavPress}
+                    className="h-11 px-4 rounded-2xl bg-white text-black shadow-[0_4px_18px_rgba(255,255,255,0.22)] flex items-center justify-center active:scale-90 transition"
+                    aria-label="記一筆（長按可選快捷類型）"
+                  >
+                    <Icons.Plus />
+                  </button>
+                </div>
+
+                {/* 4. 報表 */}
+                <button
+                  type="button"
+                  onClick={() => switchPrimaryTab('REPORT')}
+                  className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition active:scale-95 ${
+                    activeTab === 'REPORT' ? 'text-white' : 'text-[#636366] hover:text-zinc-300'
+                  }`}
+                >
+                  <Icons.Report active={activeTab === 'REPORT'} />
+                  <span className="text-[10px] font-semibold leading-none">報表</span>
+                </button>
+
+                {/* 5. 設定 */}
+                <button
+                  type="button"
+                  onClick={() => switchPrimaryTab('SETTINGS')}
+                  className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition active:scale-95 ${
+                    activeTab === 'SETTINGS' ? 'text-white' : 'text-[#636366] hover:text-zinc-300'
+                  }`}
+                >
+                  <Icons.Settings active={activeTab === 'SETTINGS'} />
+                  <span className="text-[10px] font-semibold leading-none">設定</span>
+                </button>
+              </nav>
+
+              {/* 長按底部「資產」彈出快捷氣泡 */}
+              {quickMenu === 'ASSETS' && (
+                <QuickPopoverMenu
+                  align="left"
+                  title="快速切換資產視角"
+                  onClose={() => setQuickMenu(null)}
+                  items={[
+                    {
+                      id: 'WALLET',
+                      label: '銀包帳戶',
+                      icon: <Icons.Wallet />,
+                      active: activeTab === 'ASSETS' && assetSubTab === 'WALLET',
+                      onSelect: () => {
+                        setActiveTab('ASSETS');
+                        selectAssetSubTab('WALLET');
+                      }
+                    },
+                    {
+                      id: 'CARDS',
+                      label: '信用卡與找數',
+                      icon: <Icons.CreditCard />,
+                      active: activeTab === 'ASSETS' && assetSubTab === 'CARDS',
+                      onSelect: () => {
+                        setActiveTab('ASSETS');
+                        selectAssetSubTab('CARDS');
+                      }
+                    },
+                    {
+                      id: 'WEALTH',
+                      label: '定存與投資',
+                      icon: <Icons.TrendingUp />,
+                      active: activeTab === 'ASSETS' && assetSubTab === 'WEALTH',
+                      onSelect: () => {
+                        setActiveTab('ASSETS');
+                        selectAssetSubTab('WEALTH');
+                      }
+                    }
+                  ]}
+                />
+              )}
+
+              {/* 長按底部置中「＋」彈出快速記帳類型氣泡 */}
+              {quickMenu === 'ADD' && (
+                <QuickPopoverMenu
+                  align="center"
+                  title="快速記帳類型"
+                  onClose={() => setQuickMenu(null)}
+                  items={[
+                    {
+                      id: 'EXPENSE',
+                      label: '記支出',
+                      icon: <Icons.ArrowUpRight />,
+                      iconClass: 'text-rose-400',
+                      onSelect: () => setQuickAddState({ open: true, initialType: 'EXPENSE' })
+                    },
+                    {
+                      id: 'INCOME',
+                      label: '記收入',
+                      icon: <Icons.ArrowDownLeft />,
+                      iconClass: 'text-emerald-400',
+                      onSelect: () => setQuickAddState({ open: true, initialType: 'INCOME' })
+                    },
+                    {
+                      id: 'TRANSFER',
+                      label: '帳戶轉帳',
+                      icon: <Icons.ArrowLeftRight />,
+                      iconClass: 'text-sky-400',
+                      onSelect: () => setQuickAddState({ open: true, initialType: 'TRANSFER' })
+                    },
+                    {
+                      id: 'RECEIVABLE',
+                      label: '應收代墊',
+                      icon: <Icons.Users />,
+                      iconClass: 'text-amber-300',
+                      onSelect: () => setQuickAddState({ open: true, initialType: 'RECEIVABLE' })
+                    }
+                  ]}
+                />
+              )}
+
+              {/* 彈出抽屜群 */}
+              {quickAddState.open && (
+                <QuickAddTestSheet
+                  state={state}
+                  initialType={quickAddState.initialType}
+                  onClose={() => setQuickAddState(prev => ({ ...prev, open: false }))}
+                  onSaved={(tx, warnings) => {
+                    setQuickAddState(prev => ({ ...prev, open: false }));
+                    if (warnings.length > 0) {
+                      notify(`已記帳 · 注意：${warnings[0]}`);
+                    } else {
+                      notify(`已記帳 ${Store.formatMoney(tx.amount, tx.currency)} 並即時更新餘額`);
+                    }
+                  }}
+                />
+              )}
+
+              {showDiagnostics && (
+                <DiagnosticsSheet state={state} onClose={() => setShowDiagnostics(false)} />
+              )}
+
+              {showGitHubKit && (
+                <GitHubKitSheet onClose={() => setShowGitHubKit(false)} onNotify={notify} />
+              )}
+            </div>
           </div>
         );
       }
