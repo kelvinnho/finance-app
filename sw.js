@@ -1,12 +1,12 @@
-const CACHE_NAME = 'wealth-app-v1.9-stage1-m1';
+const CACHE_NAME = 'wealth-app-v1.9-stage1-m2';
 const CORE_ASSETS = [
   './',
   './index.html',
   './manifest.json',
-  './js/store.js?v=1.9.1m1',
-  './js/ui.js?v=1.9.1m1',
-  './js/mod1_wallet.js?v=1.9.1m1',
-  './js/app.js?v=1.9.1m1'
+  './js/store.js?v=1.9.1m2',
+  './js/ui.js?v=1.9.1m2',
+  './js/mod1_wallet.js?v=1.9.1m2',
+  './js/app.js?v=1.9.1m2'
 ];
 
 self.addEventListener('install', e => {

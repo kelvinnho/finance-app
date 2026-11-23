@@ -48,10 +48,10 @@
     (function(){function u(){var a=navigator.userAgent||"",i=/iP(ad|hone|od)/.test(a)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1),s=window.navigator.standalone===true||(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches),r=document.documentElement;if(i&&s){r.classList.add("ios-standalone");var l=window.innerWidth>window.innerHeight,p=l?Math.min(window.screen.width,window.screen.height):Math.max(window.screen.width,window.screen.height),t=Math.max(window.innerHeight||0,p||0);if(t>0)r.style.setProperty("--app-height",t+"px");}else{r.classList.remove("ios-standalone");r.style.setProperty("--app-height","100dvh");}}u();window.addEventListener("resize",u);window.addEventListener("orientationchange",function(){setTimeout(u,120);});window.addEventListener("focusout",function(){setTimeout(u,180);});window.addEventListener("pageshow",u);})();
   </script>
   <div id="root"></div>
-  <script src="./js/store.js?v=1.9.1m1"></script>
-  <script type="text/babel" src="./js/ui.js?v=1.9.1m1"></script>
-  <script type="text/babel" src="./js/mod1_wallet.js?v=1.9.1m1"></script>
-  <script type="text/babel" src="./js/app.js?v=1.9.1m1"></script>
+  <script src="./js/store.js?v=1.9.1m2"></script>
+  <script type="text/babel" src="./js/ui.js?v=1.9.1m2"></script>
+  <script type="text/babel" src="./js/mod1_wallet.js?v=1.9.1m2"></script>
+  <script type="text/babel" src="./js/app.js?v=1.9.1m2"></script>
   <script>
     if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js').catch(() => {}); }
   </script>
