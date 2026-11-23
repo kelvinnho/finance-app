@@ -36,7 +36,7 @@
         }, null, 2);
 
         const swJs = [
-          "const CACHE_NAME = 'wealth-app-v1.9-stage0-r3';",
+          "const CACHE_NAME = 'wealth-app-v1.9-stage0-r5';",
           "const CORE_ASSETS = ['./', './index.html', './manifest.json', './js/store.js', './js/ui.js', './js/app.js'];",
           "self.addEventListener('install', e => {",
           "  e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(CORE_ASSETS)).then(() => self.skipWaiting()));",
@@ -90,7 +90,7 @@
           '    .snap-x-item { scroll-snap-align: start; }',
           '    @keyframes slideUpSheet { from { transform: translateY(100%); opacity: 0.7; } to { transform: translateY(0); opacity: 1; } }',
           '    .animate-sheet-up { animation: slideUpSheet 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards; }',
-          '    @keyframes popUpMenu { from { transform: translateY(10px) scale(0.95); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }',
+          '    @keyframes popUpMenu { from { transform: scale(0.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }',
           '    .animate-pop-up { animation: popUpMenu 0.18s cubic-bezier(0.22, 1, 0.36, 1) forwards; }',
           '    @keyframes slideFromRight { from { transform: translateX(18px); opacity: 0.4; } to { transform: translateX(0); opacity: 1; } }',
           '    .animate-slide-left { animation: slideFromRight 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards; }',
@@ -119,9 +119,9 @@
         return [
           { path: 'index.html',    desc: 'GitHub Pages 載入外殼 (含 iOS Standalone 實體高度修正)', content: loaderHtml, mime: 'text/html;charset=utf-8;' },
           { path: 'manifest.json', desc: 'iPhone 主畫面 PWA 設定檔',                               content: manifestJson, mime: 'application/json;charset=utf-8;' },
-          { path: 'sw.js',         desc: '離線快取 Service Worker (v1.9-r3)',                      content: swJs, mime: 'application/javascript;charset=utf-8;' },
+          { path: 'sw.js',         desc: '離線快取 Service Worker (v1.9-r5)',                      content: swJs, mime: 'application/javascript;charset=utf-8;' },
           { path: 'js/store.js',   desc: 'Schema v1.9 狀態中心、回滾與視區診斷',                    content: readModule('js/store.js'), mime: 'application/javascript;charset=utf-8;' },
-          { path: 'js/ui.js',      desc: '純黑設計系統、無誤關長按與滑選選單元件',                  content: readModule('js/ui.js'), mime: 'application/javascript;charset=utf-8;' },
+          { path: 'js/ui.js',      desc: '純黑設計系統、螢幕邊界自動鉗制長按與滑選選單元件',        content: readModule('js/ui.js'), mime: 'application/javascript;charset=utf-8;' },
           { path: 'js/app.js',     desc: '主導航外殼、左右滑動與單手快捷路由',                      content: readModule('js/app.js'), mime: 'application/javascript;charset=utf-8;' }
         ];
       }
@@ -942,7 +942,7 @@
                     </section>
 
                     <div className="text-center text-[11px] font-mono-num text-[#636366] pt-2">
-                      Wealth v{Store.SCHEMA_VERSION} · Stage 0 r3 · Rev #{state.revision}
+                      Wealth v{Store.SCHEMA_VERSION} · Stage 0 r5 · Rev #{state.revision}
                     </div>
                   </div>
                 )}

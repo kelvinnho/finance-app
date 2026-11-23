@@ -1,5 +1,5 @@
 (() => {
-      const { useState, useEffect, useRef } = React;
+      const { useState, useEffect, useLayoutEffect, useRef } = React;
 
       const Icons = {
         Ledger: ({ active }) => (
@@ -172,6 +172,7 @@
         const timerRef = useRef(null);
         const longFiredRef = useRef(false);
         const movedBeforeLongRef = useRef(false);
+        const activePressRef = useRef(false);
         const startPosRef = useRef({ x: 0, y: 0 });
         const lastTouchAtRef = useRef(0);
 
@@ -184,6 +185,7 @@
 
         const start = (x, y) => {
           clearTimer();
+          activePressRef.current = true;
           longFiredRef.current = false;
           movedBeforeLongRef.current = false;
           startPosRef.current = { x, y };
@@ -199,6 +201,7 @@
         };
 
         const move = (x, y) => {
+          if (!activePressRef.current) return;
           if (longFiredRef.current) {
             if (onLongDragMove) onLongDragMove(x, y);
             return;
@@ -211,6 +214,8 @@
 
         const end = (x, y) => {
           clearTimer();
+          if (!activePressRef.current) return;
+          activePressRef.current = false;
           if (longFiredRef.current) {
             longFiredRef.current = false;
             if (onLongDragEnd) onLongDragEnd(x, y);
@@ -221,53 +226,90 @@
           }
         };
 
+        const cancel = () => {
+          clearTimer();
+          activePressRef.current = false;
+          longFiredRef.current = false;
+        };
+
         return {
           onTouchStart: (e) => {
             lastTouchAtRef.current = Date.now();
-            const t = e.touches[0];
+            const t = e.touches && e.touches[0];
             if (t) start(t.clientX, t.clientY);
           },
           onTouchMove: (e) => {
-            const t = e.touches[0];
+            const t = e.touches && e.touches[0];
             if (t) move(t.clientX, t.clientY);
           },
           onTouchEnd: (e) => {
             lastTouchAtRef.current = Date.now();
-            const t = e.changedTouches[0];
-            end(t ? t.clientX : 0, t ? t.clientY : 0);
+            const t = e.changedTouches && e.changedTouches[0];
+            if (t) end(t.clientX, t.clientY);
+            else cancel();
           },
           onTouchCancel: () => {
-            clearTimer();
-            longFiredRef.current = false;
+            cancel();
           },
           onMouseDown: (e) => {
-            if (Date.now() - lastTouchAtRef.current < 500) return;
+            if (Date.now() - lastTouchAtRef.current < 600) return;
             if (e.button !== 0) return;
             start(e.clientX, e.clientY);
           },
           onMouseMove: (e) => {
-            if (Date.now() - lastTouchAtRef.current < 500) return;
-            if (timerRef.current || longFiredRef.current) move(e.clientX, e.clientY);
+            if (Date.now() - lastTouchAtRef.current < 600) return;
+            move(e.clientX, e.clientY);
           },
           onMouseUp: (e) => {
-            if (Date.now() - lastTouchAtRef.current < 500) return;
+            if (Date.now() - lastTouchAtRef.current < 600) return;
             end(e.clientX, e.clientY);
           },
           onMouseLeave: () => {
-            if (!longFiredRef.current) clearTimer();
-          },
-          onContextMenu: (e) => e.preventDefault()
+            if (Date.now() - lastTouchAtRef.current < 600) return;
+            if (!longFiredRef.current) cancel();
+          }
         };
       }
 
-      // 底部導航長按浮動快捷選單（徹底修復鬆手即消失 Bug：僅監聽空白處的新按下事件關閉）
-      function QuickPopoverMenu({ align = 'center', title, items, hoveredItemId = null, onClose }) {
+      // 底部導航長按浮動快捷選單（自動鉗制於螢幕左右 16px 安全邊界內，供所有分頁與按鈕共用）
+      function QuickPopoverMenu({ align = 'center', anchorX = null, title, items, hoveredItemId = null, onClose }) {
         const mountedAtRef = useRef(Date.now());
-        const alignClass = align === 'left'
-          ? 'left-4'
-          : align === 'right'
-          ? 'right-4'
-          : 'left-1/2 -translate-x-1/2';
+        const frameRef = useRef(null);
+        const [boxStyle, setBoxStyle] = useState({ left: 16, width: 224, origin: 'bottom center' });
+
+        useLayoutEffect(() => {
+          const updatePosition = () => {
+            const frameEl = frameRef.current;
+            const rect = frameEl ? frameEl.getBoundingClientRect() : { left: 0, width: Math.min(window.innerWidth, 440) };
+            const frameW = rect.width || Math.min(window.innerWidth, 440);
+            const safeMargin = 16;
+            const menuW = Math.min(224, Math.max(180, frameW - safeMargin * 2));
+
+            let desiredLeft = (frameW - menuW) / 2;
+            let origin = 'bottom center';
+
+            if (typeof anchorX === 'number') {
+              desiredLeft = anchorX - rect.left - menuW / 2;
+            } else if (align === 'left') {
+              desiredLeft = safeMargin;
+              origin = 'bottom left';
+            } else if (align === 'right') {
+              desiredLeft = frameW - menuW - safeMargin;
+              origin = 'bottom right';
+            }
+
+            // 強制鉗制在 [16px, frameW - menuW - 16px] 範圍內，保證左右兩側絕不被裁切
+            const clampedLeft = Math.max(safeMargin, Math.min(frameW - menuW - safeMargin, desiredLeft));
+            if (clampedLeft <= safeMargin + 4) origin = 'bottom left';
+            else if (clampedLeft >= frameW - menuW - safeMargin - 4) origin = 'bottom right';
+
+            setBoxStyle({ left: Math.round(clampedLeft), width: Math.round(menuW), origin });
+          };
+
+          updatePosition();
+          window.addEventListener('resize', updatePosition);
+          return () => window.removeEventListener('resize', updatePosition);
+        }, [align, anchorX]);
 
         const handleBackdropPress = (e) => {
           // 僅當使用者「全新按下」黑色空白遮罩時才關閉；長按後的鬆手 touchend/click 絕不觸發關閉
@@ -283,47 +325,56 @@
             onMouseDown={handleBackdropPress}
             className="app-overlay z-40 bg-black/50 backdrop-blur-[2px] animate-fade"
           >
-            <div className="w-full max-w-[440px] mx-auto h-full relative pointer-events-none">
+            <div ref={frameRef} className="w-full max-w-[440px] mx-auto h-full relative pointer-events-none">
               <div
-                style={{ bottom: 'calc(max(22px, var(--safe-bottom)) + 68px)' }}
-                className={`pointer-events-auto absolute ${alignClass} w-56 rounded-3xl bg-[#1C1C1E]/95 border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl p-2 space-y-1 animate-pop-up`}
+                style={{
+                  left: `${boxStyle.left}px`,
+                  width: `${boxStyle.width}px`,
+                  bottom: 'calc(max(22px, var(--safe-bottom)) + 68px)'
+                }}
+                className="pointer-events-auto absolute"
               >
-                {title && (
-                  <div className="px-3 pt-1.5 pb-1 text-[10px] font-semibold text-[#8E8E93] tracking-wide flex items-center justify-between">
-                    <span>{title}</span>
-                    <span className="text-[9px] text-[#636366]">點選或滑選</span>
-                  </div>
-                )}
-                {items.map(it => {
-                  const isHighlighted = hoveredItemId === it.id;
-                  return (
-                    <button
-                      key={it.id}
-                      type="button"
-                      data-quick-item-id={it.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        it.onSelect();
-                        onClose();
-                      }}
-                      className={`w-full min-h-[46px] px-3.5 rounded-2xl flex items-center justify-between gap-2.5 text-left transition active:scale-[0.98] ${
-                        isHighlighted
-                          ? 'bg-white text-black font-bold scale-[1.02] shadow-md'
-                          : it.active
-                          ? 'bg-white/15 text-white font-bold'
-                          : 'text-white hover:bg-white/[0.08] font-medium'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0 pointer-events-none">
-                        <span className={isHighlighted ? 'text-black' : (it.iconClass || 'text-zinc-300')}>
-                          {it.icon}
-                        </span>
-                        <span className="text-xs truncate">{it.label}</span>
-                      </div>
-                      {it.active && !isHighlighted && <Icons.Check />}
-                    </button>
-                  );
-                })}
+                <div
+                  style={{ transformOrigin: boxStyle.origin }}
+                  className="w-full rounded-3xl bg-[#1C1C1E]/95 border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl p-2 space-y-1 animate-pop-up"
+                >
+                  {title && (
+                    <div className="px-3 pt-1.5 pb-1 text-[10px] font-semibold text-[#8E8E93] tracking-wide flex items-center justify-between gap-2">
+                      <span className="truncate">{title}</span>
+                      <span className="text-[9px] text-[#636366] shrink-0">點選或滑選</span>
+                    </div>
+                  )}
+                  {items.map(it => {
+                    const isHighlighted = hoveredItemId === it.id;
+                    return (
+                      <button
+                        key={it.id}
+                        type="button"
+                        data-quick-item-id={it.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          it.onSelect();
+                          onClose();
+                        }}
+                        className={`w-full min-h-[46px] px-3.5 rounded-2xl flex items-center justify-between gap-2.5 text-left transition active:scale-[0.98] ${
+                          isHighlighted
+                            ? 'bg-white text-black font-bold scale-[1.02] shadow-md'
+                            : it.active
+                            ? 'bg-white/15 text-white font-bold'
+                            : 'text-white hover:bg-white/[0.08] font-medium'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 pointer-events-none">
+                          <span className={isHighlighted ? 'text-black' : (it.iconClass || 'text-zinc-300')}>
+                            {it.icon}
+                          </span>
+                          <span className="text-xs truncate">{it.label}</span>
+                        </div>
+                        {it.active && !isHighlighted && <Icons.Check />}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           </div>
