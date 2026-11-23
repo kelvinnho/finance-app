@@ -501,7 +501,6 @@
           ]
         };
 
-        // 寫入當月真實快照
         const snap = computeNetWorthSummary(state);
         state.netWorthSnapshots.push({
           month: ym,
@@ -515,7 +514,6 @@
         return state;
       }
 
-      // 無損版本遷移管線 (Schema Migration Pipeline)
       function migrateState(raw) {
         if (!raw || typeof raw !== 'object') return null;
 
@@ -566,7 +564,6 @@
         };
       }
 
-      // 匯率折算至主貨幣
       function convertToBase(state, amount, currency) {
         const val = Number(amount) || 0;
         const base = state?.settings?.baseCurrency || 'MOP';
@@ -586,7 +583,6 @@
         })}`;
       }
 
-      // 動態計算信用卡截數日、到期日與剩餘天數（修訂缺口 #1）
       function computeDynamicCardCycle(billingDay, dueDay, refDate = new Date()) {
         const bDay = Math.min(31, Math.max(1, Number(billingDay) || 1));
         const dDay = Math.min(31, Math.max(1, Number(dueDay) || 1));
@@ -623,7 +619,6 @@
         };
       }
 
-      // 跨模組單一事實來源總淨資產計算（現金歸模組一、持倉歸模組四，絕不重複計算）
       function computeNetWorthSummary(state) {
         let liquidCash = 0;
         let lockedAndFrozen = 0;
@@ -675,7 +670,6 @@
         };
       }
 
-      // 扁平化查詢所有銀包帳戶與信用卡
       function getFlatAccounts(state) {
         const list = [];
         (state.walletCards || []).forEach(c => {
@@ -719,8 +713,6 @@
         return list;
       }
 
-      // 核心差額回滾連動引擎 (Delta Rollback Engine)
-      // direction = +1 套用交易影響；direction = -1 完整回滾舊影響
       function applyTransactionDelta(prevState, tx, direction = 1) {
         if (!tx) return { state: prevState, warnings: [] };
         if ((tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE') && tx.receivableMode === 'EXISTING') {
@@ -732,11 +724,7 @@
         const amt = rawAmt * direction;
         if (amt === 0) return { state: prevState, warnings: [] };
 
-        let nextWalletCards = prevState.walletCards;
-        let nextCreditCards = prevState.creditCards;
-
-        // 1. 檢查是否作用於銀包帳戶 (BANK / EWALLET / INVEST)
-        nextWalletCards = (prevState.walletCards || []).map(card => ({
+        let nextWalletCards = (prevState.walletCards || []).map(card => ({
           ...card,
           accounts: (card.accounts || []).map(acc => {
             let delta = 0;
@@ -757,8 +745,7 @@
           })
         }));
 
-        // 2. 檢查是否作用於信用卡（同步更新雙週期三池帳單 ＋ 免年費進度）
-        nextCreditCards = (prevState.creditCards || []).map(cc => {
+        let nextCreditCards = (prevState.creditCards || []).map(cc => {
           if (cc.id !== tx.accountId) return cc;
           if (tx.type === 'TRANSFER' || tx.type === 'SETTLEMENT') return cc;
 
@@ -790,7 +777,6 @@
                 }
               };
 
-          // 同步推進免年費進度 (修訂缺口 #2)
           let nextFee = cc.annualFee;
           if (cc.annualFee?.hasFee && (tx.type === 'EXPENSE' || tx.type === 'RECEIVABLE')) {
             const feeStep = cc.annualFee.waiverType === 'SWIPE_COUNT'
@@ -819,11 +805,9 @@
         };
       }
 
-      // 內建帳務一致性自檢引擎 (Debug by Design)
       function runConsistencyDiagnostics(state) {
         const checks = [];
 
-        // 1. 檢查數值健康度 (有無 NaN / Infinity)
         let nanCount = 0;
         (state.walletCards || []).forEach(c => (c.accounts || []).forEach(a => {
           if (!Number.isFinite(Number(a.balance))) nanCount += 1;
@@ -841,7 +825,6 @@
           detail: nanCount === 0 ? '全部帳戶、信用卡與交易金額數值正常' : `發現 ${nanCount} 處異常數值`
         });
 
-        // 2. 檢查參照完整性 (所有交易與帳戶的 bucketId / accountId 是否皆可解析)
         const validBucketIds = new Set((state.settings?.buckets || []).map(b => b.id));
         const validAccIds = new Set(getFlatAccounts(state).map(a => a.id));
         let orphanRefs = 0;
@@ -856,7 +839,6 @@
           detail: orphanRefs === 0 ? '所有交易皆正確關聯有效資金池與帳戶 ID' : `發現 ${orphanRefs} 筆孤兒 ID 參照`
         });
 
-        // 3. 記憶體內差額回滾對稱性測試 (Add -> Edit -> Delete 精準歸零驗證)
         const accounts = getFlatAccounts(state);
         const testAcc = accounts[0];
         let symmetryPass = true;
@@ -890,7 +872,6 @@
           detail: symmetryDetail
         });
 
-        // 4. 檢查 Schema 版本與備份狀態
         checks.push({
           id: 'schema',
           title: `統一資料結構 Schema v${SCHEMA_VERSION}`,
@@ -898,13 +879,25 @@
           detail: `Revision #${state.revision} · 最後更新 ${(state.lastModifiedAt || '').slice(0, 16).replace('T', ' ')}`
         });
 
+        // 裝置視區自檢資訊（協助 iPhone 14 PWA 實機排查）
+        try {
+          const isStandalone = window.navigator.standalone === true ||
+            (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+          const appH = getComputedStyle(document.documentElement).getPropertyValue('--app-height').trim() || '100dvh';
+          checks.push({
+            id: 'viewport',
+            title: '裝置視區與 PWA 適配狀態',
+            pass: true,
+            detail: `${isStandalone ? '主畫面 PWA' : '瀏覽器模式'} · screen ${window.screen.width}×${window.screen.height} · inner ${window.innerWidth}×${window.innerHeight} · height ${appH}`
+          });
+        } catch (e) {}
+
         return {
           allPassed: checks.every(c => c.pass),
           checks
         };
       }
 
-      // 雲端同步衝突防呆判斷（防止新機空白資料覆蓋雲端帳本）
       function evaluateCloudConflict(localState, remoteState) {
         if (!remoteState) return { action: 'PUSH_LOCAL', reason: '雲端尚無備份，可安全上傳本機帳本' };
         const localCount = (localState.transactions || []).length + (localState.investments || []).length;
@@ -920,7 +913,6 @@
         return { action: 'PUSH_LOCAL', reason: '本機版本較新，可安全推送至雲端' };
       }
 
-      // 讀取本地狀態（若首次開啟則回傳 onboardingCompleted: false 的待引導狀態）
       function loadInitialState() {
         try {
           if (typeof window !== 'undefined' && window.localStorage) {
@@ -932,7 +924,6 @@
           }
         } catch (e) {}
 
-        // 首次開啟：尚未完成引導
         return {
           ...createBlankState('MOP'),
           onboardingCompleted: false
@@ -960,14 +951,11 @@
         SCHEMA_VERSION,
         STORAGE_KEY,
         CURRENCY_META,
-
         getState: () => currentState,
-
         subscribe: (fn) => {
           listeners.add(fn);
           return () => listeners.delete(fn);
         },
-
         setState: (updater) => {
           const draft = typeof updater === 'function' ? updater(currentState) : updater;
           if (!draft) return;
@@ -981,8 +969,6 @@
           emit();
           return currentState;
         },
-
-        // 首次引導完成：建立範例帳本或空白帳本
         completeOnboarding: (baseCurrency, mode) => {
           const next = mode === 'DEMO'
             ? createDemoState(baseCurrency)
@@ -992,15 +978,11 @@
           emit();
           return currentState;
         },
-
-        // 重新進入引導（方便測試）
         resetToOnboarding: () => {
           currentState = { ...createBlankState(currentState.settings.baseCurrency), onboardingCompleted: false };
           persist(currentState);
           emit();
         },
-
-        // 寫入單筆交易並即時觸發差額回滾與連動
         saveTransaction: (tx) => {
           let warnings = [];
           WealthStore.setState(prev => {
@@ -1016,7 +998,6 @@
               ? (applied.state.transactions || []).map(t => t.id === tx.id ? tx : t)
               : [tx, ...(applied.state.transactions || [])];
 
-            // 同步更新當月淨資產快照
             const snap = computeNetWorthSummary(applied.state);
             const curMonth = todayISO().slice(0, 7);
             const otherSnaps = (applied.state.netWorthSnapshots || []).filter(s => s.month !== curMonth);
@@ -1032,7 +1013,6 @@
           });
           return { warnings };
         },
-
         deleteTransaction: (txId) => {
           WealthStore.setState(prev => {
             const target = (prev.transactions || []).find(t => t.id === txId);
@@ -1044,7 +1024,6 @@
             };
           });
         },
-
         importFullBackup: (rawObj) => {
           const migrated = migrateState(rawObj);
           if (!migrated) throw new Error('無效的備份檔格式');
@@ -1053,8 +1032,6 @@
           emit();
           return currentState;
         },
-
-        // 工具函式輸出
         convertToBase,
         formatMoney,
         computeDynamicCardCycle,

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'wealth-app-v1.9-stage0-r2';
+const CACHE_NAME = 'wealth-app-v1.9-stage0-r3';
 const CORE_ASSETS = ['./', './index.html', './manifest.json', './js/store.js', './js/ui.js', './js/app.js'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(CORE_ASSETS)).then(() => self.skipWaiting()));

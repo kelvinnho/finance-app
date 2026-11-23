@@ -17,7 +17,6 @@
 
       const ASSET_SUB_TABS = ['WALLET', 'CARDS', 'WEALTH'];
 
-      // 生成 GitHub Pages 零編譯多檔案部署檔案內容（零重複程式碼，直接抽取 DOM 內的模組腳本）
       function buildGitHubKitFiles() {
         const readModule = (name) => {
           const el = document.querySelector(`script[data-module="${name}"]`);
@@ -37,7 +36,7 @@
         }, null, 2);
 
         const swJs = [
-          "const CACHE_NAME = 'wealth-app-v1.9-stage0-r2';",
+          "const CACHE_NAME = 'wealth-app-v1.9-stage0-r3';",
           "const CORE_ASSETS = ['./', './index.html', './manifest.json', './js/store.js', './js/ui.js', './js/app.js'];",
           "self.addEventListener('install', e => {",
           "  e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(CORE_ASSETS)).then(() => self.skipWaiting()));",
@@ -75,15 +74,17 @@
           '  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin>' + sClose,
           '  <script src="https://unpkg.com/@babel/standalone/babel.min.js">' + sClose,
           '  <style>',
-          '    :root { --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px); }',
-          '    html, body, #root { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, Inter, Noto Sans TC, sans-serif; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; overscroll-behavior: none; }',
+          '    :root { --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px); --app-height: 100dvh; }',
+          '    html, body, #root { margin: 0; padding: 0; width: 100%; height: var(--app-height, 100dvh); min-height: var(--app-height, 100dvh); overflow: hidden; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, Inter, Noto Sans TC, sans-serif; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; overscroll-behavior: none; }',
           '    input, select, textarea { font-size: 16px !important; -webkit-user-select: text; user-select: text; }',
           '    button { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }',
           '    .font-mono-num { font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; }',
-          '    .app-viewport { position: fixed; inset: 0; width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: #000; }',
+          '    .app-viewport { position: fixed; top: 0; left: 0; right: 0; width: 100%; height: var(--app-height, 100dvh); display: flex; flex-direction: column; overflow: hidden; background: #000; }',
+          '    .app-overlay { position: fixed; top: 0; left: 0; right: 0; width: 100%; height: var(--app-height, 100dvh); }',
           '    .app-shell-frame { width: 100%; max-width: 440px; height: 100%; margin: 0 auto; display: flex; flex-direction: column; overflow: hidden; padding-top: var(--safe-top); position: relative; }',
           '    .app-scroll-main { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; }',
-          '    .bottom-nav-safe { padding-top: 8px; padding-bottom: max(10px, calc(var(--safe-bottom) - 10px)); }',
+          '    .bottom-nav-safe { padding-top: 8px; padding-bottom: max(10px, var(--safe-bottom)); }',
+          '    html.ios-standalone .bottom-nav-safe { padding-top: 8px; padding-bottom: max(22px, var(--safe-bottom)); }',
           '    .sheet-safe { padding-bottom: calc(var(--safe-bottom) + 20px); }',
           '    .snap-x-rail { scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; }',
           '    .snap-x-item { scroll-snap-align: start; }',
@@ -101,6 +102,9 @@
           '  </style>',
           '</head>',
           '<body class="bg-black text-white select-none">',
+          '  <script>',
+          '    (function(){function u(){var a=navigator.userAgent||"",i=/iP(ad|hone|od)/.test(a)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1),s=window.navigator.standalone===true||(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches),r=document.documentElement;if(i&&s){r.classList.add("ios-standalone");var l=window.innerWidth>window.innerHeight,p=l?Math.min(window.screen.width,window.screen.height):Math.max(window.screen.width,window.screen.height),t=Math.max(window.innerHeight||0,p||0);if(t>0)r.style.setProperty("--app-height",t+"px");}else{r.classList.remove("ios-standalone");r.style.setProperty("--app-height","100dvh");}}u();window.addEventListener("resize",u);window.addEventListener("orientationchange",function(){setTimeout(u,120);});window.addEventListener("focusout",function(){setTimeout(u,180);});window.addEventListener("pageshow",u);})();',
+          '  ' + sClose,
           '  <div id="root"></div>',
           '  <script src="./js/store.js">' + sClose,
           '  <script type="text/babel" src="./js/ui.js">' + sClose,
@@ -113,16 +117,15 @@
         ].join('\n');
 
         return [
-          { path: 'index.html',    desc: 'GitHub Pages 載入外殼 (含 iPhone 14 貼底適配)', content: loaderHtml, mime: 'text/html;charset=utf-8;' },
-          { path: 'manifest.json', desc: 'iPhone 主畫面 PWA 設定檔',                        content: manifestJson, mime: 'application/json;charset=utf-8;' },
-          { path: 'sw.js',         desc: '離線快取 Service Worker (v1.9-r2)',               content: swJs, mime: 'application/javascript;charset=utf-8;' },
-          { path: 'js/store.js',   desc: 'Schema v1.9 狀態中心、回滾與診斷引擎',             content: readModule('js/store.js'), mime: 'application/javascript;charset=utf-8;' },
-          { path: 'js/ui.js',      desc: '純黑設計系統、手勢控制器與長按選單元件',           content: readModule('js/ui.js'), mime: 'application/javascript;charset=utf-8;' },
-          { path: 'js/app.js',     desc: '主導航外殼、左右滑動與單手快捷路由',               content: readModule('js/app.js'), mime: 'application/javascript;charset=utf-8;' }
+          { path: 'index.html',    desc: 'GitHub Pages 載入外殼 (含 iOS Standalone 實體高度修正)', content: loaderHtml, mime: 'text/html;charset=utf-8;' },
+          { path: 'manifest.json', desc: 'iPhone 主畫面 PWA 設定檔',                               content: manifestJson, mime: 'application/json;charset=utf-8;' },
+          { path: 'sw.js',         desc: '離線快取 Service Worker (v1.9-r3)',                      content: swJs, mime: 'application/javascript;charset=utf-8;' },
+          { path: 'js/store.js',   desc: 'Schema v1.9 狀態中心、回滾與視區診斷',                    content: readModule('js/store.js'), mime: 'application/javascript;charset=utf-8;' },
+          { path: 'js/ui.js',      desc: '純黑設計系統、無誤關長按與滑選選單元件',                  content: readModule('js/ui.js'), mime: 'application/javascript;charset=utf-8;' },
+          { path: 'js/app.js',     desc: '主導航外殼、左右滑動與單手快捷路由',                      content: readModule('js/app.js'), mime: 'application/javascript;charset=utf-8;' }
         ];
       }
 
-      // 階段 0 置中「＋」快速記帳驗證抽屜（支援支出／收入／轉帳／應收與長按直達預選）
       function QuickAddTestSheet({ state, initialType = 'EXPENSE', onClose, onSaved }) {
         const flatAccounts = useMemo(() => Store.getFlatAccounts(state), [state]);
         const cashAccounts = useMemo(() => flatAccounts.filter(a => a.kind !== 'CREDIT'), [flatAccounts]);
@@ -296,7 +299,6 @@
         );
       }
 
-      // 內建帳務一致性診斷抽屜
       function DiagnosticsSheet({ state, onClose }) {
         const result = useMemo(() => Store.runConsistencyDiagnostics(state), [state]);
 
@@ -311,7 +313,7 @@
                 <div key={c.id} className="p-3.5 rounded-2xl bg-[#111113] border border-white/[0.07] flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-xs font-semibold text-white">{c.title}</div>
-                    <div className="text-[11px] text-[#8E8E93] mt-1 font-mono-num">{c.detail}</div>
+                    <div className="text-[11px] text-[#8E8E93] mt-1 font-mono-num break-all">{c.detail}</div>
                   </div>
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
                     c.pass ? 'bg-emerald-500/15 text-emerald-400' : 'bg-rose-500/15 text-rose-400'
@@ -325,14 +327,13 @@
         );
       }
 
-      // GitHub 零編譯多檔案結構匯出抽屜
       function GitHubKitSheet({ onClose, onNotify }) {
         const files = useMemo(() => buildGitHubKitFiles(), []);
 
         return (
           <BottomSheet
             title="GitHub 零編譯多檔匯出"
-            subtitle="階段 0 骨架檔案，可直接上傳至 GitHub 倉庫啟用 Pages"
+            subtitle="階段 0 r3 骨架檔案，可直接覆蓋上傳至 GitHub 倉庫"
             onClose={onClose}
           >
             <div className="space-y-2">
@@ -360,15 +361,15 @@
         );
       }
 
-      // 主應用外殼
       function WealthAppShell() {
         const state = useWealthStore();
-        const [activeTab, setActiveTab] = useState('LEDGER'); // LEDGER | ASSETS | REPORT | SETTINGS
-        const [assetSubTab, setAssetSubTab] = useState('WALLET'); // WALLET | CARDS | WEALTH
+        const [activeTab, setActiveTab] = useState('LEDGER');
+        const [assetSubTab, setAssetSubTab] = useState('WALLET');
         const [assetSlideAnim, setAssetSlideAnim] = useState('animate-fade');
         const [hideMoney, setHideMoney] = useState(() => !!state.settings?.preferences?.hideBalancesOnLaunch);
         const [quickAddState, setQuickAddState] = useState({ open: false, initialType: 'EXPENSE' });
         const [quickMenu, setQuickMenu] = useState(null); // null | 'ASSETS' | 'ADD'
+        const [hoveredQuickItem, setHoveredQuickItem] = useState(null);
         const [showDiagnostics, setShowDiagnostics] = useState(false);
         const [showGitHubKit, setShowGitHubKit] = useState(false);
         const [toastMsg, setToastMsg] = useState('');
@@ -382,7 +383,6 @@
           toastRef.current = setTimeout(() => setToastMsg(''), 3000);
         };
 
-        // 切換資產子分頁（附帶方向過渡動畫）
         const selectAssetSubTab = (nextId, dir = null) => {
           const curIdx = ASSET_SUB_TABS.indexOf(assetSubTab);
           const nextIdx = ASSET_SUB_TABS.indexOf(nextId);
@@ -396,7 +396,24 @@
           setAssetSubTab(nextId);
         };
 
-        // 資產頁左右滑動手勢切換：銀包 ⇄ 信用卡 ⇄ 定存投資
+        // 偵測手指滑動停留在哪一個快捷選單欄目上方
+        const detectQuickItemAtPoint = (x, y) => {
+          const el = document.elementFromPoint(x, y);
+          const btn = el && el.closest ? el.closest('[data-quick-item-id]') : null;
+          return btn ? btn.getAttribute('data-quick-item-id') : null;
+        };
+
+        // 執行快捷選單項目動作（同時供「點選」與「長按滑選」共用）
+        const runQuickMenuAction = (menuType, itemId) => {
+          if (menuType === 'ASSETS') {
+            setActiveTab('ASSETS');
+            selectAssetSubTab(itemId);
+            if (scrollMainRef.current) scrollMainRef.current.scrollTop = 0;
+          } else if (menuType === 'ADD') {
+            setQuickAddState({ open: true, initialType: itemId });
+          }
+        };
+
         const assetSwipeHandlers = useHorizontalSwipe({
           enabled: activeTab === 'ASSETS',
           onSwipeLeft: () => {
@@ -413,7 +430,7 @@
           }
         });
 
-        // 底部「資產」按鈕：短按進入 / 再點循環切換子頁；長按彈出直達氣泡選單
+        // 底部「資產」按鈕：短按進入/循環；長按彈出選單（原地鬆手停留可點，或直接滑到項目鬆手）
         const assetsNavPress = useLongPress({
           onTap: () => {
             if (activeTab === 'ASSETS') {
@@ -426,17 +443,43 @@
             }
           },
           onLongPress: () => {
+            setHoveredQuickItem(null);
             setQuickMenu('ASSETS');
+          },
+          onLongDragMove: (x, y) => {
+            setHoveredQuickItem(detectQuickItemAtPoint(x, y));
+          },
+          onLongDragEnd: (x, y) => {
+            const hitId = detectQuickItemAtPoint(x, y);
+            setHoveredQuickItem(null);
+            if (hitId) {
+              runQuickMenuAction('ASSETS', hitId);
+              setQuickMenu(null);
+            }
+            // 若手指未滑到任何欄目上而原地鬆手，選單會穩穩保持開啟等待點選
           }
         });
 
-        // 底部置中「＋」按鈕：短按開啟記帳；長按彈出快速類型選單（支出／收入／轉帳／應收）
+        // 底部置中「＋」按鈕：短按記支出；長按彈出快速類型選單
         const addNavPress = useLongPress({
           onTap: () => setQuickAddState({ open: true, initialType: 'EXPENSE' }),
-          onLongPress: () => setQuickMenu('ADD')
+          onLongPress: () => {
+            setHoveredQuickItem(null);
+            setQuickMenu('ADD');
+          },
+          onLongDragMove: (x, y) => {
+            setHoveredQuickItem(detectQuickItemAtPoint(x, y));
+          },
+          onLongDragEnd: (x, y) => {
+            const hitId = detectQuickItemAtPoint(x, y);
+            setHoveredQuickItem(null);
+            if (hitId) {
+              runQuickMenuAction('ADD', hitId);
+              setQuickMenu(null);
+            }
+          }
         });
 
-        // 若尚未完成首次 2 步驟引導，顯示 Onboarding
         if (!state.onboardingCompleted) {
           return (
             <OnboardingFlow
@@ -493,15 +536,11 @@
             <div className="app-shell-frame bg-black text-white">
               <Toast message={toastMsg} />
 
-              {/* =====================================================
-                  獨立內部主滾動視區（底部導航永不飄浮、不抖動）
-                 ===================================================== */}
               <main
                 ref={scrollMainRef}
                 {...assetSwipeHandlers}
                 className="app-scroll-main px-4 pt-4 pb-6 space-y-5"
               >
-
                 {/* ==================== 分頁 1：明細 ==================== */}
                 {activeTab === 'LEDGER' && (
                   <div className="space-y-4 animate-fade">
@@ -524,7 +563,6 @@
                       </button>
                     </header>
 
-                    {/* 階段 0 即時連結狀態卡 */}
                     <section className="p-4 rounded-3xl bg-[#111113] border border-white/[0.07] flex items-center justify-between">
                       <div>
                         <div className="text-xs text-[#8E8E93]">總淨資產</div>
@@ -540,7 +578,6 @@
                       </div>
                     </section>
 
-                    {/* 即時帳目清單（點擊置中 ＋ 新增會立刻出現並扣減餘額） */}
                     <section className="space-y-2.5">
                       <div className="flex items-center justify-between px-0.5">
                         <h2 className="text-xs font-semibold text-[#8E8E93]">最近紀錄 ({state.transactions.length})</h2>
@@ -611,7 +648,7 @@
                   </div>
                 )}
 
-                {/* ==================== 分頁 2：資產 (支援左右滑動 / 再點資產循環 / 長按直達) ==================== */}
+                {/* ==================== 分頁 2：資產 ==================== */}
                 {activeTab === 'ASSETS' && (
                   <div className="space-y-4 animate-fade min-h-full">
                     <header className="flex items-center justify-between">
@@ -625,7 +662,6 @@
                       </button>
                     </header>
 
-                    {/* 方案 A 資產 3 格原生分段切換（視覺定位 ＋ 點選 / 左右滑動同步） */}
                     <SegmentedControl
                       value={assetSubTab}
                       onChange={(id) => selectAssetSubTab(id)}
@@ -754,7 +790,6 @@
                       )}
                     </div>
 
-                    {/* 極簡 3 點滑動進度指示器 */}
                     <div className="flex items-center justify-center gap-1.5 pt-2">
                       {ASSET_SUB_TABS.map(id => (
                         <span
@@ -816,7 +851,6 @@
                       <h1 className="text-[22px] font-bold tracking-tight">設定</h1>
                     </header>
 
-                    {/* 數據與備份 */}
                     <section className="space-y-2">
                       <h2 className="text-[11px] font-semibold text-[#8E8E93] px-1">數據安全與診斷</h2>
                       <div className="rounded-3xl bg-[#111113] border border-white/[0.07] divide-y divide-white/[0.06] overflow-hidden">
@@ -830,8 +864,8 @@
                               <Icons.Shield />
                             </span>
                             <div>
-                              <div className="text-sm font-semibold text-white">帳務一致性診斷</div>
-                              <div className="text-[11px] text-[#8E8E93]">檢查數值、ID 參照與差額回滾對稱性</div>
+                              <div className="text-sm font-semibold text-white">帳務一致性與視區診斷</div>
+                              <div className="text-[11px] text-[#8E8E93]">檢查數值、ID 參照、回滾與 PWA 螢幕高度</div>
                             </div>
                           </div>
                           <span className="text-[#636366]"><Icons.ChevronRight /></span>
@@ -876,7 +910,6 @@
                       </div>
                     </section>
 
-                    {/* 階段 0 開發與 GitHub Pages 部署工具 */}
                     <section className="space-y-2">
                       <h2 className="text-[11px] font-semibold text-[#8E8E93] px-1">GitHub 部署與階段驗證</h2>
                       <div className="rounded-3xl bg-[#111113] border border-white/[0.07] divide-y divide-white/[0.06] overflow-hidden">
@@ -909,19 +942,16 @@
                     </section>
 
                     <div className="text-center text-[11px] font-mono-num text-[#636366] pt-2">
-                      Wealth v{Store.SCHEMA_VERSION} · Stage 0 r2 · Rev #{state.revision}
+                      Wealth v{Store.SCHEMA_VERSION} · Stage 0 r3 · Rev #{state.revision}
                     </div>
                   </div>
                 )}
               </main>
 
               {/* =====================================================
-                  方案 A：緊貼 iPhone 14 螢幕底緣的 5 格導航列
-                  - 資產：短按再點循環子頁 / 長按直達氣泡選單
-                  - 置中 ＋：短按記一筆 / 長按快速選支出、收入、轉帳、應收
+                  方案 A：緊貼 iPhone 14 物理底緣的 5 格導航列
                  ===================================================== */}
               <nav className="shrink-0 z-30 w-full bg-[#0B0B0D]/95 backdrop-blur-2xl border-t border-white/[0.08] px-2 bottom-nav-safe grid grid-cols-5 items-end">
-                {/* 1. 明細 */}
                 <button
                   type="button"
                   onClick={() => switchPrimaryTab('LEDGER')}
@@ -933,7 +963,6 @@
                   <span className="text-[10px] font-semibold leading-none">明細</span>
                 </button>
 
-                {/* 2. 資產（支援再點循環 ＋ 長按快捷選單） */}
                 <button
                   type="button"
                   {...assetsNavPress}
@@ -945,7 +974,6 @@
                   <span className="text-[10px] font-semibold leading-none">資產</span>
                 </button>
 
-                {/* 3. 置中大 ＋ 記帳鍵（支援短按開記 ＋ 長按快捷選單） */}
                 <div className="flex flex-col items-center justify-center -mt-1.5">
                   <button
                     type="button"
@@ -957,7 +985,6 @@
                   </button>
                 </div>
 
-                {/* 4. 報表 */}
                 <button
                   type="button"
                   onClick={() => switchPrimaryTab('REPORT')}
@@ -969,7 +996,6 @@
                   <span className="text-[10px] font-semibold leading-none">報表</span>
                 </button>
 
-                {/* 5. 設定 */}
                 <button
                   type="button"
                   onClick={() => switchPrimaryTab('SETTINGS')}
@@ -982,87 +1008,85 @@
                 </button>
               </nav>
 
-              {/* 長按底部「資產」彈出快捷氣泡 */}
+              {/* 長按底部「資產」快捷選單 */}
               {quickMenu === 'ASSETS' && (
                 <QuickPopoverMenu
                   align="left"
                   title="快速切換資產視角"
-                  onClose={() => setQuickMenu(null)}
+                  hoveredItemId={hoveredQuickItem}
+                  onClose={() => {
+                    setHoveredQuickItem(null);
+                    setQuickMenu(null);
+                  }}
                   items={[
                     {
                       id: 'WALLET',
                       label: '銀包帳戶',
                       icon: <Icons.Wallet />,
                       active: activeTab === 'ASSETS' && assetSubTab === 'WALLET',
-                      onSelect: () => {
-                        setActiveTab('ASSETS');
-                        selectAssetSubTab('WALLET');
-                      }
+                      onSelect: () => runQuickMenuAction('ASSETS', 'WALLET')
                     },
                     {
                       id: 'CARDS',
                       label: '信用卡與找數',
                       icon: <Icons.CreditCard />,
                       active: activeTab === 'ASSETS' && assetSubTab === 'CARDS',
-                      onSelect: () => {
-                        setActiveTab('ASSETS');
-                        selectAssetSubTab('CARDS');
-                      }
+                      onSelect: () => runQuickMenuAction('ASSETS', 'CARDS')
                     },
                     {
                       id: 'WEALTH',
                       label: '定存與投資',
                       icon: <Icons.TrendingUp />,
                       active: activeTab === 'ASSETS' && assetSubTab === 'WEALTH',
-                      onSelect: () => {
-                        setActiveTab('ASSETS');
-                        selectAssetSubTab('WEALTH');
-                      }
+                      onSelect: () => runQuickMenuAction('ASSETS', 'WEALTH')
                     }
                   ]}
                 />
               )}
 
-              {/* 長按底部置中「＋」彈出快速記帳類型氣泡 */}
+              {/* 長按底部置中「＋」快捷選單 */}
               {quickMenu === 'ADD' && (
                 <QuickPopoverMenu
                   align="center"
                   title="快速記帳類型"
-                  onClose={() => setQuickMenu(null)}
+                  hoveredItemId={hoveredQuickItem}
+                  onClose={() => {
+                    setHoveredQuickItem(null);
+                    setQuickMenu(null);
+                  }}
                   items={[
                     {
                       id: 'EXPENSE',
                       label: '記支出',
                       icon: <Icons.ArrowUpRight />,
                       iconClass: 'text-rose-400',
-                      onSelect: () => setQuickAddState({ open: true, initialType: 'EXPENSE' })
+                      onSelect: () => runQuickMenuAction('ADD', 'EXPENSE')
                     },
                     {
                       id: 'INCOME',
                       label: '記收入',
                       icon: <Icons.ArrowDownLeft />,
                       iconClass: 'text-emerald-400',
-                      onSelect: () => setQuickAddState({ open: true, initialType: 'INCOME' })
+                      onSelect: () => runQuickMenuAction('ADD', 'INCOME')
                     },
                     {
                       id: 'TRANSFER',
                       label: '帳戶轉帳',
                       icon: <Icons.ArrowLeftRight />,
                       iconClass: 'text-sky-400',
-                      onSelect: () => setQuickAddState({ open: true, initialType: 'TRANSFER' })
+                      onSelect: () => runQuickMenuAction('ADD', 'TRANSFER')
                     },
                     {
                       id: 'RECEIVABLE',
                       label: '應收代墊',
                       icon: <Icons.Users />,
                       iconClass: 'text-amber-300',
-                      onSelect: () => setQuickAddState({ open: true, initialType: 'RECEIVABLE' })
+                      onSelect: () => runQuickMenuAction('ADD', 'RECEIVABLE')
                     }
                   ]}
                 />
               )}
 
-              {/* 彈出抽屜群 */}
               {quickAddState.open && (
                 <QuickAddTestSheet
                   state={state}

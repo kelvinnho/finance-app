@@ -1,7 +1,6 @@
 (() => {
       const { useState, useEffect, useRef } = React;
 
-      // 全站統一極細線條 SVG 圖標集（零功能性 Emoji）
       const Icons = {
         Ledger: ({ active }) => (
           <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.75} strokeLinecap="round" strokeLinejoin="round">
@@ -120,26 +119,23 @@
         )
       };
 
-      // React Hook：即時訂閱 WealthStore
       function useWealthStore() {
         const [state, setState] = useState(() => window.WealthStore.getState());
         useEffect(() => window.WealthStore.subscribe(setState), []);
         return state;
       }
 
-      // 統一橫向滑動手勢控制器（3 層防誤觸：24px 邊緣豁免、data-no-swipe 豁免、水平位移 > 垂直 1.4x）
+      // 統一橫向滑動手勢控制器（24px 邊緣豁免、data-no-swipe 豁免、方向鎖定）
       function useHorizontalSwipe({ onSwipeLeft, onSwipeRight, enabled = true, threshold = 55 }) {
         const startRef = useRef(null);
 
         const onTouchStart = (e) => {
           if (!enabled || !e.touches || e.touches.length !== 1) return;
           const touch = e.touches[0];
-          // 避開 iPhone 左右邊緣 24px，不干擾 iOS 系統返回手勢
           if (touch.clientX < 24 || touch.clientX > window.innerWidth - 24) {
             startRef.current = null;
             return;
           }
-          // 若觸控起點在橫向滑動軌道或輸入元件內則豁免
           if (e.target && e.target.closest && e.target.closest('[data-no-swipe], input, select, textarea')) {
             startRef.current = null;
             return;
@@ -169,11 +165,13 @@
         return { onTouchStart, onTouchEnd, onTouchCancel };
       }
 
-      // 統一短按 / 長按控制器（相容 iPhone 觸控與桌面滑鼠，避免雙重觸發）
-      function useLongPress({ onTap, onLongPress, delay = 360 }) {
+      // 升級版短按 / 長按控制器：
+      // 1) 長按彈出後原地鬆手 ➔ 選單穩穩停在畫面上絕不消失
+      // 2) 長按不放直接往上滑至選單項目鬆手 ➔ 即時高亮並直接觸發選取
+      function useLongPress({ onTap, onLongPress, onLongDragMove, onLongDragEnd, delay = 340 }) {
         const timerRef = useRef(null);
         const longFiredRef = useRef(false);
-        const movedRef = useRef(false);
+        const movedBeforeLongRef = useRef(false);
         const startPosRef = useRef({ x: 0, y: 0 });
         const lastTouchAtRef = useRef(0);
 
@@ -187,26 +185,38 @@
         const start = (x, y) => {
           clearTimer();
           longFiredRef.current = false;
-          movedRef.current = false;
+          movedBeforeLongRef.current = false;
           startPosRef.current = { x, y };
           if (onLongPress) {
             timerRef.current = setTimeout(() => {
               longFiredRef.current = true;
+              if (navigator.vibrate) {
+                try { navigator.vibrate(10); } catch (e) {}
+              }
               onLongPress();
             }, delay);
           }
         };
 
         const move = (x, y) => {
-          if (Math.hypot(x - startPosRef.current.x, y - startPosRef.current.y) > 10) {
-            movedRef.current = true;
+          if (longFiredRef.current) {
+            if (onLongDragMove) onLongDragMove(x, y);
+            return;
+          }
+          if (Math.hypot(x - startPosRef.current.x, y - startPosRef.current.y) > 12) {
+            movedBeforeLongRef.current = true;
             clearTimer();
           }
         };
 
-        const end = (shouldTriggerTap) => {
+        const end = (x, y) => {
           clearTimer();
-          if (shouldTriggerTap && !longFiredRef.current && !movedRef.current && onTap) {
+          if (longFiredRef.current) {
+            longFiredRef.current = false;
+            if (onLongDragEnd) onLongDragEnd(x, y);
+            return;
+          }
+          if (!movedBeforeLongRef.current && onTap) {
             onTap();
           }
         };
@@ -223,10 +233,13 @@
           },
           onTouchEnd: (e) => {
             lastTouchAtRef.current = Date.now();
-            if (longFiredRef.current) e.preventDefault();
-            end(true);
+            const t = e.changedTouches[0];
+            end(t ? t.clientX : 0, t ? t.clientY : 0);
           },
-          onTouchCancel: () => clearTimer(),
+          onTouchCancel: () => {
+            clearTimer();
+            longFiredRef.current = false;
+          },
           onMouseDown: (e) => {
             if (Date.now() - lastTouchAtRef.current < 500) return;
             if (e.button !== 0) return;
@@ -234,71 +247,89 @@
           },
           onMouseMove: (e) => {
             if (Date.now() - lastTouchAtRef.current < 500) return;
-            if (timerRef.current) move(e.clientX, e.clientY);
+            if (timerRef.current || longFiredRef.current) move(e.clientX, e.clientY);
           },
-          onMouseUp: () => {
+          onMouseUp: (e) => {
             if (Date.now() - lastTouchAtRef.current < 500) return;
-            end(true);
+            end(e.clientX, e.clientY);
           },
-          onMouseLeave: () => clearTimer(),
+          onMouseLeave: () => {
+            if (!longFiredRef.current) clearTimer();
+          },
           onContextMenu: (e) => e.preventDefault()
         };
       }
 
-      // 底部導航長按浮動快捷選單
-      function QuickPopoverMenu({ align = 'center', title, items, onClose }) {
+      // 底部導航長按浮動快捷選單（徹底修復鬆手即消失 Bug：僅監聽空白處的新按下事件關閉）
+      function QuickPopoverMenu({ align = 'center', title, items, hoveredItemId = null, onClose }) {
+        const mountedAtRef = useRef(Date.now());
         const alignClass = align === 'left'
           ? 'left-4'
           : align === 'right'
           ? 'right-4'
           : 'left-1/2 -translate-x-1/2';
 
+        const handleBackdropPress = (e) => {
+          // 僅當使用者「全新按下」黑色空白遮罩時才關閉；長按後的鬆手 touchend/click 絕不觸發關閉
+          if (e.target !== e.currentTarget) return;
+          if (Date.now() - mountedAtRef.current < 160) return;
+          if (e.cancelable) e.preventDefault();
+          onClose();
+        };
+
         return (
           <div
-            onClick={onClose}
-            className="fixed inset-0 z-40 bg-black/50 backdrop-blur-[2px] animate-fade"
+            onTouchStart={handleBackdropPress}
+            onMouseDown={handleBackdropPress}
+            className="app-overlay z-40 bg-black/50 backdrop-blur-[2px] animate-fade"
           >
             <div className="w-full max-w-[440px] mx-auto h-full relative pointer-events-none">
               <div
-                onClick={e => e.stopPropagation()}
-                style={{ bottom: 'calc(max(10px, var(--safe-bottom) - 10px) + 72px)' }}
-                className={`pointer-events-auto absolute ${alignClass} w-52 rounded-3xl bg-[#1C1C1E]/95 border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl p-2 space-y-1 animate-pop-up`}
+                style={{ bottom: 'calc(max(22px, var(--safe-bottom)) + 68px)' }}
+                className={`pointer-events-auto absolute ${alignClass} w-56 rounded-3xl bg-[#1C1C1E]/95 border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl p-2 space-y-1 animate-pop-up`}
               >
                 {title && (
-                  <div className="px-3 pt-1.5 pb-1 text-[10px] font-semibold text-[#8E8E93] tracking-wide">
-                    {title}
+                  <div className="px-3 pt-1.5 pb-1 text-[10px] font-semibold text-[#8E8E93] tracking-wide flex items-center justify-between">
+                    <span>{title}</span>
+                    <span className="text-[9px] text-[#636366]">點選或滑選</span>
                   </div>
                 )}
-                {items.map(it => (
-                  <button
-                    key={it.id}
-                    type="button"
-                    onClick={() => {
-                      it.onSelect();
-                      onClose();
-                    }}
-                    className={`w-full min-h-[44px] px-3 rounded-2xl flex items-center justify-between gap-2.5 text-left transition active:scale-[0.98] ${
-                      it.active
-                        ? 'bg-white text-black font-bold'
-                        : 'text-white hover:bg-white/[0.08] font-medium'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <span className={it.active ? 'text-black' : (it.iconClass || 'text-zinc-300')}>
-                        {it.icon}
-                      </span>
-                      <span className="text-xs truncate">{it.label}</span>
-                    </div>
-                    {it.active && <Icons.Check />}
-                  </button>
-                ))}
+                {items.map(it => {
+                  const isHighlighted = hoveredItemId === it.id;
+                  return (
+                    <button
+                      key={it.id}
+                      type="button"
+                      data-quick-item-id={it.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        it.onSelect();
+                        onClose();
+                      }}
+                      className={`w-full min-h-[46px] px-3.5 rounded-2xl flex items-center justify-between gap-2.5 text-left transition active:scale-[0.98] ${
+                        isHighlighted
+                          ? 'bg-white text-black font-bold scale-[1.02] shadow-md'
+                          : it.active
+                          ? 'bg-white/15 text-white font-bold'
+                          : 'text-white hover:bg-white/[0.08] font-medium'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0 pointer-events-none">
+                        <span className={isHighlighted ? 'text-black' : (it.iconClass || 'text-zinc-300')}>
+                          {it.icon}
+                        </span>
+                        <span className="text-xs truncate">{it.label}</span>
+                      </div>
+                      {it.active && !isHighlighted && <Icons.Check />}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
         );
       }
 
-      // 通用檔案下載
       function downloadFile(filename, content, mimeType = 'text/plain;charset=utf-8;') {
         const blob = new Blob([content], { type: mimeType });
         const url = URL.createObjectURL(blob);
@@ -311,7 +342,6 @@
         URL.revokeObjectURL(url);
       }
 
-      // 統一 Apple 底部抽屜（自動鎖定背景頁面滾動，適配 iPhone 底部安全區）
       function BottomSheet({ title, subtitle, onClose, children }) {
         useEffect(() => {
           const prev = document.body.style.overflow;
@@ -322,7 +352,7 @@
         return (
           <div
             onClick={onClose}
-            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade"
+            className="app-overlay z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade"
           >
             <div
               onClick={e => e.stopPropagation()}
@@ -349,7 +379,6 @@
         );
       }
 
-      // Apple 原生分段控制器
       function SegmentedControl({ options, value, onChange }) {
         return (
           <div className="grid p-1 rounded-2xl bg-[#161618] border border-white/[0.07]" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
@@ -373,7 +402,6 @@
         );
       }
 
-      // 浮動 Toast
       function Toast({ message }) {
         if (!message) return null;
         return (
@@ -386,7 +414,6 @@
         );
       }
 
-      // 方案 A：極簡 2 步驟首次引導（選擇主幣種 ➔ 載入通用範例或開始空白帳本）
       function OnboardingFlow({ onComplete }) {
         const [step, setStep] = useState(1);
         const [selectedCurrency, setSelectedCurrency] = useState('MOP');
@@ -404,7 +431,6 @@
             <div className="app-shell-frame bg-black text-white animate-fade">
               <div className="app-scroll-main px-6 pt-8 pb-6 flex flex-col justify-between">
                 <div className="space-y-8">
-                  {/* 品牌標誌與步驟點 */}
                   <div className="flex items-center justify-between">
                     <div className="w-11 h-11 rounded-2xl bg-[#111113] border border-white/10 flex items-center justify-center">
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -515,7 +541,6 @@
         );
       }
 
-      // 緊急防白屏錯誤邊界（永不白屏，直接提供緊急匯出 JSON）
       class EmergencyRecoveryBoundary extends React.Component {
         constructor(props) {
           super(props);
