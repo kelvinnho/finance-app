@@ -1,0 +1,15 @@
+{
+  "name": "Wealth 個人財務管理",
+  "short_name": "Wealth",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%23000000'/%3E%3Crect x='22' y='22' width='136' height='136' rx='30' fill='%23111113' stroke='%23ffffff' stroke-opacity='0.14' stroke-width='2'/%3E%3Cpath d='M48 118 L74 62 L92 98 L112 62 L132 118' fill='none' stroke='%23ffffff' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='132' cy='58' r='8' fill='%2334D399'/%3E%3C/svg%3E",
+      "sizes": "180x180",
+      "type": "image/svg+xml"
+    }
+  ]
+}
