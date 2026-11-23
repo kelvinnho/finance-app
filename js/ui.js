@@ -1,16 +1,102 @@
 (() => {
   const { useState, useEffect, useLayoutEffect, useRef, createContext, useContext } = React;
 
-  // 8 款金屬質感卡面漸層（僅供銀包卡面與信用卡面使用）
+  // 輔助：將精簡 SVG 暗紋轉為 CSS data URI
+  function svgPattern(svgBody, w = 40, h = 40) {
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}' viewBox='0 0 ${w} ${h}'>${svgBody}</svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  }
+
+  // 8 款高質感微亮金屬＋現代幾何暗紋卡面（僅供銀包卡面與信用卡面使用）
   const CARD_THEMES = [
-    { id: 'titanium', name: '鈦金灰',   bg: 'linear-gradient(135deg, #2C2C30 0%, #17171A 55%, #0D0D0F 100%)', border: 'rgba(255,255,255,0.16)', accent: '#E4E4E7' },
-    { id: 'crimson',  name: '緋紅金',   bg: 'linear-gradient(135deg, #5B1222 0%, #2B0A13 55%, #12060A 100%)', border: 'rgba(244,63,94,0.28)',   accent: '#FDA4AF' },
-    { id: 'purple',   name: '星曜紫',   bg: 'linear-gradient(135deg, #3B1D63 0%, #1F1038 55%, #0E081A 100%)', border: 'rgba(168,85,247,0.30)',  accent: '#D8B4FE' },
-    { id: 'ocean',    name: '深海藍',   bg: 'linear-gradient(135deg, #0E3A5C 0%, #0A2239 55%, #06121E 100%)', border: 'rgba(56,189,248,0.28)',  accent: '#7DD3FC' },
-    { id: 'emerald',  name: '祖母綠',   bg: 'linear-gradient(135deg, #0D4737 0%, #082920 55%, #041510 100%)', border: 'rgba(52,211,153,0.28)',  accent: '#6EE7B7' },
-    { id: 'sunset',   name: '琥珀橘',   bg: 'linear-gradient(135deg, #6B2E0D 0%, #3A1808 55%, #180A04 100%)', border: 'rgba(251,146,60,0.30)',  accent: '#FDBA74' },
-    { id: 'gold',     name: '香檳金',   bg: 'linear-gradient(135deg, #544118 0%, #2D220D 55%, #140F06 100%)', border: 'rgba(251,191,36,0.30)',  accent: '#FDE68A' },
-    { id: 'obsidian', name: '曜石黑',   bg: 'linear-gradient(135deg, #1E1E22 0%, #101012 55%, #050506 100%)', border: 'rgba(255,255,255,0.12)', accent: '#A1A1AA' }
+    {
+      id: 'titanium',
+      name: '拉絲鈦銀',
+      bg: [
+        'radial-gradient(circle at 86% 12%, rgba(255,255,255,0.26) 0%, transparent 46%) 0 0 / 100% 100% no-repeat',
+        `${svgPattern("<path d='M0 6h40M0 14h40M0 22h40M0 30h40M0 38h40' stroke='%23ffffff' stroke-opacity='0.06' stroke-width='1'/><path d='M-10 40L40 -10M0 50L50 0' stroke='%23ffffff' stroke-opacity='0.04' stroke-width='1.2'/>", 40, 40)} 0 0 / 40px 40px repeat`,
+        'linear-gradient(135deg, #565660 0%, #32323A 52%, #1C1C22 100%) 0 0 / 100% 100% no-repeat'
+      ].join(', '),
+      border: 'rgba(255,255,255,0.24)',
+      accent: '#F4F4F5'
+    },
+    {
+      id: 'crimson',
+      name: '緋紅絲紋',
+      bg: [
+        'radial-gradient(circle at 88% 14%, rgba(251,113,133,0.34) 0%, transparent 48%) 0 0 / 100% 100% no-repeat',
+        `${svgPattern("<path d='M0 24 Q15 10 30 24 T60 24' fill='none' stroke='%23ffffff' stroke-opacity='0.08' stroke-width='1.1'/><path d='M0 44 Q15 30 30 44 T60 44' fill='none' stroke='%23ffffff' stroke-opacity='0.06' stroke-width='1.1'/>", 60, 48)} 0 0 / 60px 48px repeat`,
+        'linear-gradient(135deg, #9F1239 0%, #630D26 52%, #2E0814 100%) 0 0 / 100% 100% no-repeat'
+      ].join(', '),
+      border: 'rgba(251,113,133,0.38)',
+      accent: '#FDA4AF'
+    },
+    {
+      id: 'purple',
+      name: '極光星環',
+      bg: [
+        'radial-gradient(circle at 85% 15%, rgba(192,132,252,0.35) 0%, transparent 48%) 0 0 / 100% 100% no-repeat',
+        `${svgPattern("<circle cx='28' cy='28' r='22' fill='none' stroke='%23ffffff' stroke-opacity='0.08' stroke-width='1'/><circle cx='28' cy='28' r='12' fill='none' stroke='%23ffffff' stroke-opacity='0.06' stroke-width='1'/>", 56, 56)} 0 0 / 56px 56px repeat`,
+        'linear-gradient(135deg, #6D28D9 0%, #411A82 52%, #1F0D42 100%) 0 0 / 100% 100% no-repeat'
+      ].join(', '),
+      border: 'rgba(192,132,252,0.40)',
+      accent: '#E9D5FF'
+    },
+    {
+      id: 'ocean',
+      name: '深海等高',
+      bg: [
+        'radial-gradient(circle at 84% 12%, rgba(56,189,248,0.34) 0%, transparent 48%) 0 0 / 100% 100% no-repeat',
+        `${svgPattern("<path d='M0 16 C16 4 32 28 48 16 S80 4 96 16' fill='none' stroke='%23ffffff' stroke-opacity='0.08' stroke-width='1'/><path d='M0 36 C16 24 32 48 48 36 S80 24 96 36' fill='none' stroke='%23ffffff' stroke-opacity='0.06' stroke-width='1'/>", 48, 44)} 0 0 / 48px 44px repeat`,
+        'linear-gradient(135deg, #0284C7 0%, #0E4473 52%, #08203B 100%) 0 0 / 100% 100% no-repeat'
+      ].join(', '),
+      border: 'rgba(56,189,248,0.38)',
+      accent: '#BAE6FD'
+    },
+    {
+      id: 'emerald',
+      name: '翡翠菱格',
+      bg: [
+        'radial-gradient(circle at 86% 14%, rgba(52,211,153,0.32) 0%, transparent 48%) 0 0 / 100% 100% no-repeat',
+        `${svgPattern("<path d='M16 0L32 16L16 32L0 16Z' fill='none' stroke='%23ffffff' stroke-opacity='0.08' stroke-width='1'/>", 32, 32)} 0 0 / 32px 32px repeat`,
+        'linear-gradient(135deg, #059669 0%, #065F46 52%, #052E24 100%) 0 0 / 100% 100% no-repeat'
+      ].join(', '),
+      border: 'rgba(52,211,153,0.38)',
+      accent: '#A7F3D0'
+    },
+    {
+      id: 'sunset',
+      name: '熔岩斜紋',
+      bg: [
+        'radial-gradient(circle at 85% 15%, rgba(251,146,60,0.36) 0%, transparent 48%) 0 0 / 100% 100% no-repeat',
+        `${svgPattern("<path d='M-6 24L24 -6M6 36L36 6' stroke='%23ffffff' stroke-opacity='0.09' stroke-width='1.2'/>", 24, 24)} 0 0 / 24px 24px repeat`,
+        'linear-gradient(135deg, #C2410C 0%, #822A0E 52%, #3B1307 100%) 0 0 / 100% 100% no-repeat'
+      ].join(', '),
+      border: 'rgba(251,146,60,0.40)',
+      accent: '#FED7AA'
+    },
+    {
+      id: 'gold',
+      name: '香檳鎏金',
+      bg: [
+        'radial-gradient(circle at 86% 12%, rgba(253,224,71,0.32) 0%, transparent 48%) 0 0 / 100% 100% no-repeat',
+        `${svgPattern("<path d='M0 24L16 8L32 24M0 36L16 20L32 36' fill='none' stroke='%23ffffff' stroke-opacity='0.08' stroke-width='1.1'/>", 32, 32)} 0 0 / 32px 32px repeat`,
+        'linear-gradient(135deg, #A16207 0%, #6E4309 52%, #331F05 100%) 0 0 / 100% 100% no-repeat'
+      ].join(', '),
+      border: 'rgba(251,191,36,0.40)',
+      accent: '#FEF08A'
+    },
+    {
+      id: 'obsidian',
+      name: '碳纖黑曜',
+      bg: [
+        'radial-gradient(circle at 88% 12%, rgba(255,255,255,0.20) 0%, transparent 44%) 0 0 / 100% 100% no-repeat',
+        `${svgPattern("<rect x='0' y='0' width='8' height='8' fill='%23ffffff' fill-opacity='0.045'/><rect x='8' y='8' width='8' height='8' fill='%23ffffff' fill-opacity='0.045'/>", 16, 16)} 0 0 / 16px 16px repeat`,
+        'linear-gradient(135deg, #3A3A44 0%, #202026 55%, #111115 100%) 0 0 / 100% 100% no-repeat'
+      ].join(', '),
+      border: 'rgba(255,255,255,0.20)',
+      accent: '#D4D4D8'
+    }
   ];
 
   function getCardTheme(themeId) {
@@ -220,7 +306,7 @@
 
   function NumericKeypad({ value = '', onChange, onConfirm, confirmLabel = '完成', allowNegative = false }) {
     const expr = String(value ?? '');
-    const hasOperator = (expr.length > 1 && /[+\-]/.test(expr.slice(1)));
+    const hasOperator = expr.length > 1 && /[+\-]/.test(expr.slice(1));
 
     const pushKey = (k) => {
       if (navigator.vibrate) {
@@ -246,9 +332,7 @@
           return;
         }
         const last = expr.slice(-1);
-        if (last === '+' || last === '-') {
-          onChange(expr.slice(0, -1) + k);
-        } else if (last === '.') {
+        if (last === '+' || last === '-' || last === '.') {
           onChange(expr.slice(0, -1) + k);
         } else {
           onChange(expr + k);
@@ -275,7 +359,6 @@
         onChange(expr + '00');
         return;
       }
-      // 數字 0-9
       const parts = expr.split(/[+\-]/);
       const curPart = parts[parts.length - 1] || '';
       if (curPart.includes('.')) {
@@ -358,68 +441,70 @@
 
     const previewVal = evalCalcExpression(expr);
 
+    const keypadOverlay = session ? (
+      <div
+        onClick={closeKeypad}
+        className="app-overlay z-[80] bg-black/75 backdrop-blur-sm flex items-end justify-center animate-fade"
+      >
+        <div
+          onClick={e => e.stopPropagation()}
+          className="w-full max-w-[440px] bg-[#121214] border-t border-white/12 rounded-t-[28px] px-4 pt-3 sheet-safe space-y-3 animate-sheet-up"
+        >
+          <div className="w-9 h-1 rounded-full bg-white/15 mx-auto" />
+          <div className="flex items-center justify-between px-1">
+            <div className="text-xs font-semibold text-[#8E8E93]">{session.label}</div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setExpr('')}
+                className="px-2.5 py-1 rounded-lg bg-white/[0.06] text-[11px] font-semibold text-zinc-400 hover:text-white"
+              >
+                清除
+              </button>
+              <button
+                type="button"
+                onClick={closeKeypad}
+                className="w-7 h-7 rounded-full bg-white/[0.08] text-zinc-400 flex items-center justify-center"
+              >
+                <Icons.X />
+              </button>
+            </div>
+          </div>
+
+          <div className="px-4 py-3 rounded-2xl bg-[#0A0A0C] border border-white/[0.08] flex items-baseline justify-between gap-2">
+            <span className="text-xs font-mono-num font-semibold text-[#8E8E93] shrink-0">
+              {session.currency || ''}
+            </span>
+            <div className="text-right min-w-0">
+              <div className="text-2xl font-bold font-mono-num text-white truncate">
+                {expr || '0'}
+              </div>
+              {(expr.length > 1 && /[+\-]/.test(expr.slice(1))) && (
+                <div className="text-[11px] font-mono-num text-emerald-400 mt-0.5">
+                  = {previewVal.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <NumericKeypad
+            value={expr}
+            onChange={setExpr}
+            allowNegative={session.allowNegative}
+            confirmLabel="確定"
+            onConfirm={(val) => {
+              if (session.onConfirm) session.onConfirm(val);
+              closeKeypad();
+            }}
+          />
+        </div>
+      </div>
+    ) : null;
+
     return (
       <KeypadContext.Provider value={{ openKeypad, closeKeypad }}>
         {children}
-        {session && (
-          <div
-            onClick={closeKeypad}
-            className="app-overlay z-[70] bg-black/75 backdrop-blur-sm flex items-end justify-center animate-fade"
-          >
-            <div
-              onClick={e => e.stopPropagation()}
-              className="w-full max-w-[440px] bg-[#121214] border-t border-white/12 rounded-t-[28px] px-4 pt-3 sheet-safe space-y-3 animate-sheet-up"
-            >
-              <div className="w-9 h-1 rounded-full bg-white/15 mx-auto" />
-              <div className="flex items-center justify-between px-1">
-                <div className="text-xs font-semibold text-[#8E8E93]">{session.label}</div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setExpr('')}
-                    className="px-2.5 py-1 rounded-lg bg-white/[0.06] text-[11px] font-semibold text-zinc-400 hover:text-white"
-                  >
-                    清除
-                  </button>
-                  <button
-                    type="button"
-                    onClick={closeKeypad}
-                    className="w-7 h-7 rounded-full bg-white/[0.08] text-zinc-400 flex items-center justify-center"
-                  >
-                    <Icons.X />
-                  </button>
-                </div>
-              </div>
-
-              <div className="px-4 py-3 rounded-2xl bg-[#0A0A0C] border border-white/[0.08] flex items-baseline justify-between gap-2">
-                <span className="text-xs font-mono-num font-semibold text-[#8E8E93] shrink-0">
-                  {session.currency || ''}
-                </span>
-                <div className="text-right min-w-0">
-                  <div className="text-2xl font-bold font-mono-num text-white truncate">
-                    {expr || '0'}
-                  </div>
-                  {(expr.length > 1 && /[+\-]/.test(expr.slice(1))) && (
-                    <div className="text-[11px] font-mono-num text-emerald-400 mt-0.5">
-                      = {previewVal.toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <NumericKeypad
-                value={expr}
-                onChange={setExpr}
-                allowNegative={session.allowNegative}
-                confirmLabel="確定"
-                onConfirm={(val) => {
-                  if (session.onConfirm) session.onConfirm(val);
-                  closeKeypad();
-                }}
-              />
-            </div>
-          </div>
-        )}
+        {keypadOverlay && ReactDOM.createPortal(keypadOverlay, document.body)}
       </KeypadContext.Provider>
     );
   }
@@ -461,7 +546,6 @@
     );
   }
 
-  // 統一橫向滑動手勢控制器（24px 邊緣豁免、data-no-swipe 豁免、方向鎖定）
   function useHorizontalSwipe({ onSwipeLeft, onSwipeRight, enabled = true, threshold = 55 }) {
     const startRef = useRef(null);
 
@@ -647,11 +731,11 @@
       onClose();
     };
 
-    return (
+    return ReactDOM.createPortal(
       <div
         onTouchStart={handleBackdropPress}
         onMouseDown={handleBackdropPress}
-        className="app-overlay z-40 bg-black/50 backdrop-blur-[2px] animate-fade"
+        className="app-overlay z-[55] bg-black/50 backdrop-blur-[2px] animate-fade"
       >
         <div ref={frameRef} className="w-full max-w-[440px] mx-auto h-full relative pointer-events-none">
           <div
@@ -705,7 +789,8 @@
             </div>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body
     );
   }
 
@@ -721,6 +806,7 @@
     URL.revokeObjectURL(url);
   }
 
+  // 全視區 Portal 底部抽屜：徹底免疫父層 transform / overflow 裁切，永不被底部導航列遮擋
   function BottomSheet({ title, subtitle, onClose, children }) {
     useEffect(() => {
       const prev = document.body.style.overflow;
@@ -728,33 +814,43 @@
       return () => { document.body.style.overflow = prev; };
     }, []);
 
-    return (
+    return ReactDOM.createPortal(
       <div
         onClick={onClose}
-        className="app-overlay z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade"
+        className="app-overlay z-[60] bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade"
       >
         <div
           onClick={e => e.stopPropagation()}
-          className="w-full max-w-[440px] bg-[#141416] border-t sm:border border-white/10 rounded-t-[30px] sm:rounded-[30px] px-5 pt-3 sheet-safe space-y-4 animate-sheet-up max-h-[90dvh] overflow-y-auto"
+          style={{ maxHeight: 'calc(var(--app-height, 100dvh) - var(--safe-top, 0px) - 24px)' }}
+          className="w-full max-w-[440px] bg-[#141416] border-t sm:border border-white/12 rounded-t-[30px] sm:rounded-[30px] flex flex-col overflow-hidden animate-sheet-up shadow-[0_-16px_48px_rgba(0,0,0,0.85)]"
         >
-          <div className="w-9 h-1 rounded-full bg-white/15 mx-auto" />
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h3 className="text-base font-bold text-white truncate">{title}</h3>
-              {subtitle && <p className="text-xs text-[#8E8E93] mt-0.5">{subtitle}</p>}
+          <div className="shrink-0 px-5 pt-3 pb-3 border-b border-white/[0.06] space-y-3">
+            <div className="w-9 h-1 rounded-full bg-white/20 mx-auto" />
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-base font-bold text-white truncate">{title}</h3>
+                {subtitle && <p className="text-xs text-[#8E8E93] mt-0.5">{subtitle}</p>}
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="w-9 h-9 rounded-full bg-white/[0.08] text-[#8E8E93] hover:text-white flex items-center justify-center shrink-0 active:scale-95 transition"
+                aria-label="關閉"
+              >
+                <Icons.X />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="w-9 h-9 rounded-full bg-white/[0.08] text-[#8E8E93] hover:text-white flex items-center justify-center shrink-0 active:scale-95 transition"
-              aria-label="關閉"
-            >
-              <Icons.X />
-            </button>
           </div>
-          {children}
+
+          <div
+            style={{ paddingBottom: 'calc(max(24px, var(--safe-bottom)) + 16px)' }}
+            className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 pt-4"
+          >
+            {children}
+          </div>
         </div>
-      </div>
+      </div>,
+      document.body
     );
   }
 
@@ -783,13 +879,14 @@
 
   function Toast({ message }) {
     if (!message) return null;
-    return (
+    return ReactDOM.createPortal(
       <div
         style={{ top: 'calc(var(--safe-top) + 12px)' }}
-        className="fixed left-1/2 -translate-x-1/2 z-[80] px-4 py-2.5 rounded-full bg-[#1C1C1E]/95 border border-white/15 text-xs font-medium text-white shadow-2xl backdrop-blur-md animate-fade max-w-[90vw] text-center"
+        className="fixed left-1/2 -translate-x-1/2 z-[90] px-4 py-2.5 rounded-full bg-[#1C1C1E]/95 border border-white/15 text-xs font-medium text-white shadow-2xl backdrop-blur-md animate-fade max-w-[90vw] text-center"
       >
         {message}
-      </div>
+      </div>,
+      document.body
     );
   }
 
