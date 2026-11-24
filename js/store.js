@@ -1,1063 +1,1215 @@
 (function () {
-  const SCHEMA_VERSION = '1.9.0';
-  const STORAGE_KEY = 'WEALTH_APP_GLOBAL_STATE_V1_9';
-  const BACKUP_KEY = 'WEALTH_APP_PRE_MIGRATION_BACKUP';
+  'use strict';
 
-  const CURRENCY_SYMBOLS = {
-    MOP: 'MOP$',
-    HKD: 'HK$',
-    USD: 'US$',
-    CNY: '¥',
-    TWD: 'NT$',
-    JPY: '¥',
-    EUR: '€',
-    GBP: '£'
-  };
+  const STORAGE_KEY = 'wealth_pwa_state_v19';
+  const APP_VERSION = 'Stage 1 r11';
+  const SCHEMA_VERSION = '1.9';
+
+  const CURRENCIES = [
+    { code: 'MOP', symbol: 'MOP$', name: '澳門元', rateToBase: 1.0 },
+    { code: 'HKD', symbol: 'HK$', name: '港元', rateToBase: 1.03 },
+    { code: 'USD', symbol: 'US$', name: '美元', rateToBase: 8.03 },
+    { code: 'CNY', symbol: '¥', name: '人民幣', rateToBase: 1.11 },
+    { code: 'TWD', symbol: 'NT$', name: '新台幣', rateToBase: 0.25 },
+    { code: 'JPY', symbol: 'JP¥', name: '日圓', rateToBase: 0.053 }
+  ];
+
+  const CARD_THEMES = [
+    { id: 'obsidian', name: '曜石黑', bg: 'linear-gradient(135deg, #1E1F24 0%, #0E0F12 100%)', accent: '#E5E7EB' },
+    { id: 'titanium', name: '原色鈦', bg: 'linear-gradient(135deg, #3A3A40 0%, #1C1C20 100%)', accent: '#F3F4F6' },
+    { id: 'emerald', name: '深邃綠', bg: 'linear-gradient(135deg, #0D3B2E 0%, #071F18 100%)', accent: '#34D399' },
+    { id: 'sapphire', name: '午夜藍', bg: 'linear-gradient(135deg, #12294B 0%, #091528 100%)', accent: '#60A5FA' },
+    { id: 'amber', name: '流沙金', bg: 'linear-gradient(135deg, #4B3312 0%, #241707 100%)', accent: '#FBBF24' },
+    { id: 'crimson', name: '酒紅釉', bg: 'linear-gradient(135deg, #4C1622 0%, #240A10 100%)', accent: '#FB7185' },
+    { id: 'violet', name: '星雲紫', bg: 'linear-gradient(135deg, #311B4E 0%, #160B24 100%)', accent: '#A78BFA' },
+    { id: 'copper', name: '暖古銅', bg: 'linear-gradient(135deg, #522916 0%, #261209 100%)', accent: '#FB923C' }
+  ];
+
+  const DEFAULT_POOLS = [
+    { id: 'pool_liquid', name: '日常流動', color: '#34D399' },
+    { id: 'pool_reserve', name: '備用底倉', color: '#60A5FA' },
+    { id: 'pool_goal', name: '儲蓄目標', color: '#FBBF24' },
+    { id: 'pool_invest', name: '投資交割', color: '#A78BFA' }
+  ];
+
+  const DEFAULT_CATEGORIES = [
+    { id: 'cat_food', type: 'EXPENSE', name: '飲食外食', icon: 'utensils', color: '#F59E0B', defaultPoolId: 'pool_liquid' },
+    { id: 'cat_transport', type: 'EXPENSE', name: '交通出行', icon: 'car', color: '#38BDF8', defaultPoolId: 'pool_liquid' },
+    { id: 'cat_shopping', type: 'EXPENSE', name: '日用購物', icon: 'bag', color: '#EC4899', defaultPoolId: 'pool_liquid' },
+    { id: 'cat_home', type: 'EXPENSE', name: '居家帳單', icon: 'home', color: '#818CF8', defaultPoolId: 'pool_liquid' },
+    { id: 'cat_leisure', type: 'EXPENSE', name: '休閒娛樂', icon: 'sparkles', color: '#C084FC', defaultPoolId: 'pool_liquid' },
+    { id: 'cat_health', type: 'EXPENSE', name: '醫療運動', icon: 'heart', color: '#FB7185', defaultPoolId: 'pool_liquid' },
+    { id: 'cat_other_exp', type: 'EXPENSE', name: '其他支出', icon: 'tag', color: '#9CA3AF', defaultPoolId: 'pool_liquid' },
+    { id: 'cat_salary', type: 'INCOME', name: '薪資收入', icon: 'briefcase', color: '#34D399', defaultPoolId: 'pool_liquid' },
+    { id: 'cat_bonus', type: 'INCOME', name: '獎金津貼', icon: 'gift', color: '#60A5FA', defaultPoolId: 'pool_goal' },
+    { id: 'cat_dividend', type: 'INCOME', name: '股息回贈', icon: 'trend', color: '#A78BFA', defaultPoolId: 'pool_invest' },
+    { id: 'cat_other_inc', type: 'INCOME', name: '其他收入', icon: 'coins', color: '#9CA3AF', defaultPoolId: 'pool_liquid' }
+  ];
+
+  function uid(prefix) {
+    return (prefix || 'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+  }
 
   function todayISO() {
     const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
   }
 
-  function addDaysISO(baseISO, days) {
-    const [y, m, d] = (baseISO || todayISO()).split('-').map(Number);
-    const dt = new Date(y, (m || 1) - 1, d || 1);
-    dt.setDate(dt.getDate() + (Number(days) || 0));
-    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  function nowTimeHM() {
+    const d = new Date();
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
   }
 
-  const DEFAULT_CATEGORIES = {
-    EXPENSE: [
-      {
-        id: 'cat_food', name: '飲食買餸', iconKey: 'utensils', color: '#FB923C', archived: false,
-        subs: [
-          { id: 'sub_dining',  name: '三餐外食', defaultBucket: 'PUBLIC',   merchants: ['茶餐廳', '外賣平台', '餐廳聚餐'], archived: false },
-          { id: 'sub_grocery', name: '超市買餸', defaultBucket: 'PUBLIC',   merchants: ['超級市場', '生鮮市場'], archived: false },
-          { id: 'sub_coffee',  name: '咖啡輕食', defaultBucket: 'PERSONAL', merchants: ['咖啡店', '便利店'], archived: false }
-        ]
-      },
-      {
-        id: 'cat_transport', name: '交通出行', iconKey: 'car', color: '#38BDF8', archived: false,
-        subs: [
-          { id: 'sub_fuel',    name: '加油充電', defaultBucket: 'PUBLIC',  merchants: ['油站', '充電站'], archived: false },
-          { id: 'sub_parking', name: '泊車交通', defaultBucket: 'PUBLIC',  merchants: ['停車場', '公共交通'], archived: false },
-          { id: 'sub_maint',   name: '保養稅費', defaultBucket: 'SINKING', merchants: ['汽車保養'], archived: false }
-        ]
-      },
-      {
-        id: 'cat_home', name: '居住家居', iconKey: 'home', color: '#818CF8', archived: false,
-        subs: [
-          { id: 'sub_mortgage', name: '按揭租金', defaultBucket: 'FIXED',  merchants: ['銀行按揭'], archived: false },
-          { id: 'sub_utility',  name: '水電通訊', defaultBucket: 'PUBLIC', merchants: ['電力公司', '電訊寬頻'], archived: false },
-          { id: 'sub_daily',    name: '日用消耗', defaultBucket: 'PUBLIC', merchants: ['藥妝日用', '家居用品'], archived: false }
-        ]
-      },
-      {
-        id: 'cat_personal', name: '個人消遣', iconKey: 'bag', color: '#F59E0B', archived: false,
-        subs: [
-          { id: 'sub_shopping', name: '數碼服飾', defaultBucket: 'PERSONAL', merchants: ['網購平台', '百貨商場'], archived: false },
-          { id: 'sub_sport',    name: '運動娛樂', defaultBucket: 'PERSONAL', merchants: ['體育場館', '電影院'], archived: false }
-        ]
-      },
-      {
-        id: 'cat_edu_ins', name: '教育醫療', iconKey: 'shield', color: '#A855F7', archived: false,
-        subs: [
-          { id: 'sub_edu',     name: '進修教育', defaultBucket: 'SINKING', merchants: ['學校機構'], archived: false },
-          { id: 'sub_ins',     name: '保險醫療', defaultBucket: 'SINKING', merchants: ['保險公司', '門診醫療'], archived: false }
-        ]
-      }
-    ],
-    INCOME: [
-      {
-        id: 'cat_salary', name: '薪資收入', iconKey: 'briefcase', color: '#34D399', archived: false,
-        subs: [
-          { id: 'sub_main_sal', name: '每月薪資', defaultBucket: 'FIXED',   merchants: ['薪資入帳'], archived: false },
-          { id: 'sub_bonus',    name: '獎金津貼', defaultBucket: 'SINKING', merchants: ['年度獎金'], archived: false }
-        ]
-      },
-      {
-        id: 'cat_passive', name: '被動收益', iconKey: 'sparkles', color: '#FBBF24', archived: false,
-        subs: [
-          { id: 'sub_td_int',   name: '定存利息',   defaultBucket: 'PERSONAL', merchants: ['銀行定存'], archived: false },
-          { id: 'sub_cashback', name: '回贈與股息', defaultBucket: 'PERSONAL', merchants: ['信用卡回贈'], archived: false }
-        ]
-      }
-    ]
-  };
+  function round2(n) {
+    const num = Number(n);
+    if (!Number.isFinite(num)) return 0;
+    return Math.round(num * 100) / 100;
+  }
 
-  function createSeedState(baseCurrency = 'MOP') {
-    const today = todayISO();
+  function buildFxMap(baseCurrency) {
+    const baseObj = CURRENCIES.find((c) => c.code === baseCurrency) || CURRENCIES[0];
+    const rates = {};
+    CURRENCIES.forEach((c) => {
+      rates[c.code] = round2(c.rateToBase / baseObj.rateToBase) || 1;
+    });
+    rates[baseObj.code] = 1;
+    return rates;
+  }
+
+  function createBlankState(baseCurrency) {
+    const base = baseCurrency || 'MOP';
+    const accId = 'acc_main';
+    const balId = 'bal_main_1';
     return {
-      schemaVersion: SCHEMA_VERSION,
-      hasCompletedOnboarding: true,
-      lastModifiedAt: new Date().toISOString(),
-      revision: 1,
-      settings: {
-        baseCurrency,
-        fxRates: [
-          { code: 'MOP', name: '澳門幣', rate: 1.0,  isCore: true },
-          { code: 'HKD', name: '港幣',   rate: 1.03, isCore: true },
-          { code: 'USD', name: '美元',   rate: 8.03, isCore: true },
-          { code: 'CNY', name: '人民幣', rate: 1.12, isCore: true },
-          { code: 'TWD', name: '新台幣', rate: 0.25, isCore: false },
-          { code: 'JPY', name: '日圓',   rate: 0.053, isCore: false }
-        ],
-        preferences: {
-          hideBalancesOnLaunch: false,
-          defaultExcludeTransfers: true,
-          monthStartDay: 1
-        },
-        buckets: [
-          { id: 'PUBLIC',   name: '公共營運', color: '#38BDF8', monthlyBudget: 18000, primaryAccountId: 'acc_main_mop', archived: false },
-          { id: 'PERSONAL', name: '個人消費', color: '#F59E0B', monthlyBudget: 2500,  primaryAccountId: 'acc_ewallet',  archived: false },
-          { id: 'SINKING',  name: '年度預留', color: '#A855F7', monthlyBudget: 12000, primaryAccountId: 'acc_hy_mop',   archived: false },
-          { id: 'FIXED',    name: '固定開支', color: '#34D399', monthlyBudget: 25000, primaryAccountId: 'acc_main_mop', archived: false }
-        ],
-        categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
-        paydayTemplates: [
-          { id: 'pt_1', enabled: true, title: '每月薪資入帳',   type: 'INCOME',   mainCatId: 'cat_salary', subCatId: 'sub_main_sal', amount: 45000, currency: baseCurrency, bucketId: 'FIXED',    accountId: 'acc_main_mop', toAccountId: null },
-          { id: 'pt_2', enabled: true, title: '物業按揭扣款',   type: 'EXPENSE',  mainCatId: 'cat_home',   subCatId: 'sub_mortgage', amount: 15000, currency: baseCurrency, bucketId: 'FIXED',    accountId: 'acc_main_mop', toAccountId: null },
-          { id: 'pt_3', enabled: true, title: '撥入年度預留戶', type: 'TRANSFER', mainCatId: 'TRANSFER',   subCatId: 'TRANSFER',     amount: 10000, currency: baseCurrency, bucketId: 'SINKING',  accountId: 'acc_main_mop', toAccountId: 'acc_hy_mop' },
-          { id: 'pt_4', enabled: true, title: '撥入個人消費池', type: 'TRANSFER', mainCatId: 'TRANSFER',   subCatId: 'TRANSFER',     amount: 2500,  currency: baseCurrency, bucketId: 'PERSONAL', accountId: 'acc_main_mop', toAccountId: 'acc_ewallet' }
-        ],
-        customTemplates: [
-          { id: 'tpl_coffee', name: '日常咖啡輕食', type: 'EXPENSE', mainCatId: 'cat_food',      subCatId: 'sub_coffee', bucketId: 'PERSONAL', accountId: 'acc_ewallet', amount: 45,  currency: baseCurrency, merchant: '咖啡店' },
-          { id: 'tpl_fuel',   name: '日常油費',     type: 'EXPENSE', mainCatId: 'cat_transport', subCatId: 'sub_fuel',   bucketId: 'PUBLIC',   accountId: 'cc_dual',     amount: 450, currency: baseCurrency, merchant: '油站' }
-        ],
-        cloudSync: {
-          connected: false,
-          clientId: '',
-          accountEmail: '',
-          autoSync: false,
-          lastSyncAt: null
-        },
-        lastBackupAt: null
+      meta: {
+        schemaVersion: SCHEMA_VERSION,
+        appVersion: APP_VERSION,
+        onboardingDone: true,
+        baseCurrency: base,
+        privacyMode: false,
+        fxRates: buildFxMap(base)
       },
-      walletCards: [
+      pools: JSON.parse(JSON.stringify(DEFAULT_POOLS)),
+      categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
+      accounts: [
         {
-          id: 'card_main_bank',
-          institution: '主力綜合銀行',
+          id: accId,
+          name: '主力銀行帳戶',
+          subtitle: '綜合活期',
           type: 'BANK',
-          themeId: 'titanium',
-          archived: false,
-          accounts: [
-            {
-              id: 'acc_main_mop',
-              currency: baseCurrency,
-              name: '綜合活期',
-              balance: 48145,
-              lockedBalance: 0,
-              purpose: 'PUBLIC',
-              isPrimary: true,
-              subBuckets: [
-                { id: 'sb_1', name: '緊急備用底倉', amount: 30000, isFrozen: true,  color: '#F43F5E' },
-                { id: 'sb_2', name: '本月營運預留', amount: 12000, isFrozen: false, color: '#38BDF8' }
-              ]
-            },
-            {
-              id: 'acc_main_hkd',
-              currency: 'HKD',
-              name: '港幣活期',
-              balance: 15000,
-              lockedBalance: 0,
-              purpose: 'PUBLIC',
-              isPrimary: false,
-              subBuckets: []
-            }
-          ]
-        },
-        {
-          id: 'card_high_yield',
-          institution: '高息儲蓄銀行',
-          type: 'BANK',
-          themeId: 'purple',
-          archived: false,
-          accounts: [
-            {
-              id: 'acc_hy_mop',
-              currency: baseCurrency,
-              name: '高息活期戶',
-              balance: 245000,
-              lockedBalance: 16000,
-              purpose: 'SINKING',
-              isPrimary: true,
-              subBuckets: [
-                { id: 'sb_3', name: '年度預留底倉', amount: 200000, isFrozen: true, color: '#A855F7' }
-              ]
-            }
-          ]
-        },
-        {
-          id: 'card_ewallet',
-          institution: '日常電子錢包',
-          type: 'EWALLET',
-          themeId: 'sunset',
-          archived: false,
-          accounts: [
-            {
-              id: 'acc_ewallet',
-              currency: baseCurrency,
-              name: '消費餘額',
-              balance: 2460,
-              lockedBalance: 0,
-              purpose: 'PERSONAL',
-              isPrimary: true,
-              subBuckets: []
-            }
-          ]
-        },
-        {
-          id: 'card_broker',
-          institution: '證券投資帳戶',
-          type: 'INVEST',
-          themeId: 'emerald',
-          archived: false,
-          accounts: [
-            {
-              id: 'acc_broker_usd',
-              currency: 'USD',
-              name: '美金交割現金',
-              balance: 1650,
-              principalCost: 23500,
-              lockedBalance: 0,
-              purpose: 'SINKING',
-              isPrimary: false,
-              subBuckets: []
-            }
-          ]
+          theme: 'obsidian',
+          balances: [
+            { id: balId, currency: base, amount: 0, poolId: 'pool_liquid', isDefaultPayment: true }
+          ],
+          allocations: []
         }
       ],
-      creditCards: [
+      cards: [],
+      investments: [],
+      transactions: [],
+      splitRules: []
+    };
+  }
+
+  function createDemoState(baseCurrency) {
+    const base = baseCurrency || 'MOP';
+    const today = todayISO();
+    return {
+      meta: {
+        schemaVersion: SCHEMA_VERSION,
+        appVersion: APP_VERSION,
+        onboardingDone: true,
+        baseCurrency: base,
+        privacyMode: false,
+        fxRates: buildFxMap(base)
+      },
+      pools: JSON.parse(JSON.stringify(DEFAULT_POOLS)),
+      categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
+      accounts: [
         {
-          id: 'cc_dual',
-          name: '全幣種信用卡',
-          institution: '主力綜合銀行',
-          network: 'UnionPay',
-          last4: '3910',
-          themeId: 'crimson',
-          creditLimit: 80000,
-          billingDay: 8,
-          dueDay: 28,
-          settlementAccountId: 'acc_main_mop',
-          archived: false,
-          annualFee: { hasFee: true, feeAmount: 600, billingMonth: 6, waiverType: 'SWIPE_COUNT', currentProgress: 5, waiverTarget: 6 },
-          statements: {
-            [baseCurrency]: {
-              settlementAccountId: 'acc_main_mop',
-              settlementMode: 'SAME_CCY',
-              customFxRate: 1.0,
-              billedAmount: 4200,
-              unbilledAmount: 1680,
-              isSettled: false,
-              lastSettledInfo: null,
-              lastSettlementSnapshot: null,
-              bucketBreakdown: { PUBLIC: 3000, SINKING: 800, PERSONAL: 400, FIXED: 0 },
-              unbilledBreakdown: { PUBLIC: 1200, SINKING: 0, PERSONAL: 480, FIXED: 0 }
-            }
-          }
+          id: 'acc_bank_main',
+          name: '主力綜合銀行',
+          subtitle: '綜合活期',
+          type: 'BANK',
+          theme: 'sapphire',
+          balances: [
+            { id: 'bal_main_base', currency: base, amount: 48145, poolId: 'pool_liquid', isDefaultPayment: true },
+            { id: 'bal_main_hkd', currency: base === 'HKD' ? 'USD' : 'HKD', amount: 12000, poolId: 'pool_reserve', isDefaultPayment: false }
+          ],
+          allocations: [
+            { id: 'alloc_1', currency: base, name: '應急底倉', amount: 20000, locked: true, poolId: 'pool_reserve' },
+            { id: 'alloc_2', currency: base, name: '年度旅行基金', amount: 8000, locked: false, poolId: 'pool_goal' }
+          ]
         },
         {
-          id: 'cc_cashback',
-          name: '現金回贈卡',
-          institution: '高息儲蓄銀行',
-          network: 'Mastercard',
+          id: 'acc_bank_high',
+          name: '高息儲蓄銀行',
+          subtitle: '高息活期戶',
+          type: 'BANK',
+          theme: 'emerald',
+          balances: [
+            { id: 'bal_high_base', currency: base, amount: 245000, poolId: 'pool_reserve', isDefaultPayment: false }
+          ],
+          allocations: [
+            { id: 'alloc_3', currency: base, name: '核心凍結底倉', amount: 200000, locked: true, poolId: 'pool_reserve' }
+          ]
+        },
+        {
+          id: 'acc_ewallet',
+          name: '日常電子錢包',
+          subtitle: '消費餘額',
+          type: 'EWALLET',
+          theme: 'copper',
+          balances: [
+            { id: 'bal_ew_base', currency: base, amount: 2460, poolId: 'pool_liquid', isDefaultPayment: false }
+          ],
+          allocations: []
+        },
+        {
+          id: 'acc_broker',
+          name: '證券投資帳戶',
+          subtitle: '美金交割現金',
+          type: 'BROKER',
+          theme: 'violet',
+          balances: [
+            { id: 'bal_brk_usd', currency: 'USD', amount: 1650, poolId: 'pool_invest', isDefaultPayment: false }
+          ],
+          allocations: []
+        }
+      ],
+      cards: [
+        {
+          id: 'card_1',
+          name: '全幣種回贈卡',
           last4: '8821',
-          themeId: 'ocean',
-          creditLimit: 60000,
-          billingDay: 25,
-          dueDay: 15,
-          settlementAccountId: 'acc_hy_mop',
-          archived: false,
-          annualFee: { hasFee: true, feeAmount: 800, billingMonth: 11, waiverType: 'SPEND_AMOUNT', currentProgress: 16400, waiverTarget: 20000 },
-          statements: {
-            [baseCurrency]: {
-              settlementAccountId: 'acc_hy_mop',
-              settlementMode: 'SAME_CCY',
-              customFxRate: 1.0,
-              billedAmount: 0,
-              unbilledAmount: 950,
-              isSettled: true,
-              lastSettledInfo: null,
-              lastSettlementSnapshot: null,
-              bucketBreakdown: { PUBLIC: 0, SINKING: 0, PERSONAL: 0, FIXED: 0 },
-              unbilledBreakdown: { PUBLIC: 650, SINKING: 0, PERSONAL: 300, FIXED: 0 }
-            }
-          }
+          currency: base,
+          creditLimit: 80000,
+          statementDay: 15,
+          dueDay: 5,
+          unbilled: 4280,
+          billed: 0,
+          theme: 'titanium',
+          autoPayAccountId: 'acc_bank_main'
+        },
+        {
+          id: 'card_2',
+          name: '餐飲消費卡',
+          last4: '3094',
+          currency: base,
+          creditLimit: 50000,
+          statementDay: 25,
+          dueDay: 18,
+          unbilled: 1320,
+          billed: 0,
+          theme: 'crimson',
+          autoPayAccountId: 'acc_bank_main'
+        }
+      ],
+      investments: [
+        {
+          id: 'inv_1',
+          name: '6個月定期存款',
+          type: 'FIXED_DEPOSIT',
+          currency: base,
+          principal: 100000,
+          currentValue: 101850,
+          apr: 3.7,
+          maturityDate: '2027-02-15'
+        },
+        {
+          id: 'inv_2',
+          name: '標普 500 指數 ETF',
+          type: 'ETF',
+          currency: 'USD',
+          principal: 15000,
+          currentValue: 17420,
+          apr: null,
+          maturityDate: null
         }
       ],
       transactions: [
         {
-          id: 'tx_seed_1',
+          id: 'tx_demo_1',
+          type: 'EXPENSE',
+          title: '午餐外食',
+          amount: 168,
+          currency: base,
+          settledAmount: 168,
+          settledCurrency: base,
+          accountKind: 'CARD',
+          accountId: 'card_1',
+          balanceId: null,
+          categoryId: 'cat_food',
+          poolId: 'pool_liquid',
           date: today,
           time: '12:30',
-          type: 'EXPENSE',
-          mainCatId: 'cat_food',
-          subCatId: 'sub_dining',
-          title: '午餐外食',
-          merchant: '茶餐廳',
-          bucketId: 'PUBLIC',
-          accountId: 'cc_dual',
-          toAccountId: null,
-          currency: baseCurrency,
-          amount: 168,
-          accountAmount: 168,
-          creditCycle: 'UNBILLED',
-          counterparty: '',
-          receivableMode: 'NEW',
-          isLoanSettled: false,
-          isLockedSettled: false,
           note: ''
         },
         {
-          id: 'tx_seed_2',
+          id: 'tx_demo_2',
+          type: 'EXPENSE',
+          title: '手沖咖啡',
+          amount: 46,
+          currency: base,
+          settledAmount: 46,
+          settledCurrency: base,
+          accountKind: 'ACCOUNT',
+          accountId: 'acc_ewallet',
+          balanceId: 'bal_ew_base',
+          categoryId: 'cat_food',
+          poolId: 'pool_liquid',
           date: today,
           time: '09:15',
-          type: 'EXPENSE',
-          mainCatId: 'cat_food',
-          subCatId: 'sub_coffee',
-          title: '手沖咖啡',
-          merchant: '咖啡店',
-          bucketId: 'PERSONAL',
-          accountId: 'acc_ewallet',
-          toAccountId: null,
-          currency: baseCurrency,
-          amount: 46,
-          accountAmount: 46,
-          creditCycle: null,
-          counterparty: '',
-          receivableMode: 'NEW',
-          isLoanSettled: false,
-          isLockedSettled: false,
           note: ''
         },
         {
-          id: 'tx_seed_3',
-          date: today,
-          time: '08:40',
+          id: 'tx_demo_3',
           type: 'RECEIVABLE',
-          mainCatId: 'cat_food',
-          subCatId: 'sub_dining',
           title: '代墊聚餐款項',
-          merchant: '茶餐廳',
-          bucketId: 'PERSONAL',
-          accountId: 'acc_ewallet',
-          toAccountId: null,
-          currency: baseCurrency,
           amount: 140,
-          accountAmount: 140,
-          creditCycle: null,
+          currency: base,
+          settledAmount: 140,
+          settledCurrency: base,
+          accountKind: 'ACCOUNT',
+          accountId: 'acc_ewallet',
+          balanceId: 'bal_ew_base',
+          categoryId: 'cat_food',
+          poolId: 'pool_liquid',
           counterparty: '同事 A',
-          receivableMode: 'NEW',
           isLoanSettled: false,
           settlementTxId: null,
-          isLockedSettled: false,
-          note: '待轉帳收回'
+          date: today,
+          time: '08:40',
+          note: '週五聚餐代付'
         }
       ],
-      timeDeposits: [
+      splitRules: [
         {
-          id: 'td_seed_1',
-          bankAccountId: 'acc_hy_mop',
-          bankName: '高息儲蓄銀行',
-          label: '3個月定期',
-          currency: baseCurrency,
-          principal: 16000,
-          ratePct: 3.6,
-          termDays: 90,
-          elapsedDays: 45,
-          dayBasis: 365,
-          startDate: addDaysISO(today, -45),
-          maturityDate: addDaysISO(today, 45)
-        }
-      ],
-      settledDeposits: [],
-      investments: [
+          id: 'sr_1',
+          name: '每月薪資入帳',
+          enabled: true,
+          type: 'INCOME',
+          amount: 32000,
+          currency: base,
+          fromAccountId: null,
+          fromBalanceId: null,
+          toAccountId: 'acc_bank_main',
+          toBalanceId: 'bal_main_base',
+          categoryId: 'cat_salary',
+          poolId: 'pool_liquid'
+        },
         {
-          id: 'inv_seed_1',
-          code: 'VOO',
-          assetType: 'ETF',
-          accent: '#38BDF8',
-          institution: '證券投資帳戶',
-          brokerAccountId: 'acc_broker_usd',
-          name: '標普 500 指數 ETF',
-          currency: 'USD',
-          principalCost: 23500,
-          marketValue: 26800,
-          realizedPnlAccum: 0,
-          monthlyDCA: 800,
-          dcaFreq: 'MONTHLY',
-          dcaDay: 5,
-          dcaSourceAccId: 'acc_broker_usd',
-          dcaEndMonth: '',
-          lastUpdated: today,
-          snapshots: [
-            { date: today, principalCost: 23500, marketValue: 26800, dividends: 0, fees: 0, source: 'MANUAL', note: '初始持倉' }
-          ]
+          id: 'sr_2',
+          name: '自動撥入高息儲蓄',
+          enabled: true,
+          type: 'TRANSFER',
+          amount: 10000,
+          currency: base,
+          fromAccountId: 'acc_bank_main',
+          fromBalanceId: 'bal_main_base',
+          toAccountId: 'acc_bank_high',
+          toBalanceId: 'bal_high_base',
+          categoryId: null,
+          poolId: 'pool_reserve'
+        },
+        {
+          id: 'sr_3',
+          name: '電子錢包月度增值',
+          enabled: true,
+          type: 'TRANSFER',
+          amount: 3000,
+          currency: base,
+          fromAccountId: 'acc_bank_main',
+          fromBalanceId: 'bal_main_base',
+          toAccountId: 'acc_ewallet',
+          toBalanceId: 'bal_ew_base',
+          categoryId: null,
+          poolId: 'pool_liquid'
         }
-      ],
-      closedInvestments: [],
-      netWorthSnapshots: [
-        { month: today.slice(0, 7), netWorth: 533475, liquidCash: 125270, lockedAndFrozen: 246000, investments: 215204, debt: 6830 }
       ]
     };
   }
 
-  function createEmptyState(baseCurrency = 'MOP') {
-    const seed = createSeedState(baseCurrency);
-    return {
-      ...seed,
-      hasCompletedOnboarding: true,
-      settings: {
-        ...seed.settings,
-        baseCurrency,
-        paydayTemplates: [],
-        customTemplates: []
-      },
-      walletCards: [
-        {
-          id: 'card_default_cash',
-          institution: '預設銀行帳戶',
-          type: 'BANK',
-          themeId: 'titanium',
-          archived: false,
-          accounts: [
-            {
-              id: 'acc_default_main',
-              currency: baseCurrency,
-              name: '綜合活期',
-              balance: 0,
-              lockedBalance: 0,
-              purpose: 'PUBLIC',
-              isPrimary: true,
-              subBuckets: []
-            }
-          ]
-        }
-      ],
-      creditCards: [],
-      transactions: [],
-      timeDeposits: [],
-      settledDeposits: [],
-      investments: [],
-      closedInvestments: [],
-      netWorthSnapshots: []
-    };
+  function createInitialUnboardedState() {
+    const st = createBlankState('MOP');
+    st.meta.onboardingDone = false;
+    return st;
   }
 
   function migrateState(raw) {
-    if (!raw || typeof raw !== 'object') {
-      const initial = createSeedState('MOP');
-      initial.hasCompletedOnboarding = false;
-      return initial;
-    }
-    const base = createSeedState(raw.settings?.baseCurrency || 'MOP');
-    if (raw.schemaVersion && raw.schemaVersion !== SCHEMA_VERSION) {
-      try {
-        localStorage.setItem(BACKUP_KEY, JSON.stringify(raw));
-      } catch (e) {}
-    }
-    return {
-      ...base,
-      ...raw,
-      schemaVersion: SCHEMA_VERSION,
-      hasCompletedOnboarding: raw.hasCompletedOnboarding !== undefined ? raw.hasCompletedOnboarding : true,
-      settings: {
-        ...base.settings,
-        ...(raw.settings || {}),
-        preferences: { ...base.settings.preferences, ...(raw.settings?.preferences || {}) },
-        categories: {
-          EXPENSE: Array.isArray(raw.settings?.categories?.EXPENSE) ? raw.settings.categories.EXPENSE : base.settings.categories.EXPENSE,
-          INCOME: Array.isArray(raw.settings?.categories?.INCOME) ? raw.settings.categories.INCOME : base.settings.categories.INCOME
+    if (!raw || typeof raw !== 'object') return createInitialUnboardedState();
+    const base = (raw.meta && raw.meta.baseCurrency) || 'MOP';
+    const next = {
+      meta: Object.assign(
+        {
+          schemaVersion: SCHEMA_VERSION,
+          appVersion: APP_VERSION,
+          onboardingDone: true,
+          baseCurrency: base,
+          privacyMode: false,
+          fxRates: buildFxMap(base)
         },
-        paydayTemplates: Array.isArray(raw.settings?.paydayTemplates) ? raw.settings.paydayTemplates : base.settings.paydayTemplates,
-        customTemplates: Array.isArray(raw.settings?.customTemplates) ? raw.settings.customTemplates : base.settings.customTemplates,
-        cloudSync: { ...base.settings.cloudSync, ...(raw.settings?.cloudSync || {}) }
-      },
-      walletCards: Array.isArray(raw.walletCards) ? raw.walletCards : base.walletCards,
-      creditCards: Array.isArray(raw.creditCards) ? raw.creditCards : base.creditCards,
-      transactions: Array.isArray(raw.transactions) ? raw.transactions : base.transactions,
-      timeDeposits: Array.isArray(raw.timeDeposits) ? raw.timeDeposits : [],
-      settledDeposits: Array.isArray(raw.settledDeposits) ? raw.settledDeposits : [],
+        raw.meta || {},
+        { schemaVersion: SCHEMA_VERSION, appVersion: APP_VERSION }
+      ),
+      pools: Array.isArray(raw.pools) && raw.pools.length ? raw.pools : JSON.parse(JSON.stringify(DEFAULT_POOLS)),
+      categories: Array.isArray(raw.categories) && raw.categories.length ? raw.categories : JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
+      accounts: Array.isArray(raw.accounts) ? raw.accounts : [],
+      cards: Array.isArray(raw.cards) ? raw.cards : [],
       investments: Array.isArray(raw.investments) ? raw.investments : [],
-      closedInvestments: Array.isArray(raw.closedInvestments) ? raw.closedInvestments : [],
-      netWorthSnapshots: Array.isArray(raw.netWorthSnapshots) ? raw.netWorthSnapshots : []
+      transactions: Array.isArray(raw.transactions) ? raw.transactions : [],
+      splitRules: Array.isArray(raw.splitRules) ? raw.splitRules : []
     };
-  }
-
-  function getRateToBase(state, currency) {
-    const base = state.settings?.baseCurrency || 'MOP';
-    if (!currency || currency === base) return 1;
-    const found = (state.settings?.fxRates || []).find(f => f.code === currency);
-    return found && Number(found.rate) > 0 ? Number(found.rate) : 1;
-  }
-
-  function convertToBase(state, amount, currency) {
-    return Math.round((Number(amount) || 0) * getRateToBase(state, currency) * 100) / 100;
-  }
-
-  function formatMoney(amount, currency = 'MOP', hide = false) {
-    if (hide) return '••••••';
-    const sym = CURRENCY_SYMBOLS[currency] || `${currency} `;
-    return `${sym} ${Number(amount || 0).toLocaleString('en-US', {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 2
-    })}`;
-  }
-
-  function computeNetWorthSummary(state) {
-    let liquidCash = 0;
-    let lockedAndFrozen = 0;
-    let investments = 0;
-    let debt = 0;
-
-    (state.walletCards || []).filter(c => !c.archived).forEach(card => {
-      (card.accounts || []).forEach(acc => {
-        const balBase = convertToBase(state, acc.balance, acc.currency);
-        const lockedBase = convertToBase(state, acc.lockedBalance || 0, acc.currency);
-        const frozenRaw = (acc.subBuckets || []).filter(sb => sb.isFrozen).reduce((s, sb) => s + (Number(sb.amount) || 0), 0);
-        const frozenBase = convertToBase(state, frozenRaw, acc.currency);
-
-        lockedAndFrozen += lockedBase + frozenBase;
-        liquidCash += Math.max(0, balBase - frozenBase);
-      });
-    });
-
-    (state.investments || []).forEach(inv => {
-      investments += convertToBase(state, inv.marketValue, inv.currency);
-    });
-
-    (state.creditCards || []).filter(c => !c.archived).forEach(cc => {
-      Object.entries(cc.statements || {}).forEach(([curr, st]) => {
-        const fx = st.settlementMode === 'MOP_FX' && st.customFxRate ? Number(st.customFxRate) : getRateToBase(state, curr);
-        const billed = st.isSettled ? 0 : (Number(st.billedAmount) || 0);
-        const unbilled = Number(st.unbilledAmount) || 0;
-        debt += (billed + unbilled) * fx;
-      });
-    });
-
-    let receivables = 0;
-    (state.transactions || []).forEach(t => {
-      if (t.isLoanSettled) return;
-      if (t.type === 'RECEIVABLE') {
-        receivables += convertToBase(state, t.amount, t.currency);
-      } else if (t.type === 'PAYABLE') {
-        debt += convertToBase(state, t.amount, t.currency);
-      }
-    });
-
-    const grossAssets = Math.round((liquidCash + lockedAndFrozen + investments + receivables) * 100) / 100;
-    const netWorth = Math.round((grossAssets - debt) * 100) / 100;
-
-    return {
-      grossAssets,
-      netWorth,
-      liquidCash: Math.round(liquidCash * 100) / 100,
-      lockedAndFrozen: Math.round(lockedAndFrozen * 100) / 100,
-      investments: Math.round(investments * 100) / 100,
-      receivables: Math.round(receivables * 100) / 100,
-      debt: Math.round(debt * 100) / 100
-    };
-  }
-
-  function getFlatAccounts(state) {
-    const list = [];
-    (state.walletCards || []).filter(c => !c.archived).forEach(card => {
-      const groupLabel = card.type === 'EWALLET' ? '電子錢包' : card.type === 'INVEST' ? '投資保單' : '銀行活期';
-      (card.accounts || []).forEach(acc => {
-        list.push({
-          id: acc.id,
-          cardId: card.id,
-          name: `${acc.name}`,
-          fullName: `${card.institution} · ${acc.name}`,
-          institution: card.institution,
-          group: groupLabel,
-          kind: card.type,
-          currency: acc.currency,
-          balance: acc.balance,
-          purpose: acc.purpose,
-          isPrimary: acc.isPrimary
-        });
-      });
-    });
-
-    (state.creditCards || []).filter(c => !c.archived).forEach(cc => {
-      const baseCurr = state.settings?.baseCurrency || 'MOP';
-      const mainCurr = cc.statements?.[baseCurr] ? baseCurr : (Object.keys(cc.statements || {})[0] || baseCurr);
-      const st = cc.statements?.[mainCurr] || { billedAmount: 0, unbilledAmount: 0 };
-      list.push({
-        id: cc.id,
-        cardId: cc.id,
-        name: cc.name,
-        fullName: `${cc.institution} · ${cc.name}`,
-        institution: cc.institution,
-        group: '信用卡',
-        kind: 'CREDIT',
-        currency: mainCurr,
-        balance: (st.isSettled ? 0 : (st.billedAmount || 0)) + (st.unbilledAmount || 0),
-        purpose: 'PUBLIC',
-        isPrimary: false
-      });
-    });
-
-    return list;
-  }
-
-  // 核心差額回滾與跨模組連動引擎 (direction: +1 套用 / -1 回滾)
-  function applyTransactionDelta(prevState, tx, direction = 1) {
-    if (!tx) return { state: prevState, warnings: [] };
-    if ((tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE') && tx.receivableMode === 'EXISTING') {
-      return { state: prevState, warnings: [] };
+    if (!next.meta.fxRates || typeof next.meta.fxRates !== 'object') {
+      next.meta.fxRates = buildFxMap(base);
     }
-
-    const warnings = [];
-    const rawAmt = Number(tx.amount) || 0;
-    const accAmt = tx.accountAmount !== undefined && tx.accountAmount !== null ? Number(tx.accountAmount) : rawAmt;
-    const amt = accAmt * direction;
-    if (amt === 0) return { state: prevState, warnings };
-
-    let nextWalletCards = (prevState.walletCards || []).map(card => ({
-      ...card,
-      accounts: (card.accounts || []).map(acc => {
-        let delta = 0;
-        if (tx.type === 'TRANSFER') {
-          if (acc.id === tx.accountId) delta = -amt;
-          else if (acc.id === tx.toAccountId) delta = +amt;
-        } else if (acc.id === tx.accountId) {
-          const isInflow = tx.type === 'INCOME' || tx.type === 'PAYABLE' || (tx.type === 'LOAN_SETTLEMENT' && tx.loanDirection === 'IN');
-          delta = isInflow ? +amt : -amt;
-        }
-        if (delta === 0) return acc;
-
-        const nextBalance = Math.round(((Number(acc.balance) || 0) + delta) * 100) / 100;
-        const frozenSum = (acc.subBuckets || []).filter(sb => sb.isFrozen).reduce((s, sb) => s + (Number(sb.amount) || 0), 0);
-        if (direction === 1 && frozenSum > 0 && nextBalance < frozenSum) {
-          warnings.push(`「${card.institution} · ${acc.name}」餘額已低於凍結底倉`);
-        }
-        return { ...acc, balance: nextBalance };
-      })
-    }));
-
-    let nextCreditCards = (prevState.creditCards || []).map(cc => {
-      if (cc.id !== tx.accountId) return cc;
-      if (tx.type === 'TRANSFER' || tx.type === 'SETTLEMENT') return cc;
-
-      const baseCurr = prevState.settings?.baseCurrency || 'MOP';
-      const stmtCurr = cc.statements?.[tx.currency] ? tx.currency : (Object.keys(cc.statements || {})[0] || baseCurr);
-      const st = cc.statements?.[stmtCurr];
-      if (!st) return cc;
-
-      const isCardCharge = tx.type === 'EXPENSE' || tx.type === 'RECEIVABLE' || (tx.type === 'LOAN_SETTLEMENT' && tx.loanDirection === 'OUT');
-      const stmtDelta = isCardCharge ? +amt : -amt;
-      const bucketKey = tx.bucketId || 'PUBLIC';
-      const isBilled = tx.creditCycle === 'BILLED';
-
-      const nextStmt = isBilled
-        ? {
-            ...st,
-            billedAmount: Math.max(0, Math.round(((st.billedAmount || 0) + stmtDelta) * 100) / 100),
-            isSettled: Math.max(0, (st.billedAmount || 0) + stmtDelta) === 0,
-            bucketBreakdown: {
-              ...(st.bucketBreakdown || {}),
-              [bucketKey]: Math.max(0, ((st.bucketBreakdown?.[bucketKey]) || 0) + stmtDelta)
-            }
-          }
-        : {
-            ...st,
-            unbilledAmount: Math.max(0, Math.round(((st.unbilledAmount || 0) + stmtDelta) * 100) / 100),
-            unbilledBreakdown: {
-              ...(st.unbilledBreakdown || {}),
-              [bucketKey]: Math.max(0, ((st.unbilledBreakdown?.[bucketKey]) || 0) + stmtDelta)
-            }
-          };
-
-      let nextAnnualFee = cc.annualFee;
-      if (cc.annualFee?.hasFee && isCardCharge) {
-        const feeDelta = cc.annualFee.waiverType === 'SWIPE_COUNT' ? (1 * direction) : stmtDelta;
-        nextAnnualFee = {
-          ...cc.annualFee,
-          currentProgress: Math.max(0, Math.round(((cc.annualFee.currentProgress || 0) + feeDelta) * 100) / 100)
-        };
-      }
-
-      return {
-        ...cc,
-        annualFee: nextAnnualFee,
-        statements: { ...cc.statements, [stmtCurr]: nextStmt }
-      };
-    });
-
-    return {
-      state: { ...prevState, walletCards: nextWalletCards, creditCards: nextCreditCards },
-      warnings
-    };
+    return next;
   }
 
-  let currentState = (() => {
+  let state = (function loadInitial() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return migrateState(raw ? JSON.parse(raw) : null);
-    } catch (e) {
-      return migrateState(null);
-    }
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) return migrateState(JSON.parse(saved));
+    } catch (e) {}
+    return createInitialUnboardedState();
   })();
 
   const listeners = new Set();
 
-  function persistAndEmit(nextState) {
-    currentState = {
-      ...nextState,
-      lastModifiedAt: new Date().toISOString(),
-      revision: (nextState.revision || 0) + 1
-    };
+  function persist() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(currentState));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch (e) {}
-    listeners.forEach(fn => fn(currentState));
   }
 
-  window.WealthStore = {
+  function notify() {
+    persist();
+    listeners.forEach((fn) => {
+      try { fn(state); } catch (e) {}
+    });
+  }
+
+  function cloneState() {
+    return JSON.parse(JSON.stringify(state));
+  }
+
+  function adjustAccountOrCard(draft, kind, accountId, balanceId, delta) {
+    const d = round2(delta);
+    if (!d) return;
+    if (kind === 'CARD') {
+      const card = draft.cards.find((c) => c.id === accountId);
+      if (card) {
+        // 信用卡記帳：delta > 0 代表消費增加欠款，delta < 0 代表還款/退款減少欠款
+        card.unbilled = round2((card.unbilled || 0) + d);
+      }
+      return;
+    }
+    const acc = draft.accounts.find((a) => a.id === accountId);
+    if (!acc) return;
+    let bal = balanceId ? acc.balances.find((b) => b.id === balanceId) : acc.balances[0];
+    if (!bal && acc.balances.length > 0) bal = acc.balances[0];
+    if (bal) {
+      bal.amount = round2((bal.amount || 0) + d);
+    }
+  }
+
+  function applyTransactionEffect(draft, tx, sign) {
+    // sign = +1 (apply), -1 (reverse/rollback)
+    const amt = round2(tx.amount);
+    const settled = round2(tx.settledAmount != null ? tx.settledAmount : amt);
+
+    if (tx.type === 'EXPENSE') {
+      if (tx.accountKind === 'CARD') {
+        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * settled);
+      } else {
+        adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, -sign * settled);
+      }
+    } else if (tx.type === 'INCOME') {
+      if (tx.accountKind === 'CARD') {
+        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, -sign * settled);
+      } else {
+        adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, sign * settled);
+      }
+    } else if (tx.type === 'TRANSFER') {
+      // From side
+      if (tx.accountKind === 'CARD') {
+        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * amt);
+      } else {
+        adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, -sign * amt);
+      }
+      // To side
+      if (tx.toAccountKind === 'CARD') {
+        adjustAccountOrCard(draft, 'CARD', tx.toAccountId, null, -sign * settled);
+      } else {
+        adjustAccountOrCard(draft, 'ACCOUNT', tx.toAccountId, tx.toBalanceId, sign * settled);
+      }
+    } else if (tx.type === 'RECEIVABLE') {
+      // 代墊支出：來源帳戶扣款（或信用卡增加待出帳）
+      if (tx.accountKind === 'CARD') {
+        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * settled);
+      } else {
+        adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, -sign * settled);
+      }
+    } else if (tx.type === 'PAYABLE') {
+      // 借入款項：若指定入帳帳戶則加錢
+      if (tx.accountId && tx.accountKind !== 'CARD') {
+        adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, sign * settled);
+      }
+    } else if (tx.type === 'LOAN_SETTLEMENT') {
+      // 結清紀錄：不計入純收入/純支出，只還原資金餘額
+      if (tx.settlementDirection === 'IN') {
+        if (tx.accountKind === 'CARD') {
+          adjustAccountOrCard(draft, 'CARD', tx.accountId, null, -sign * settled);
+        } else {
+          adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, sign * settled);
+        }
+      } else {
+        if (tx.accountKind === 'CARD') {
+          adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * settled);
+        } else {
+          adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, -sign * settled);
+        }
+      }
+    }
+  }
+
+  function convertToBase(amount, currency, st) {
+    const s = st || state;
+    const base = s.meta.baseCurrency || 'MOP';
+    if (!currency || currency === base) return round2(amount);
+    const rate = (s.meta.fxRates && s.meta.fxRates[currency]) || 1;
+    return round2(Number(amount || 0) * rate);
+  }
+
+  function getCurrencySymbol(code) {
+    const found = CURRENCIES.find((c) => c.code === code);
+    return found ? found.symbol : (code || '') + '$';
+  }
+
+  function formatMoney(amount, currency, options) {
+    const opts = options || {};
+    const hide = opts.privacy != null ? opts.privacy : state.meta.privacyMode;
+    const cur = currency || state.meta.baseCurrency || 'MOP';
+    const sym = getCurrencySymbol(cur);
+    if (hide) return `${sym} •••••`;
+    const num = Number(amount || 0);
+    const absNum = Math.abs(num);
+    const hasDecimal = Math.abs(absNum - Math.round(absNum)) > 0.001;
+    const formatted = absNum.toLocaleString('en-US', {
+      minimumFractionDigits: opts.forceDecimals ? 2 : (hasDecimal ? 2 : 0),
+      maximumFractionDigits: 2
+    });
+    const prefix = num < 0 ? '-' : (opts.showPlus && num > 0 ? '+' : '');
+    return `${prefix}${sym} ${formatted}`;
+  }
+
+  function getSummaryMetrics(st) {
+    const s = st || state;
+    let liquidCash = 0;
+    let lockedWallet = 0;
+
+    s.accounts.forEach((acc) => {
+      const lockedByCur = {};
+      (acc.allocations || []).forEach((al) => {
+        if (al.locked) {
+          lockedByCur[al.currency] = round2((lockedByCur[al.currency] || 0) + Number(al.amount || 0));
+        }
+      });
+      (acc.balances || []).forEach((bal) => {
+        const totalCur = Number(bal.amount || 0);
+        const lockedCur = Math.min(Math.max(0, totalCur), lockedByCur[bal.currency] || 0);
+        const freeCur = totalCur - lockedCur;
+        liquidCash += convertToBase(freeCur, bal.currency, s);
+        lockedWallet += convertToBase(lockedCur, bal.currency, s);
+      });
+    });
+
+    let investmentsTotal = 0;
+    (s.investments || []).forEach((inv) => {
+      investmentsTotal += convertToBase(inv.currentValue || inv.principal || 0, inv.currency, s);
+    });
+
+    let cardDebt = 0;
+    (s.cards || []).forEach((c) => {
+      cardDebt += convertToBase((c.unbilled || 0) + (c.billed || 0), c.currency, s);
+    });
+
+    let pendingReceivables = 0;
+    let pendingPayables = 0;
+    (s.transactions || []).forEach((tx) => {
+      if (tx.type === 'RECEIVABLE' && !tx.isLoanSettled) {
+        pendingReceivables += convertToBase(tx.amount, tx.currency, s);
+      } else if (tx.type === 'PAYABLE' && !tx.isLoanSettled) {
+        pendingPayables += convertToBase(tx.amount, tx.currency, s);
+      }
+    });
+
+    const lockedAndInvestments = round2(lockedWallet + investmentsTotal);
+    const totalNetWorth = round2(liquidCash + lockedAndInvestments + pendingReceivables - pendingPayables - cardDebt);
+
+    return {
+      liquidCash: round2(liquidCash),
+      lockedWallet: round2(lockedWallet),
+      investmentsTotal: round2(investmentsTotal),
+      lockedAndInvestments,
+      cardDebt: round2(cardDebt),
+      pendingReceivables: round2(pendingReceivables),
+      pendingPayables: round2(pendingPayables),
+      totalNetWorth
+    };
+  }
+
+  function getCreditCardCycle(card) {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    const todayD = now.getDate();
+    const stmtDay = Math.min(28, Math.max(1, Number(card.statementDay || 15)));
+    const dueDay = Math.min(28, Math.max(1, Number(card.dueDay || 5)));
+
+    let cycleStart, cycleEnd;
+    if (todayD <= stmtDay) {
+      cycleStart = new Date(y, m - 1, stmtDay + 1);
+      cycleEnd = new Date(y, m, stmtDay);
+    } else {
+      cycleStart = new Date(y, m, stmtDay + 1);
+      cycleEnd = new Date(y, m + 1, stmtDay);
+    }
+
+    let dueDate = new Date(cycleEnd.getFullYear(), cycleEnd.getMonth(), dueDay);
+    if (dueDate <= cycleEnd) {
+      dueDate = new Date(cycleEnd.getFullYear(), cycleEnd.getMonth() + 1, dueDay);
+    }
+    const daysToDue = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const fmt = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
+    return {
+      periodLabel: `${fmt(cycleStart)} – ${fmt(cycleEnd)}`,
+      dueLabel: `${dueDate.getMonth() + 1}月${dueDate.getDate()}日`,
+      daysToDue: Math.max(0, daysToDue)
+    };
+  }
+
+  const WealthStore = {
+    APP_VERSION,
     SCHEMA_VERSION,
-    STORAGE_KEY,
-    CURRENCY_SYMBOLS,
+    CURRENCIES,
+    CARD_THEMES,
+    uid,
     todayISO,
-    addDaysISO,
-    getState: () => currentState,
-    subscribe: (fn) => {
+    nowTimeHM,
+    round2,
+    getCurrencySymbol,
+    convertToBase,
+    formatMoney,
+    getSummaryMetrics,
+    getCreditCardCycle,
+
+    getState() {
+      return state;
+    },
+
+    subscribe(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    setState: (updater) => {
-      const next = typeof updater === 'function' ? updater(currentState) : updater;
-      persistAndEmit(next);
+
+    completeOnboarding(baseCurrency, useDemo) {
+      state = useDemo ? createDemoState(baseCurrency) : createBlankState(baseCurrency);
+      notify();
     },
-    completeOnboarding: (baseCurrency, mode) => {
-      const next = mode === 'BLANK' ? createEmptyState(baseCurrency) : createSeedState(baseCurrency);
-      persistAndEmit(next);
+
+    resetOnboarding() {
+      const draft = cloneState();
+      draft.meta.onboardingDone = false;
+      state = draft;
+      notify();
     },
-    resetToOnboarding: () => {
-      persistAndEmit({ ...currentState, hasCompletedOnboarding: false });
+
+    setBaseCurrency(code) {
+      const draft = cloneState();
+      draft.meta.baseCurrency = code;
+      draft.meta.fxRates = buildFxMap(code);
+      state = draft;
+      notify();
     },
-    convertToBase: (amount, currency) => convertToBase(currentState, amount, currency),
-    getRateToBase: (currency) => getRateToBase(currentState, currency),
-    formatMoney,
-    computeNetWorthSummary: () => computeNetWorthSummary(currentState),
-    getFlatAccounts: () => getFlatAccounts(currentState),
-    saveTransaction: (txInput, saveAsTemplate = false) => {
-      let warnings = [];
-      WealthStore.setState(prev => {
-        const oldTx = (prev.transactions || []).find(t => t.id === txInput.id);
-        let working = prev;
-        if (oldTx) {
-          working = applyTransactionDelta(working, oldTx, -1).state;
-        }
-        const applied = applyTransactionDelta(working, txInput, +1);
-        working = applied.state;
-        warnings = applied.warnings;
 
-        let nextCategories = working.settings.categories;
-        if (txInput.merchant && (txInput.type === 'EXPENSE' || txInput.type === 'INCOME')) {
-          const flow = txInput.type;
-          nextCategories = {
-            ...nextCategories,
-            [flow]: (nextCategories[flow] || []).map(cat => {
-              if (cat.id !== txInput.mainCatId) return cat;
-              return {
-                ...cat,
-                subs: (cat.subs || []).map(sub => {
-                  if (sub.id !== txInput.subCatId) return sub;
-                  const exists = (sub.merchants || []).includes(txInput.merchant);
-                  return exists ? sub : { ...sub, merchants: [txInput.merchant, ...(sub.merchants || [])].slice(0, 12) };
-                })
-              };
-            })
-          };
-        }
-
-        let nextCustomTemplates = working.settings.customTemplates || [];
-        if (saveAsTemplate) {
-          nextCustomTemplates = [
-            {
-              id: 'tpl_' + Date.now(),
-              name: txInput.title || '常用範本',
-              type: txInput.type,
-              mainCatId: txInput.mainCatId,
-              subCatId: txInput.subCatId,
-              bucketId: txInput.bucketId,
-              accountId: txInput.accountId,
-              amount: txInput.amount,
-              currency: txInput.currency,
-              merchant: txInput.merchant || ''
-            },
-            ...nextCustomTemplates
-          ];
-        }
-
-        const exists = (working.transactions || []).some(t => t.id === txInput.id);
-        const nextTxs = exists
-          ? working.transactions.map(t => t.id === txInput.id ? txInput : t)
-          : [txInput, ...(working.transactions || [])];
-        nextTxs.sort((a, b) => b.date.localeCompare(a.date));
-
-        const snap = computeNetWorthSummary(working);
-        const curMonth = todayISO().slice(0, 7);
-        const otherSnaps = (working.netWorthSnapshots || []).filter(s => s.month !== curMonth);
-
-        return {
-          ...working,
-          settings: {
-            ...working.settings,
-            categories: nextCategories,
-            customTemplates: nextCustomTemplates
-          },
-          transactions: nextTxs,
-          netWorthSnapshots: [
-            ...otherSnaps,
-            { month: curMonth, netWorth: snap.netWorth, liquidCash: snap.liquidCash, lockedAndFrozen: snap.lockedAndFrozen, investments: snap.investments, debt: snap.debt }
-          ].sort((a, b) => a.month.localeCompare(b.month))
-        };
-      });
-      return warnings;
+    updateFxRate(code, rate) {
+      const num = Number(rate);
+      if (!Number.isFinite(num) || num <= 0) return;
+      const draft = cloneState();
+      draft.meta.fxRates[code] = round2(num);
+      state = draft;
+      notify();
     },
-    deleteTransaction: (txId) => {
-      let outcome = 'DELETED';
-      WealthStore.setState(prev => {
-        const target = (prev.transactions || []).find(t => t.id === txId);
-        if (!target) return prev;
 
-        let working = applyTransactionDelta(prev, target, -1).state;
-        const idsToRemove = new Set([txId]);
-        let revertLoanId = null;
+    togglePrivacy() {
+      const draft = cloneState();
+      draft.meta.privacyMode = !draft.meta.privacyMode;
+      state = draft;
+      notify();
+    },
 
-        if ((target.type === 'RECEIVABLE' || target.type === 'PAYABLE') && target.isLoanSettled) {
-          const pairedSettle = (working.transactions || []).find(
-            t => t.id === target.settlementTxId || t.linkedLoanTxId === target.id
-          );
-          if (pairedSettle) {
-            working = applyTransactionDelta(working, pairedSettle, -1).state;
-            idsToRemove.add(pairedSettle.id);
-            outcome = 'PAIR_DELETED';
+    // ---- Accounts & Wallet (Module 1) ----
+    addAccount(payload) {
+      const draft = cloneState();
+      const acc = {
+        id: uid('acc'),
+        name: (payload.name || '新帳戶').trim(),
+        subtitle: (payload.subtitle || '活期帳戶').trim(),
+        type: payload.type || 'BANK',
+        theme: payload.theme || 'obsidian',
+        balances: [
+          {
+            id: uid('bal'),
+            currency: payload.currency || draft.meta.baseCurrency,
+            amount: round2(payload.initialAmount || 0),
+            poolId: payload.poolId || 'pool_liquid',
+            isDefaultPayment: draft.accounts.length === 0
           }
-        }
-
-        if (target.type === 'LOAN_SETTLEMENT' && target.linkedLoanTxId) {
-          revertLoanId = target.linkedLoanTxId;
-          outcome = 'REVERTED_LOAN';
-        }
-
-        const nextTxs = (working.transactions || [])
-          .filter(t => !idsToRemove.has(t.id))
-          .map(t => t.id === revertLoanId ? { ...t, isLoanSettled: false, settlementTxId: null } : t);
-
-        const snap = computeNetWorthSummary(working);
-        const curMonth = todayISO().slice(0, 7);
-        const otherSnaps = (working.netWorthSnapshots || []).filter(s => s.month !== curMonth);
-
-        return {
-          ...working,
-          transactions: nextTxs,
-          netWorthSnapshots: [
-            ...otherSnaps,
-            { month: curMonth, netWorth: snap.netWorth, liquidCash: snap.liquidCash, lockedAndFrozen: snap.lockedAndFrozen, investments: snap.investments, debt: snap.debt }
-          ].sort((a, b) => a.month.localeCompare(b.month))
-        };
-      });
-      return outcome;
-    },
-    settleLoanTransaction: (loanTxId, settleAccountId) => {
-      const prev = currentState;
-      const loan = (prev.transactions || []).find(t => t.id === loanTxId);
-      if (!loan || loan.isLoanSettled) return null;
-      const flat = getFlatAccounts(prev);
-      const settleAcc = flat.find(a => a.id === settleAccountId) || flat.find(a => a.id === loan.accountId) || flat[0];
-      const now = new Date();
-      const settleTx = {
-        id: 'tx_settle_' + Date.now(),
-        date: todayISO(),
-        time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-        type: 'LOAN_SETTLEMENT',
-        loanDirection: loan.type === 'RECEIVABLE' ? 'IN' : 'OUT',
-        linkedLoanTxId: loan.id,
-        mainCatId: loan.mainCatId,
-        subCatId: loan.subCatId,
-        title: `${loan.type === 'RECEIVABLE' ? '已收回' : '已償還'} · ${loan.counterparty || loan.title}`,
-        merchant: loan.counterparty || '',
-        bucketId: loan.bucketId,
-        accountId: settleAcc ? settleAcc.id : loan.accountId,
-        toAccountId: null,
-        currency: settleAcc ? settleAcc.currency : loan.currency,
-        amount: loan.amount,
-        accountAmount: loan.amount,
-        creditCycle: settleAcc?.kind === 'CREDIT' ? 'UNBILLED' : null,
-        counterparty: loan.counterparty || '',
-        receivableMode: 'NEW',
-        isLoanSettled: true,
-        isLockedSettled: false,
-        note: `結清原單 (${loan.date} ${loan.title})`
+        ],
+        allocations: []
       };
-      WealthStore.setState(curr => {
-        const applied = applyTransactionDelta(curr, settleTx, +1).state;
-        const marked = (applied.transactions || []).map(t =>
-          t.id === loanTxId ? { ...t, isLoanSettled: true, settlementTxId: settleTx.id } : t
-        );
-        const snap = computeNetWorthSummary(applied);
-        const curMonth = todayISO().slice(0, 7);
-        const otherSnaps = (applied.netWorthSnapshots || []).filter(s => s.month !== curMonth);
-        return {
-          ...applied,
-          transactions: [settleTx, ...marked].sort((a, b) => b.date.localeCompare(a.date)),
-          netWorthSnapshots: [
-            ...otherSnaps,
-            { month: curMonth, netWorth: snap.netWorth, liquidCash: snap.liquidCash, lockedAndFrozen: snap.lockedAndFrozen, investments: snap.investments, debt: snap.debt }
-          ].sort((a, b) => a.month.localeCompare(b.month))
-        };
+      draft.accounts.push(acc);
+      state = draft;
+      notify();
+      return acc;
+    },
+
+    updateAccount(accId, patch) {
+      const draft = cloneState();
+      const acc = draft.accounts.find((a) => a.id === accId);
+      if (!acc) return;
+      if (patch.name != null) acc.name = patch.name.trim() || acc.name;
+      if (patch.subtitle != null) acc.subtitle = patch.subtitle.trim();
+      if (patch.type != null) acc.type = patch.type;
+      if (patch.theme != null) acc.theme = patch.theme;
+      state = draft;
+      notify();
+    },
+
+    deleteAccount(accId) {
+      const draft = cloneState();
+      draft.accounts = draft.accounts.filter((a) => a.id !== accId);
+      state = draft;
+      notify();
+    },
+
+    addAccountCurrency(accId, currency, initialAmount, poolId) {
+      const draft = cloneState();
+      const acc = draft.accounts.find((a) => a.id === accId);
+      if (!acc) return false;
+      if (acc.balances.some((b) => b.currency === currency)) return false;
+      acc.balances.push({
+        id: uid('bal'),
+        currency,
+        amount: round2(initialAmount || 0),
+        poolId: poolId || 'pool_liquid',
+        isDefaultPayment: false
       });
+      state = draft;
+      notify();
+      return true;
+    },
+
+    calibrateBalance(accId, balId, newAmount, poolId) {
+      const draft = cloneState();
+      const acc = draft.accounts.find((a) => a.id === accId);
+      if (!acc) return;
+      const bal = acc.balances.find((b) => b.id === balId);
+      if (!bal) return;
+      if (newAmount != null && Number.isFinite(Number(newAmount))) {
+        bal.amount = round2(newAmount);
+      }
+      if (poolId) bal.poolId = poolId;
+      state = draft;
+      notify();
+    },
+
+    setDefaultPaymentBalance(accId, balId) {
+      const draft = cloneState();
+      draft.accounts.forEach((a) => {
+        a.balances.forEach((b) => {
+          b.isDefaultPayment = (a.id === accId && b.id === balId);
+        });
+      });
+      state = draft;
+      notify();
+    },
+
+    topUpEWallet(fromAccId, fromBalId, toAccId, toBalId, amount) {
+      const amt = round2(amount);
+      if (amt <= 0) return null;
+      const fromAcc = state.accounts.find((a) => a.id === fromAccId);
+      const fromBal = fromAcc && fromAcc.balances.find((b) => b.id === fromBalId);
+      const toAcc = state.accounts.find((a) => a.id === toAccId);
+      const toBal = toAcc && toAcc.balances.find((b) => b.id === toBalId);
+      if (!fromBal || !toBal) return null;
+
+      return this.addTransaction({
+        type: 'TRANSFER',
+        title: `${toAcc.name} 增值`,
+        amount: amt,
+        currency: fromBal.currency,
+        settledAmount: amt,
+        settledCurrency: toBal.currency,
+        accountKind: 'ACCOUNT',
+        accountId: fromAccId,
+        balanceId: fromBalId,
+        toAccountKind: 'ACCOUNT',
+        toAccountId: toAccId,
+        toBalanceId: toBalId,
+        poolId: toBal.poolId || 'pool_liquid',
+        date: todayISO(),
+        time: nowTimeHM(),
+        note: `由 ${fromAcc.name} 扣款增值`
+      });
+    },
+
+    addAllocation(accId, currency, payload) {
+      const draft = cloneState();
+      const acc = draft.accounts.find((a) => a.id === accId);
+      if (!acc) return;
+      acc.allocations = acc.allocations || [];
+      acc.allocations.push({
+        id: uid('alloc'),
+        currency,
+        name: (payload.name || '新份額').trim(),
+        amount: Math.max(0, round2(payload.amount || 0)),
+        locked: Boolean(payload.locked),
+        poolId: payload.poolId || 'pool_reserve'
+      });
+      state = draft;
+      notify();
+    },
+
+    updateAllocation(accId, allocId, patch) {
+      const draft = cloneState();
+      const acc = draft.accounts.find((a) => a.id === accId);
+      if (!acc) return;
+      const al = (acc.allocations || []).find((x) => x.id === allocId);
+      if (!al) return;
+      if (patch.name != null) al.name = patch.name.trim() || al.name;
+      if (patch.amount != null) al.amount = Math.max(0, round2(patch.amount));
+      if (patch.locked != null) al.locked = Boolean(patch.locked);
+      if (patch.poolId != null) al.poolId = patch.poolId;
+      state = draft;
+      notify();
+    },
+
+    deleteAllocation(accId, allocId) {
+      const draft = cloneState();
+      const acc = draft.accounts.find((a) => a.id === accId);
+      if (!acc) return;
+      acc.allocations = (acc.allocations || []).filter((x) => x.id !== allocId);
+      state = draft;
+      notify();
+    },
+
+    absorbFreeAmount(accId, currency, allocId) {
+      const draft = cloneState();
+      const acc = draft.accounts.find((a) => a.id === accId);
+      if (!acc) return;
+      const bal = acc.balances.find((b) => b.currency === currency);
+      if (!bal) return;
+      const used = (acc.allocations || [])
+        .filter((x) => x.currency === currency)
+        .reduce((sum, x) => sum + Number(x.amount || 0), 0);
+      const free = Math.max(0, round2(bal.amount - used));
+      const target = (acc.allocations || []).find((x) => x.id === allocId);
+      if (target && free > 0) {
+        target.amount = round2(target.amount + free);
+        state = draft;
+        notify();
+      }
+    },
+
+    // ---- Transactions & Paired Loan Logic (Module 3) ----
+    addTransaction(payload) {
+      const draft = cloneState();
+      const tx = Object.assign(
+        {
+          id: uid('tx'),
+          type: 'EXPENSE',
+          title: '未命名紀錄',
+          amount: 0,
+          currency: draft.meta.baseCurrency,
+          settledAmount: null,
+          settledCurrency: null,
+          accountKind: 'ACCOUNT',
+          accountId: null,
+          balanceId: null,
+          toAccountKind: null,
+          toAccountId: null,
+          toBalanceId: null,
+          categoryId: null,
+          poolId: 'pool_liquid',
+          counterparty: '',
+          isLoanSettled: false,
+          settlementTxId: null,
+          linkedLoanId: null,
+          settlementDirection: null,
+          date: todayISO(),
+          time: nowTimeHM(),
+          note: ''
+        },
+        payload
+      );
+      tx.amount = Math.abs(round2(tx.amount));
+      tx.settledAmount = tx.settledAmount != null ? Math.abs(round2(tx.settledAmount)) : tx.amount;
+      tx.settledCurrency = tx.settledCurrency || tx.currency;
+
+      applyTransactionEffect(draft, tx, 1);
+      draft.transactions.unshift(tx);
+      state = draft;
+      notify();
+      return tx;
+    },
+
+    updateTransaction(txId, patch) {
+      const draft = cloneState();
+      const idx = draft.transactions.findIndex((t) => t.id === txId);
+      if (idx === -1) return null;
+      const oldTx = draft.transactions[idx];
+      applyTransactionEffect(draft, oldTx, -1);
+
+      const updated = Object.assign({}, oldTx, patch);
+      updated.amount = Math.abs(round2(updated.amount));
+      updated.settledAmount = updated.settledAmount != null ? Math.abs(round2(updated.settledAmount)) : updated.amount;
+      updated.settledCurrency = updated.settledCurrency || updated.currency;
+
+      applyTransactionEffect(draft, updated, 1);
+      draft.transactions[idx] = updated;
+      state = draft;
+      notify();
+      return updated;
+    },
+
+    settleLoan(loanTxId, targetAccKind, targetAccId, targetBalId) {
+      const draft = cloneState();
+      const loanTx = draft.transactions.find((t) => t.id === loanTxId);
+      if (!loanTx || loanTx.isLoanSettled) return null;
+      if (loanTx.type !== 'RECEIVABLE' && loanTx.type !== 'PAYABLE') return null;
+
+      const isReceivable = loanTx.type === 'RECEIVABLE';
+      const settleTx = {
+        id: uid('tx_settle'),
+        type: 'LOAN_SETTLEMENT',
+        settlementDirection: isReceivable ? 'IN' : 'OUT',
+        linkedLoanId: loanTx.id,
+        title: (isReceivable ? '收回：' : '還款：') + loanTx.title,
+        amount: loanTx.amount,
+        currency: loanTx.currency,
+        settledAmount: loanTx.amount,
+        settledCurrency: loanTx.currency,
+        accountKind: targetAccKind || 'ACCOUNT',
+        accountId: targetAccId,
+        balanceId: targetBalId || null,
+        categoryId: null,
+        poolId: loanTx.poolId || 'pool_liquid',
+        counterparty: loanTx.counterparty || '',
+        date: todayISO(),
+        time: nowTimeHM(),
+        note: `對應${isReceivable ? '代墊' : '借款'}原單結清`
+      };
+
+      applyTransactionEffect(draft, settleTx, 1);
+      loanTx.isLoanSettled = true;
+      loanTx.settlementTxId = settleTx.id;
+      draft.transactions.unshift(settleTx);
+      state = draft;
+      notify();
       return settleTx;
     },
-    unsettleLoanTransaction: (loanTxId) => {
-      let ok = false;
-      WealthStore.setState(curr => {
-        const loan = (curr.transactions || []).find(t => t.id === loanTxId);
-        if (!loan || !loan.isLoanSettled) return curr;
 
-        const settleTx = (curr.transactions || []).find(
-          t => t.id === loan.settlementTxId || t.linkedLoanTxId === loan.id
-        );
-        const working = settleTx ? applyTransactionDelta(curr, settleTx, -1).state : curr;
-        const nextTxs = (working.transactions || [])
-          .filter(t => !settleTx || t.id !== settleTx.id)
-          .map(t => t.id === loanTxId ? { ...t, isLoanSettled: false, settlementTxId: null } : t);
+    unsettleLoan(loanTxId) {
+      const draft = cloneState();
+      const loanTx = draft.transactions.find((t) => t.id === loanTxId);
+      if (!loanTx || !loanTx.isLoanSettled) return false;
 
-        const snap = computeNetWorthSummary(working);
-        const curMonth = todayISO().slice(0, 7);
-        const otherSnaps = (working.netWorthSnapshots || []).filter(s => s.month !== curMonth);
-        ok = true;
-        return {
-          ...working,
-          transactions: nextTxs,
-          netWorthSnapshots: [
-            ...otherSnaps,
-            { month: curMonth, netWorth: snap.netWorth, liquidCash: snap.liquidCash, lockedAndFrozen: snap.lockedAndFrozen, investments: snap.investments, debt: snap.debt }
-          ].sort((a, b) => a.month.localeCompare(b.month))
-        };
-      });
-      return ok;
-    },
-    savePaydayTemplates: (nextTemplates) => {
-      WealthStore.setState(prev => ({
-        ...prev,
-        settings: {
-          ...prev.settings,
-          paydayTemplates: Array.isArray(nextTemplates) ? nextTemplates : []
+      if (loanTx.settlementTxId) {
+        const settleIdx = draft.transactions.findIndex((t) => t.id === loanTx.settlementTxId);
+        if (settleIdx !== -1) {
+          applyTransactionEffect(draft, draft.transactions[settleIdx], -1);
+          draft.transactions.splice(settleIdx, 1);
         }
-      }));
-    },
-    executePaydayBatch: (batchItems, targetDate) => {
-      WealthStore.setState(prev => {
-        let working = prev;
-        const flat = getFlatAccounts(prev);
-        const created = [];
-        (batchItems || []).forEach((it, idx) => {
-          if (!it.enabled || Number(it.amount) <= 0) return;
-          const srcAcc = flat.find(a => a.id === it.accountId);
-          const tx = {
-            id: `tx_batch_${Date.now()}_${idx}`,
-            date: targetDate || todayISO(),
-            time: '09:00',
-            type: it.type,
-            mainCatId: it.type === 'TRANSFER' ? 'TRANSFER' : (it.mainCatId || (it.type === 'INCOME' ? 'cat_salary' : 'cat_home')),
-            subCatId: it.type === 'TRANSFER' ? 'TRANSFER' : (it.subCatId || (it.type === 'INCOME' ? 'sub_main_sal' : 'sub_mortgage')),
-            title: it.title,
-            merchant: '',
-            bucketId: it.bucketId || 'PUBLIC',
-            accountId: it.accountId,
-            toAccountId: it.type === 'TRANSFER' ? (it.toAccountId || null) : null,
-            currency: it.currency || srcAcc?.currency || prev.settings.baseCurrency,
-            amount: Number(it.amount),
-            accountAmount: Number(it.amount),
-            creditCycle: srcAcc?.kind === 'CREDIT' && it.type !== 'TRANSFER' ? 'UNBILLED' : null,
-            counterparty: '',
-            receivableMode: 'NEW',
-            isLoanSettled: false,
-            isLockedSettled: false,
-            note: '月度固定分流'
-          };
-          working = applyTransactionDelta(working, tx, +1).state;
-          created.push(tx);
-        });
-        const snap = computeNetWorthSummary(working);
-        const curMonth = todayISO().slice(0, 7);
-        const otherSnaps = (working.netWorthSnapshots || []).filter(s => s.month !== curMonth);
-        return {
-          ...working,
-          transactions: [...created, ...(working.transactions || [])].sort((a, b) => b.date.localeCompare(a.date)),
-          netWorthSnapshots: [
-            ...otherSnaps,
-            { month: curMonth, netWorth: snap.netWorth, liquidCash: snap.liquidCash, lockedAndFrozen: snap.lockedAndFrozen, investments: snap.investments, debt: snap.debt }
-          ].sort((a, b) => a.month.localeCompare(b.month))
-        };
-      });
-    },
-    runConsistencyDiagnostics: () => {
-      const st = currentState;
-      const checks = [];
-
-      let invalidNumbers = 0;
-      (st.walletCards || []).forEach(c => (c.accounts || []).forEach(a => {
-        if (!Number.isFinite(Number(a.balance))) invalidNumbers++;
-      }));
-      (st.creditCards || []).forEach(cc => Object.values(cc.statements || {}).forEach(s => {
-        if (!Number.isFinite(Number(s.billedAmount)) || !Number.isFinite(Number(s.unbilledAmount))) invalidNumbers++;
-      }));
-      checks.push({
-        id: 'CHK_NUM',
-        label: '帳戶與信用卡數值完整性',
-        ok: invalidNumbers === 0,
-        detail: invalidNumbers === 0 ? '所有帳戶餘額與帳單欄位皆為有效數值' : `發現 ${invalidNumbers} 筆異常數值`
-      });
-
-      const validBucketIds = new Set((st.settings?.buckets || []).map(b => b.id));
-      const orphanTxs = (st.transactions || []).filter(t => t.bucketId && !validBucketIds.has(t.bucketId));
-      checks.push({
-        id: 'CHK_REF',
-        label: '資金池與分類引用一致性',
-        ok: orphanTxs.length === 0,
-        detail: orphanTxs.length === 0 ? `${(st.transactions || []).length} 筆交易關聯完整無斷鏈` : `${orphanTxs.length} 筆交易資金池未對齊`
-      });
-
-      const firstAcc = getFlatAccounts(st)[0];
-      let rollbackOk = true;
-      if (firstAcc) {
-        const probeTx = {
-          id: 'probe_tx',
-          type: 'EXPENSE',
-          amount: 123.45,
-          accountAmount: 123.45,
-          currency: firstAcc.currency,
-          accountId: firstAcc.id,
-          bucketId: 'PUBLIC',
-          creditCycle: 'UNBILLED'
-        };
-        const afterAdd = applyTransactionDelta(st, probeTx, +1).state;
-        const afterDel = applyTransactionDelta(afterAdd, probeTx, -1).state;
-        rollbackOk = JSON.stringify(afterDel.walletCards) === JSON.stringify(st.walletCards) &&
-                     JSON.stringify(afterDel.creditCards) === JSON.stringify(st.creditCards);
       }
+      loanTx.isLoanSettled = false;
+      loanTx.settlementTxId = null;
+      state = draft;
+      notify();
+      return true;
+    },
+
+    deleteTransaction(txId) {
+      const draft = cloneState();
+      const idx = draft.transactions.findIndex((t) => t.id === txId);
+      if (idx === -1) return { deleted: 0, mode: 'NONE' };
+      const tx = draft.transactions[idx];
+
+      // Case A: Deleting a LOAN_SETTLEMENT -> revert balance AND restore original loan to pending!
+      if (tx.type === 'LOAN_SETTLEMENT') {
+        applyTransactionEffect(draft, tx, -1);
+        draft.transactions.splice(idx, 1);
+        if (tx.linkedLoanId) {
+          const orig = draft.transactions.find((t) => t.id === tx.linkedLoanId);
+          if (orig) {
+            orig.isLoanSettled = false;
+            orig.settlementTxId = null;
+          }
+        }
+        state = draft;
+        notify();
+        return { deleted: 1, mode: 'REOPEN_LOAN' };
+      }
+
+      // Case B: Deleting a settled RECEIVABLE / PAYABLE -> paired delete BOTH original & settlement!
+      if ((tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE') && tx.isLoanSettled && tx.settlementTxId) {
+        applyTransactionEffect(draft, tx, -1);
+        draft.transactions.splice(idx, 1);
+        const sIdx = draft.transactions.findIndex((t) => t.id === tx.settlementTxId);
+        if (sIdx !== -1) {
+          applyTransactionEffect(draft, draft.transactions[sIdx], -1);
+          draft.transactions.splice(sIdx, 1);
+        }
+        state = draft;
+        notify();
+        return { deleted: 2, mode: 'PAIRED_DELETE' };
+      }
+
+      // Case C: Standard single transaction delete with balance rollback
+      applyTransactionEffect(draft, tx, -1);
+      draft.transactions.splice(idx, 1);
+      state = draft;
+      notify();
+      return { deleted: 1, mode: 'SINGLE' };
+    },
+
+    // ---- Categories ----
+    addCategory(payload) {
+      const draft = cloneState();
+      const cat = {
+        id: uid('cat'),
+        type: payload.type || 'EXPENSE',
+        name: (payload.name || '新分類').trim(),
+        icon: payload.icon || 'tag',
+        color: payload.color || '#60A5FA',
+        defaultPoolId: payload.defaultPoolId || 'pool_liquid'
+      };
+      draft.categories.push(cat);
+      state = draft;
+      notify();
+      return cat;
+    },
+
+    deleteCategory(catId) {
+      const draft = cloneState();
+      draft.categories = draft.categories.filter((c) => c.id !== catId);
+      state = draft;
+      notify();
+    },
+
+    // ---- Salary Split Rules (Batch Flow) ----
+    addSplitRule(payload) {
+      const draft = cloneState();
+      const rule = {
+        id: uid('sr'),
+        name: (payload.name || '新分流項目').trim(),
+        enabled: payload.enabled !== false,
+        type: payload.type || 'TRANSFER',
+        amount: Math.abs(round2(payload.amount || 0)),
+        currency: payload.currency || draft.meta.baseCurrency,
+        fromAccountId: payload.fromAccountId || null,
+        fromBalanceId: payload.fromBalanceId || null,
+        toAccountId: payload.toAccountId || null,
+        toBalanceId: payload.toBalanceId || null,
+        categoryId: payload.categoryId || null,
+        poolId: payload.poolId || 'pool_liquid'
+      };
+      draft.splitRules.push(rule);
+      state = draft;
+      notify();
+      return rule;
+    },
+
+    updateSplitRule(ruleId, patch) {
+      const draft = cloneState();
+      const r = draft.splitRules.find((x) => x.id === ruleId);
+      if (!r) return;
+      Object.assign(r, patch);
+      if (patch.amount != null) r.amount = Math.abs(round2(patch.amount));
+      state = draft;
+      notify();
+    },
+
+    deleteSplitRule(ruleId) {
+      const draft = cloneState();
+      draft.splitRules = draft.splitRules.filter((x) => x.id !== ruleId);
+      state = draft;
+      notify();
+    },
+
+    executeSplitRules(selectedItems) {
+      // selectedItems: [{ ruleId, amount }]
+      const draft = cloneState();
+      const today = todayISO();
+      const time = nowTimeHM();
+      let count = 0;
+
+      selectedItems.forEach((item) => {
+        const rule = draft.splitRules.find((r) => r.id === item.ruleId);
+        if (!rule) return;
+        const amt = Math.abs(round2(item.amount != null ? item.amount : rule.amount));
+        if (amt <= 0) return;
+
+        let tx;
+        if (rule.type === 'INCOME') {
+          tx = {
+            id: uid('tx'),
+            type: 'INCOME',
+            title: rule.name,
+            amount: amt,
+            currency: rule.currency,
+            settledAmount: amt,
+            settledCurrency: rule.currency,
+            accountKind: 'ACCOUNT',
+            accountId: rule.toAccountId,
+            balanceId: rule.toBalanceId,
+            categoryId: rule.categoryId || 'cat_salary',
+            poolId: rule.poolId || 'pool_liquid',
+            date: today,
+            time,
+            note: '發薪分流批次入帳'
+          };
+        } else if (rule.type === 'EXPENSE') {
+          tx = {
+            id: uid('tx'),
+            type: 'EXPENSE',
+            title: rule.name,
+            amount: amt,
+            currency: rule.currency,
+            settledAmount: amt,
+            settledCurrency: rule.currency,
+            accountKind: 'ACCOUNT',
+            accountId: rule.fromAccountId,
+            balanceId: rule.fromBalanceId,
+            categoryId: rule.categoryId || 'cat_home',
+            poolId: rule.poolId || 'pool_liquid',
+            date: today,
+            time,
+            note: '發薪分流固定支出'
+          };
+        } else {
+          tx = {
+            id: uid('tx'),
+            type: 'TRANSFER',
+            title: rule.name,
+            amount: amt,
+            currency: rule.currency,
+            settledAmount: amt,
+            settledCurrency: rule.currency,
+            accountKind: 'ACCOUNT',
+            accountId: rule.fromAccountId,
+            balanceId: rule.fromBalanceId,
+            toAccountKind: 'ACCOUNT',
+            toAccountId: rule.toAccountId,
+            toBalanceId: rule.toBalanceId,
+            categoryId: null,
+            poolId: rule.poolId || 'pool_reserve',
+            date: today,
+            time,
+            note: '發薪分流帳戶轉撥'
+          };
+        }
+
+        applyTransactionEffect(draft, tx, 1);
+        draft.transactions.unshift(tx);
+        count++;
+      });
+
+      if (count > 0) {
+        state = draft;
+        notify();
+      }
+      return count;
+    },
+
+    // ---- Backup & Diagnostics ----
+    exportJSON() {
+      return JSON.stringify(state, null, 2);
+    },
+
+    importJSON(text) {
+      const parsed = JSON.parse(text);
+      state = migrateState(parsed);
+      notify();
+      return state;
+    },
+
+    runDiagnostics() {
+      const checks = [];
+      // 1. Balance NaN check
+      let nanFound = false;
+      state.accounts.forEach((a) => {
+        (a.balances || []).forEach((b) => {
+          if (!Number.isFinite(Number(b.amount))) nanFound = true;
+        });
+      });
       checks.push({
-        id: 'CHK_ROLLBACK',
-        label: '差額回滾引擎對稱性自檢',
-        ok: rollbackOk,
-        detail: rollbackOk ? '新增 ➔ 回滾 100% 精準歸零還原' : '差額回滾偵測到偏差'
+        label: '帳戶餘額數值完整性',
+        ok: !nanFound,
+        detail: nanFound ? '發現無效數值' : `已檢查 ${state.accounts.length} 個帳戶`
+      });
+
+      // 2. Allocation overflow check
+      let overflow = false;
+      state.accounts.forEach((a) => {
+        (a.balances || []).forEach((b) => {
+          const sumAl = (a.allocations || [])
+            .filter((al) => al.currency === b.currency)
+            .reduce((s, al) => s + Number(al.amount || 0), 0);
+          if (sumAl > Number(b.amount || 0) + 0.01) overflow = true;
+        });
+      });
+      checks.push({
+        label: '戶口內部份額不超額',
+        ok: !overflow,
+        detail: overflow ? '部分帳戶切分額大於餘額' : '所有切分額均在餘額內'
+      });
+
+      // 3. Loan pair integrity
+      let brokenLoan = false;
+      state.transactions.forEach((tx) => {
+        if ((tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE') && tx.isLoanSettled) {
+          if (!tx.settlementTxId || !state.transactions.some((x) => x.id === tx.settlementTxId)) {
+            brokenLoan = true;
+          }
+        }
+        if (tx.type === 'LOAN_SETTLEMENT' && tx.linkedLoanId) {
+          if (!state.transactions.some((x) => x.id === tx.linkedLoanId)) {
+            brokenLoan = true;
+          }
+        }
+      });
+      checks.push({
+        label: '應收／應付成對結清一致性',
+        ok: !brokenLoan,
+        detail: brokenLoan ? '發現孤立結清紀錄' : '雙向關聯 100% 閉環'
+      });
+
+      // 4. FX rate validity
+      const fxOk = Object.values(state.meta.fxRates || {}).every((v) => Number.isFinite(v) && v > 0);
+      checks.push({
+        label: '多幣種匯率有效',
+        ok: fxOk,
+        detail: `主幣種 ${state.meta.baseCurrency}`
       });
 
       return checks;
-    },
-    exportFullJson: () => JSON.stringify(currentState, null, 2),
-    importFullJson: (parsed) => {
-      const migrated = migrateState(parsed);
-      persistAndEmit(migrated);
     }
   };
+
+  window.WealthStore = WealthStore;
 })();

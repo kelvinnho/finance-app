@@ -1,439 +1,1405 @@
 (function () {
-  const { useState, useMemo } = React;
-  const Store = window.WealthStore;
-  const { Icons, CategoryIcon, BottomSheet, NumericInput, NumericKeypad, evaluateMathExpr } = window.WealthUI;
+  'use strict';
+
+  const { useState, useMemo, useEffect } = React;
+  const { createPortal } = ReactDOM;
 
   const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+  const TX_TYPES = [
+    { value: 'EXPENSE', label: '支出' },
+    { value: 'INCOME', label: '收入' },
+    { value: 'TRANSFER', label: '轉帳' },
+    { value: 'RECEIVABLE', label: '應收' },
+    { value: 'PAYABLE', label: '應付' }
+  ];
 
-  const RECORD_TYPES = {
-    EXPENSE:    { id: 'EXPENSE',    label: '支出', accent: 'text-rose-400',    pill: 'bg-rose-500 text-white' },
-    INCOME:     { id: 'INCOME',     label: '收入', accent: 'text-emerald-400', pill: 'bg-emerald-500 text-black' },
-    TRANSFER:   { id: 'TRANSFER',   label: '轉帳', accent: 'text-sky-400',     pill: 'bg-sky-500 text-black' },
-    RECEIVABLE: { id: 'RECEIVABLE', label: '應收', accent: 'text-amber-400',   pill: 'bg-amber-400 text-black' },
-    PAYABLE:    { id: 'PAYABLE',    label: '應付', accent: 'text-purple-400',  pill: 'bg-purple-400 text-white' }
-  };
-
-  function formatDateHeading(dateStr) {
-    const [y, m, d] = (dateStr || Store.todayISO()).split('-').map(Number);
-    const dt = new Date(y, (m || 1) - 1, d || 1);
-    const wd = WEEKDAYS[dt.getDay()] || '';
-    return `${m}月${d}日 · 星期${wd}`;
+  function parseYMD(iso) {
+    const parts = String(iso || '').split('-').map(Number);
+    return new Date(parts[0] || 2026, (parts[1] || 1) - 1, parts[2] || 1);
   }
 
-  function LedgerMainView({ hideMoney, onToggleHideMoney, onOpenEditor, onNotify }) {
-    const state = window.WealthUI.useWealthStore();
-    const today = Store.todayISO();
-    const [yearMonth, setYearMonth] = useState(() => ({
-      year: Number(today.slice(0, 4)),
-      month: Number(today.slice(5, 7))
-    }));
-    const [isCalExpanded, setIsCalExpanded] = useState(false);
+  function fmtYMD(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function formatGroupDate(iso) {
+    const d = parseYMD(iso);
+    return `${d.getMonth() + 1}月${d.getDate()}日 · 星期${WEEKDAYS[d.getDay()]}`;
+  }
+
+  // ---- Helper: Build unified account/balance + credit card selector options ----
+  function buildAccountOptions(state, includeCards) {
+    const list = [];
+    (state.accounts || []).forEach((acc) => {
+      (acc.balances || []).forEach((bal) => {
+        list.push({
+          key: `ACCOUNT::${acc.id}::${bal.id}`,
+          kind: 'ACCOUNT',
+          accountId: acc.id,
+          balanceId: bal.id,
+          currency: bal.currency,
+          amount: bal.amount,
+          poolId: bal.poolId,
+          label: acc.balances.length > 1 ? `${acc.name} (${bal.currency})` : acc.name,
+          sublabel: acc.subtitle || bal.currency
+        });
+      });
+    });
+    if (includeCards) {
+      (state.cards || []).forEach((c) => {
+        list.push({
+          key: `CARD::${c.id}::`,
+          kind: 'CARD',
+          accountId: c.id,
+          balanceId: null,
+          currency: c.currency,
+          amount: -(c.unbilled || 0),
+          poolId: 'pool_liquid',
+          label: c.name,
+          sublabel: `信用卡 · 尾號 ${c.last4 || '****'}`
+        });
+      });
+    }
+    return list;
+  }
+
+  // ---- Full-Screen Transaction Editor (Portal z-[60], Clean 2-Row Header) ----
+  function TransactionEditorSheet({ open, initialType, editingTx, prefillToCardId, state, onClose, showToast }) {
+    const { Icon, NumericInput, BottomSheet } = window.WealthUI;
+    const Store = window.WealthStore;
+
+    const allSources = useMemo(() => buildAccountOptions(state, true), [state]);
+    const bankSources = useMemo(() => buildAccountOptions(state, false), [state]);
+
+    const defaultSource = useMemo(() => {
+      for (let i = 0; i < state.accounts.length; i++) {
+        const a = state.accounts[i];
+        const defB = (a.balances || []).find((b) => b.isDefaultPayment);
+        if (defB) return `ACCOUNT::${a.id}::${defB.id}`;
+      }
+      return allSources[0] ? allSources[0].key : '';
+    }, [state.accounts, allSources]);
+
+    const [txType, setTxType] = useState('EXPENSE');
+    const [amount, setAmount] = useState(0);
+    const [currency, setCurrency] = useState(state.meta.baseCurrency);
+    const [settledAmount, setSettledAmount] = useState(0);
+    const [title, setTitle] = useState('');
+    const [categoryId, setCategoryId] = useState('');
+    const [fromKey, setFromKey] = useState('');
+    const [toKey, setToKey] = useState('');
+    const [poolId, setPoolId] = useState('pool_liquid');
+    const [counterparty, setCounterparty] = useState('');
+    const [date, setDate] = useState(Store.todayISO());
+    const [time, setTime] = useState(Store.nowTimeHM());
+    const [note, setNote] = useState('');
+
+    // Category manager sub-sheet
+    const [catMgrOpen, setCatMgrOpen] = useState(false);
+    const [newCatName, setNewCatName] = useState('');
+    const [newCatPool, setNewCatPool] = useState('pool_liquid');
+
+    useEffect(() => {
+      if (!open) return;
+      if (editingTx) {
+        setTxType(editingTx.type === 'LOAN_SETTLEMENT' ? 'INCOME' : editingTx.type);
+        setAmount(editingTx.amount || 0);
+        setCurrency(editingTx.currency || state.meta.baseCurrency);
+        setSettledAmount(editingTx.settledAmount != null ? editingTx.settledAmount : (editingTx.amount || 0));
+        setTitle(editingTx.title || '');
+        setCategoryId(editingTx.categoryId || '');
+        setFromKey(
+          editingTx.accountKind === 'CARD'
+            ? `CARD::${editingTx.accountId}::`
+            : `ACCOUNT::${editingTx.accountId}::${editingTx.balanceId || ''}`
+        );
+        setToKey(
+          editingTx.toAccountId
+            ? (editingTx.toAccountKind === 'CARD'
+                ? `CARD::${editingTx.toAccountId}::`
+                : `ACCOUNT::${editingTx.toAccountId}::${editingTx.toBalanceId || ''}`)
+            : ''
+        );
+        setPoolId(editingTx.poolId || 'pool_liquid');
+        setCounterparty(editingTx.counterparty || '');
+        setDate(editingTx.date || Store.todayISO());
+        setTime(editingTx.time || Store.nowTimeHM());
+        setNote(editingTx.note || '');
+      } else {
+        const nextType = prefillToCardId ? 'TRANSFER' : (initialType || 'EXPENSE');
+        setTxType(nextType);
+        setAmount(0);
+        setCurrency(state.meta.baseCurrency);
+        setSettledAmount(0);
+        setTitle(prefillToCardId ? '信用卡找數還款' : '');
+        const cats = state.categories.filter((c) => c.type === (nextType === 'INCOME' ? 'INCOME' : 'EXPENSE'));
+        setCategoryId(cats[0] ? cats[0].id : '');
+        setFromKey(defaultSource);
+        if (prefillToCardId) {
+          setToKey(`CARD::${prefillToCardId}::`);
+        } else {
+          const alt = allSources.find((s) => s.key !== defaultSource);
+          setToKey(alt ? alt.key : defaultSource);
+        }
+        setPoolId('pool_liquid');
+        setCounterparty('');
+        setDate(Store.todayISO());
+        setTime(Store.nowTimeHM());
+        setNote('');
+      }
+    }, [open, editingTx, initialType, prefillToCardId]);
+
+    const filteredCats = useMemo(() => {
+      const targetType = txType === 'INCOME' ? 'INCOME' : 'EXPENSE';
+      return state.categories.filter((c) => c.type === targetType);
+    }, [state.categories, txType]);
+
+    const fromOpt = useMemo(() => allSources.find((s) => s.key === fromKey) || allSources[0] || null, [allSources, fromKey]);
+    const toOpt = useMemo(() => allSources.find((s) => s.key === toKey) || allSources[1] || allSources[0] || null, [allSources, toKey]);
+
+    const targetSettlementCurrency = txType === 'TRANSFER'
+      ? (toOpt ? toOpt.currency : currency)
+      : (fromOpt ? fromOpt.currency : currency);
+    const isCrossCurrency = Boolean(targetSettlementCurrency && currency !== targetSettlementCurrency);
+
+    useEffect(() => {
+      if (!isCrossCurrency) {
+        setSettledAmount(amount);
+      } else if (amount > 0) {
+        const inBase = Store.convertToBase(amount, currency, state);
+        const targetRate = (state.meta.fxRates && state.meta.fxRates[targetSettlementCurrency]) || 1;
+        setSettledAmount(Store.round2(inBase / targetRate));
+      } else {
+        setSettledAmount(0);
+      }
+    }, [amount, currency, targetSettlementCurrency, isCrossCurrency]);
+
+    if (!open) return null;
+
+    const handleTypeSwitch = (nextType) => {
+      setTxType(nextType);
+      if (nextType !== 'TRANSFER') {
+        const cats = state.categories.filter((c) => c.type === (nextType === 'INCOME' ? 'INCOME' : 'EXPENSE'));
+        if (cats.length && !cats.some((c) => c.id === categoryId)) {
+          setCategoryId(cats[0].id);
+          if (cats[0].defaultPoolId) setPoolId(cats[0].defaultPoolId);
+        }
+      }
+    };
+
+    const handleSave = () => {
+      const amt = Number(amount);
+      if (!Number.isFinite(amt) || amt <= 0) {
+        showToast('請輸入大於 0 的金額');
+        return;
+      }
+      if (!fromOpt) {
+        showToast('請先在資產頁建立帳戶');
+        return;
+      }
+      if (txType === 'TRANSFER' && (!toOpt || fromOpt.key === toOpt.key)) {
+        showToast('轉出與轉入帳戶不可相同');
+        return;
+      }
+
+      const catObj = state.categories.find((c) => c.id === categoryId);
+      const finalTitle = title.trim() || (
+        txType === 'TRANSFER'
+          ? `${fromOpt.label} ➔ ${toOpt ? toOpt.label : ''}`
+          : txType === 'RECEIVABLE'
+          ? `代墊 · ${counterparty.trim() || (catObj ? catObj.name : '應收款項')}`
+          : txType === 'PAYABLE'
+          ? `借款 · ${counterparty.trim() || '應付款項'}`
+          : (catObj ? catObj.name : '日常紀錄')
+      );
+
+      const payload = {
+        type: txType,
+        title: finalTitle,
+        amount: amt,
+        currency,
+        settledAmount: isCrossCurrency ? Number(settledAmount || amt) : amt,
+        settledCurrency: targetSettlementCurrency || currency,
+        accountKind: fromOpt.kind,
+        accountId: fromOpt.accountId,
+        balanceId: fromOpt.balanceId,
+        toAccountKind: txType === 'TRANSFER' && toOpt ? toOpt.kind : null,
+        toAccountId: txType === 'TRANSFER' && toOpt ? toOpt.accountId : null,
+        toBalanceId: txType === 'TRANSFER' && toOpt ? toOpt.balanceId : null,
+        categoryId: txType === 'TRANSFER' ? null : (categoryId || (filteredCats[0] && filteredCats[0].id) || null),
+        poolId,
+        counterparty: (txType === 'RECEIVABLE' || txType === 'PAYABLE') ? counterparty.trim() : '',
+        date,
+        time,
+        note: note.trim()
+      };
+
+      if (editingTx) {
+        Store.updateTransaction(editingTx.id, payload);
+        showToast('已更新帳目並同步帳戶餘額');
+      } else {
+        Store.addTransaction(payload);
+        showToast('已入帳並即時更新餘額');
+      }
+      onClose();
+    };
+
+    return createPortal(
+      <div className="fixed inset-0 z-[60] bg-[#0B0B0D] flex flex-col anim-sheet-up">
+        {/* Clean 2-Row Top Header (Zero Clutter) */}
+        <div className="shrink-0 safe-top bg-[#0B0B0D] border-b border-white/[0.08]">
+          {/* Row 1: Action Bar */}
+          <div className="px-4 h-11 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-[15px] text-zinc-400 active:text-white py-1 pr-3"
+            >
+              取消
+            </button>
+            <span className="text-[16px] font-semibold text-white">
+              {editingTx ? '編輯紀錄' : '記一筆'}
+            </span>
+            <button
+              type="button"
+              onClick={handleSave}
+              className="text-[15px] font-bold text-emerald-400 active:opacity-70 py-1 pl-3"
+            >
+              儲存
+            </button>
+          </div>
+
+          {/* Row 2: Clean 5-Type Full-Width Selector */}
+          <div className="px-4 pb-3 pt-1">
+            <div className="p-1 rounded-2xl bg-[#16161A] border border-white/[0.08] grid grid-cols-5 gap-1">
+              {TX_TYPES.map((t) => {
+                const active = txType === t.value;
+                return (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => handleTypeSwitch(t.value)}
+                    className={`py-1.5 rounded-xl text-[13px] font-semibold transition whitespace-nowrap ${
+                      active ? 'bg-white text-black shadow-sm' : 'text-zinc-400'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Scrollable Form Body */}
+        <div className="flex-1 overflow-y-auto overscroll-contain px-4 py-4 space-y-4">
+          {/* Amount & Currency Card */}
+          <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[12px] text-zinc-400">交易金額</span>
+              <select
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+                className="px-2.5 py-1 rounded-lg bg-black/60 border border-white/[0.12] text-[12px] font-semibold text-white outline-none"
+              >
+                {Store.CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+              </select>
+            </div>
+            <NumericInput
+              size="lg"
+              value={amount}
+              currency={currency}
+              label={`輸入${TX_TYPES.find((x) => x.value === txType)?.label || ''}金額`}
+              quickAdds={[50, 100, 500, 1000]}
+              onChange={(val) => setAmount(val)}
+            />
+            {isCrossCurrency && (
+              <div className="pt-2 border-t border-white/[0.06] space-y-1.5">
+                <div className="text-[11px] text-amber-300">
+                  跨幣種實扣／實收折算（帳戶幣種：{targetSettlementCurrency}）
+                </div>
+                <NumericInput
+                  size="sm"
+                  value={settledAmount}
+                  currency={targetSettlementCurrency}
+                  label={`實扣金額 (${targetSettlementCurrency})`}
+                  onChange={(val) => setSettledAmount(val)}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Category Horizontal Track (Non-Transfer) */}
+          {txType !== 'TRANSFER' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between px-0.5">
+                <span className="text-[12px] text-zinc-400">分類</span>
+                <button
+                  type="button"
+                  onClick={() => setCatMgrOpen(true)}
+                  className="text-[12px] text-zinc-400 active:text-white"
+                >
+                  + 管理分類
+                </button>
+              </div>
+              <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1" data-no-swipe="true">
+                {filteredCats.map((cat) => {
+                  const sel = cat.id === categoryId;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => {
+                        setCategoryId(cat.id);
+                        if (cat.defaultPoolId) setPoolId(cat.defaultPoolId);
+                      }}
+                      className={`shrink-0 px-3.5 py-2.5 rounded-2xl border flex items-center gap-2 transition ${
+                        sel
+                          ? 'bg-white text-black border-white font-semibold'
+                          : 'bg-[#141417] text-zinc-200 border-white/[0.08]'
+                      }`}
+                    >
+                      <span style={{ color: sel ? '#000000' : cat.color }}>
+                        <Icon name={cat.icon} size={16} />
+                      </span>
+                      <span className="text-[13px] whitespace-nowrap">{cat.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Account / Card Horizontal Track */}
+          <div className="space-y-2">
+            <div className="text-[12px] text-zinc-400 px-0.5">
+              {txType === 'TRANSFER'
+                ? '轉出帳戶'
+                : txType === 'INCOME'
+                ? '入帳帳戶'
+                : txType === 'PAYABLE'
+                ? '收款帳戶（借款入帳）'
+                : '付款帳戶 / 信用卡'}
+            </div>
+            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1" data-no-swipe="true">
+              {(txType === 'PAYABLE' ? bankSources : allSources).map((opt) => {
+                const sel = fromOpt && opt.key === fromOpt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => {
+                      setFromKey(opt.key);
+                      setCurrency(opt.currency);
+                      if (opt.poolId) setPoolId(opt.poolId);
+                    }}
+                    className={`shrink-0 px-3.5 py-2.5 rounded-2xl border text-left transition ${
+                      sel
+                        ? 'bg-white text-black border-white'
+                        : 'bg-[#141417] text-zinc-200 border-white/[0.08]'
+                    }`}
+                  >
+                    <div className="text-[13px] font-semibold whitespace-nowrap">{opt.label}</div>
+                    <div className={`text-[11px] tabular-nums mt-0.5 whitespace-nowrap ${sel ? 'text-zinc-600' : 'text-zinc-400'}`}>
+                      {opt.kind === 'CARD' ? '信用卡' : Store.formatMoney(opt.amount, opt.currency)}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Transfer Destination Track + Swap */}
+          {txType === 'TRANSFER' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between px-0.5">
+                <span className="text-[12px] text-zinc-400">轉入帳戶 / 找數信用卡</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const oldFrom = fromKey;
+                    setFromKey(toKey);
+                    setToKey(oldFrom);
+                  }}
+                  className="inline-flex items-center gap-1 text-[12px] text-emerald-400 active:opacity-70"
+                >
+                  <Icon name="swap" size={14} /> 對調方向
+                </button>
+              </div>
+              <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1" data-no-swipe="true">
+                {allSources.map((opt) => {
+                  const sel = toOpt && opt.key === toOpt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setToKey(opt.key)}
+                      className={`shrink-0 px-3.5 py-2.5 rounded-2xl border text-left transition ${
+                        sel
+                          ? 'bg-emerald-400 text-black border-emerald-300'
+                          : 'bg-[#141417] text-zinc-200 border-white/[0.08]'
+                      }`}
+                    >
+                      <div className="text-[13px] font-semibold whitespace-nowrap">{opt.label}</div>
+                      <div className={`text-[11px] tabular-nums mt-0.5 whitespace-nowrap ${sel ? 'text-black/70' : 'text-zinc-400'}`}>
+                        {opt.kind === 'CARD' ? `欠款 ${Store.formatMoney(-opt.amount, opt.currency)}` : Store.formatMoney(opt.amount, opt.currency)}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Receivable / Payable Counterparty */}
+          {(txType === 'RECEIVABLE' || txType === 'PAYABLE') && (
+            <div className="rounded-2xl bg-amber-500/10 border border-amber-400/25 p-3.5 space-y-2">
+              <label className="text-[12px] text-amber-300 font-medium block">
+                {txType === 'RECEIVABLE' ? '代墊對象（待收回）' : '借款對象（待償還）'}
+              </label>
+              <input
+                type="text"
+                placeholder="例如：同事 A、朋友名稱"
+                value={counterparty}
+                onChange={(e) => setCounterparty(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/50 border border-white/[0.12] text-[14px] text-white outline-none"
+              />
+            </div>
+          )}
+
+          {/* Title, Date/Time, Pool & Note */}
+          <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-4 space-y-3">
+            <div>
+              <label className="text-[11px] text-zinc-400 block mb-1">項目標題（留空自動帶入分類）</label>
+              <input
+                type="text"
+                placeholder="例如：午餐外食、咖啡"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[14px] text-white outline-none"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="text-[11px] text-zinc-400 block mb-1">日期</label>
+                <input
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] text-zinc-400 block mb-1">時間</label>
+                <input
+                  type="time"
+                  value={time}
+                  onChange={(e) => setTime(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="text-[11px] text-zinc-400 block mb-1">歸屬資金池</label>
+                <select
+                  value={poolId}
+                  onChange={(e) => setPoolId(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
+                >
+                  {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] text-zinc-400 block mb-1">備註</label>
+                <input
+                  type="text"
+                  placeholder="選填"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Sticky Footer Save Button */}
+        <div
+          className="shrink-0 px-4 pt-3 border-t border-white/[0.08] bg-[#0B0B0D]"
+          style={{ paddingBottom: 'max(18px, calc(env(safe-area-inset-bottom) + 8px))' }}
+        >
+          <button
+            type="button"
+            onClick={handleSave}
+            className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold active:scale-[0.99] transition"
+          >
+            {editingTx ? '儲存修改' : '確認入帳'}
+          </button>
+        </div>
+
+        {/* Sub-Sheet: Manage Categories */}
+        <BottomSheet
+          open={catMgrOpen}
+          title={`管理${txType === 'INCOME' ? '收入' : '支出'}分類`}
+          onClose={() => setCatMgrOpen(false)}
+          footer={
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="輸入新分類名稱"
+                value={newCatName}
+                onChange={(e) => setNewCatName(e.target.value)}
+                className="flex-1 px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (!newCatName.trim()) return;
+                  const created = Store.addCategory({
+                    type: txType === 'INCOME' ? 'INCOME' : 'EXPENSE',
+                    name: newCatName,
+                    defaultPoolId: newCatPool
+                  });
+                  setCategoryId(created.id);
+                  setNewCatName('');
+                  showToast(`已新增分類「${created.name}」`);
+                }}
+                className="px-4 py-2.5 rounded-xl bg-white text-black text-[13px] font-bold shrink-0"
+              >
+                新增
+              </button>
+            </div>
+          }
+        >
+          <div className="space-y-2">
+            {filteredCats.map((cat) => (
+              <div key={cat.id} className="px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/[0.06] flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <span style={{ color: cat.color }}><Icon name={cat.icon} size={16} /></span>
+                  <span className="text-[14px] text-white">{cat.name}</span>
+                </div>
+                {filteredCats.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => Store.deleteCategory(cat.id)}
+                    className="p-1.5 text-zinc-500 active:text-rose-400"
+                  >
+                    <Icon name="trash" size={15} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </BottomSheet>
+      </div>,
+      document.body
+    );
+  }
+
+  // ---- Salary Split Drawer (Dual Tabs: Execute & Full CRUD Management) ----
+  function SplitRulesSheet({ open, state, onClose, showToast }) {
+    const { Icon, BottomSheet, NumericInput, SegmentedControl } = window.WealthUI;
+    const Store = window.WealthStore;
+
+    const bankOpts = useMemo(() => buildAccountOptions(state, false), [state]);
+    const [tab, setTab] = useState('RUN');
+    const [checkedMap, setCheckedMap] = useState({});
+    const [amountMap, setAmountMap] = useState({});
+
+    // Edit/Add rule form
+    const [editingId, setEditingId] = useState(null);
+    const [draft, setDraft] = useState({
+      name: '',
+      type: 'TRANSFER',
+      amount: 5000,
+      fromKey: '',
+      toKey: '',
+      poolId: 'pool_reserve'
+    });
+
+    useEffect(() => {
+      if (!open) return;
+      const nextChecked = {};
+      const nextAmt = {};
+      (state.splitRules || []).forEach((r) => {
+        nextChecked[r.id] = r.enabled !== false;
+        nextAmt[r.id] = r.amount;
+      });
+      setCheckedMap(nextChecked);
+      setAmountMap(nextAmt);
+      if (bankOpts.length > 0 && !draft.fromKey) {
+        setDraft((p) => Object.assign({}, p, {
+          fromKey: bankOpts[0].key,
+          toKey: (bankOpts[1] || bankOpts[0]).key
+        }));
+      }
+      if ((state.splitRules || []).length === 0) setTab('MANAGE');
+    }, [open, state.splitRules]);
+
+    const parseKey = (key) => {
+      if (!key) return { accountId: null, balanceId: null, currency: state.meta.baseCurrency };
+      const opt = bankOpts.find((o) => o.key === key);
+      if (!opt) return { accountId: null, balanceId: null, currency: state.meta.baseCurrency };
+      return { accountId: opt.accountId, balanceId: opt.balanceId, currency: opt.currency };
+    };
+
+    const startNewRule = () => {
+      setEditingId('NEW');
+      setDraft({
+        name: '',
+        type: 'TRANSFER',
+        amount: 3000,
+        fromKey: bankOpts[0] ? bankOpts[0].key : '',
+        toKey: (bankOpts[1] || bankOpts[0]) ? (bankOpts[1] || bankOpts[0]).key : '',
+        poolId: 'pool_reserve'
+      });
+    };
+
+    const startEditRule = (rule) => {
+      setEditingId(rule.id);
+      setDraft({
+        name: rule.name,
+        type: rule.type,
+        amount: rule.amount,
+        fromKey: rule.fromAccountId ? `ACCOUNT::${rule.fromAccountId}::${rule.fromBalanceId || ''}` : (bankOpts[0]?.key || ''),
+        toKey: rule.toAccountId ? `ACCOUNT::${rule.toAccountId}::${rule.toBalanceId || ''}` : (bankOpts[0]?.key || ''),
+        poolId: rule.poolId || 'pool_liquid'
+      });
+    };
+
+    const saveRule = () => {
+      if (!draft.name.trim()) {
+        showToast('請輸入分流項目名稱');
+        return;
+      }
+      const fromP = parseKey(draft.fromKey);
+      const toP = parseKey(draft.toKey);
+      const payload = {
+        name: draft.name.trim(),
+        type: draft.type,
+        amount: Number(draft.amount || 0),
+        currency: draft.type === 'INCOME' ? toP.currency : fromP.currency,
+        fromAccountId: draft.type === 'INCOME' ? null : fromP.accountId,
+        fromBalanceId: draft.type === 'INCOME' ? null : fromP.balanceId,
+        toAccountId: draft.type === 'EXPENSE' ? null : toP.accountId,
+        toBalanceId: draft.type === 'EXPENSE' ? null : toP.balanceId,
+        poolId: draft.poolId
+      };
+      if (editingId === 'NEW') {
+        Store.addSplitRule(payload);
+        showToast('已新增分流項目');
+      } else if (editingId) {
+        Store.updateSplitRule(editingId, payload);
+        showToast('已更新分流項目');
+      }
+      setEditingId(null);
+    };
+
+    const selectedToRun = (state.splitRules || []).filter((r) => checkedMap[r.id]);
+
+    const handleRunBatch = () => {
+      if (!selectedToRun.length) {
+        showToast('請至少勾選一項分流規則');
+        return;
+      }
+      const count = Store.executeSplitRules(
+        selectedToRun.map((r) => ({ ruleId: r.id, amount: amountMap[r.id] }))
+      );
+      onClose();
+      showToast(`已完成批次分流（${count} 筆入帳）`);
+    };
+
+    const getAccLabel = (accId, balId) => {
+      const found = bankOpts.find((o) => o.accountId === accId && (!balId || o.balanceId === balId));
+      return found ? found.label : '未指定';
+    };
+
+    const footerContent = tab === 'RUN' ? (
+      <button
+        type="button"
+        onClick={handleRunBatch}
+        disabled={selectedToRun.length === 0}
+        className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold disabled:opacity-40"
+      >
+        批次執行已勾選項目 ({selectedToRun.length} 筆)
+      </button>
+    ) : editingId ? (
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setEditingId(null)}
+          className="px-5 py-3.5 rounded-2xl bg-white/10 text-zinc-200 text-[14px] font-medium"
+        >
+          返回
+        </button>
+        <button
+          type="button"
+          onClick={saveRule}
+          className="flex-1 py-3.5 rounded-2xl bg-emerald-400 text-black text-[15px] font-bold"
+        >
+          儲存分流規則
+        </button>
+      </div>
+    ) : (
+      <button
+        type="button"
+        onClick={startNewRule}
+        className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold flex items-center justify-center gap-1.5"
+      >
+        <Icon name="plus" size={16} /> 新增分流項目
+      </button>
+    );
+
+    return (
+      <BottomSheet
+        open={open}
+        title="月度發薪分流"
+        subtitle="批次入帳、固定撥款與自訂流轉方向"
+        onClose={onClose}
+        footer={footerContent}
+      >
+        <div className="space-y-4">
+          <SegmentedControl
+            value={tab}
+            onChange={(v) => { setTab(v); setEditingId(null); }}
+            options={[
+              { value: 'RUN', label: '執行入帳' },
+              { value: 'MANAGE', label: '管理與新增' }
+            ]}
+          />
+
+          {tab === 'RUN' && (
+            <div className="space-y-2.5">
+              {(state.splitRules || []).length === 0 ? (
+                <div className="py-8 text-center space-y-2">
+                  <div className="text-[13px] text-zinc-400">尚未設定任何發薪分流規則</div>
+                  <button
+                    type="button"
+                    onClick={() => { setTab('MANAGE'); startNewRule(); }}
+                    className="px-4 py-2 rounded-full bg-white/10 text-[12px] text-white"
+                  >
+                    立即建立第一條規則
+                  </button>
+                </div>
+              ) : (
+                state.splitRules.map((rule) => {
+                  const isChecked = Boolean(checkedMap[rule.id]);
+                  const dirText = rule.type === 'INCOME'
+                    ? `入帳 ➔ ${getAccLabel(rule.toAccountId, rule.toBalanceId)}`
+                    : rule.type === 'EXPENSE'
+                    ? `扣款 ➔ ${getAccLabel(rule.fromAccountId, rule.fromBalanceId)}`
+                    : `${getAccLabel(rule.fromAccountId, rule.fromBalanceId)} ➔ ${getAccLabel(rule.toAccountId, rule.toBalanceId)}`;
+                  return (
+                    <div
+                      key={rule.id}
+                      className={`p-3.5 rounded-2xl border transition space-y-2.5 ${
+                        isChecked ? 'bg-black/50 border-white/15' : 'bg-black/25 border-white/[0.05] opacity-60'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setCheckedMap((p) => Object.assign({}, p, { [rule.id]: !isChecked }))}
+                          className="flex items-center gap-2.5 text-left min-w-0 flex-1"
+                        >
+                          <span className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
+                            isChecked ? 'bg-emerald-400 border-emerald-400 text-black' : 'border-white/25'
+                          }`}>
+                            {isChecked && <Icon name="check" size={13} strokeWidth={2.5} />}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="text-[14px] font-semibold text-white truncate">{rule.name}</div>
+                            <div className="text-[11px] text-zinc-400 truncate mt-0.5">{dirText}</div>
+                          </div>
+                        </button>
+                      </div>
+                      <NumericInput
+                        size="sm"
+                        value={amountMap[rule.id] != null ? amountMap[rule.id] : rule.amount}
+                        currency={rule.currency}
+                        label={`調整「${rule.name}」本次金額`}
+                        onChange={(val) => setAmountMap((p) => Object.assign({}, p, { [rule.id]: val }))}
+                      />
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {tab === 'MANAGE' && !editingId && (
+            <div className="space-y-2.5">
+              {(state.splitRules || []).length === 0 ? (
+                <div className="py-8 text-center text-[13px] text-zinc-500">
+                  點擊下方「新增分流項目」建立常用入帳或轉撥流程。
+                </div>
+              ) : (
+                state.splitRules.map((rule) => {
+                  const badge = rule.type === 'INCOME' ? '收入入帳' : rule.type === 'EXPENSE' ? '固定支出' : '帳戶轉撥';
+                  return (
+                    <div key={rule.id} className="p-3.5 rounded-2xl bg-black/45 border border-white/[0.08] flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-md bg-white/10 text-[10px] text-zinc-300 shrink-0">{badge}</span>
+                          <span className="text-[14px] font-semibold text-white truncate">{rule.name}</span>
+                        </div>
+                        <div className="text-[12px] text-zinc-400 tabular-nums mt-1">
+                          {Store.formatMoney(rule.amount, rule.currency)}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => startEditRule(rule)}
+                          className="p-2 rounded-xl bg-white/[0.06] text-zinc-200"
+                        >
+                          <Icon name="edit" size={15} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            Store.deleteSplitRule(rule.id);
+                            showToast('已刪除分流規則');
+                          }}
+                          className="p-2 rounded-xl bg-rose-500/15 text-rose-400"
+                        >
+                          <Icon name="trash" size={15} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {tab === 'MANAGE' && editingId && (
+            <div className="space-y-3.5">
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">項目名稱</label>
+                <input
+                  type="text"
+                  placeholder="例如：薪資入帳、儲蓄撥款"
+                  value={draft.name}
+                  onChange={(e) => setDraft((p) => Object.assign({}, p, { name: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">流轉類型</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { v: 'INCOME', l: '收入入帳' },
+                    { v: 'TRANSFER', l: '帳戶轉撥' },
+                    { v: 'EXPENSE', l: '固定支出' }
+                  ].map((o) => (
+                    <button
+                      key={o.v}
+                      type="button"
+                      onClick={() => setDraft((p) => Object.assign({}, p, { type: o.v }))}
+                      className={`py-2.5 rounded-xl text-[13px] font-semibold border ${
+                        draft.type === o.v ? 'bg-white text-black border-white' : 'bg-black/50 text-zinc-300 border-white/10'
+                      }`}
+                    >
+                      {o.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">預設金額</label>
+                <NumericInput
+                  value={draft.amount}
+                  currency={parseKey(draft.type === 'INCOME' ? draft.toKey : draft.fromKey).currency}
+                  label="設定分流金額"
+                  quickAdds={[1000, 5000, 10000]}
+                  onChange={(val) => setDraft((p) => Object.assign({}, p, { amount: val }))}
+                />
+              </div>
+
+              {draft.type !== 'INCOME' && (
+                <div>
+                  <label className="text-[12px] text-zinc-400 block mb-1.5">來源扣款帳戶</label>
+                  <select
+                    value={draft.fromKey}
+                    onChange={(e) => setDraft((p) => Object.assign({}, p, { fromKey: e.target.value }))}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                  >
+                    {bankOpts.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+                  </select>
+                </div>
+              )}
+
+              {draft.type === 'TRANSFER' && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setDraft((p) => Object.assign({}, p, { fromKey: p.toKey, toKey: p.fromKey }))}
+                    className="px-3.5 py-1.5 rounded-full bg-white/[0.08] border border-white/[0.12] text-[12px] text-emerald-300 flex items-center gap-1.5"
+                  >
+                    <Icon name="swap" size={14} /> 對調轉出 / 轉入方向
+                  </button>
+                </div>
+              )}
+
+              {draft.type !== 'EXPENSE' && (
+                <div>
+                  <label className="text-[12px] text-zinc-400 block mb-1.5">目標入帳帳戶</label>
+                  <select
+                    value={draft.toKey}
+                    onChange={(e) => setDraft((p) => Object.assign({}, p, { toKey: e.target.value }))}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                  >
+                    {bankOpts.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">歸屬資金池</label>
+                <select
+                  value={draft.poolId}
+                  onChange={(e) => setDraft((p) => Object.assign({}, p, { poolId: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                >
+                  {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
+        </div>
+      </BottomSheet>
+    );
+  }
+
+  // ---- Main Ledger View ----
+  function LedgerView({ state, onEditTx, showToast }) {
+    const { Icon, BottomSheet } = window.WealthUI;
+    const Store = window.WealthStore;
+
+    const now = new Date();
+    const [viewYear, setViewYear] = useState(now.getFullYear());
+    const [viewMonth, setViewMonth] = useState(now.getMonth()); // 0-11
     const [selectedDate, setSelectedDate] = useState(null);
+    const [monthExpanded, setMonthExpanded] = useState(false);
     const [filterPendingLoans, setFilterPendingLoans] = useState(false);
-    const [showSearch, setShowSearch] = useState(false);
+    const [searchOpen, setSearchOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [expandedTxId, setExpandedTxId] = useState(null);
-    const [showBatchSheet, setShowBatchSheet] = useState(false);
+    const [splitOpen, setSplitOpen] = useState(false);
 
-    const buckets = state.settings?.buckets || [];
-    const baseCurrency = state.settings?.baseCurrency || 'MOP';
-    const flatAccounts = useMemo(() => Store.getFlatAccounts(), [state]);
+    // Loan settle picker sheet
+    const [settlingTx, setSettlingTx] = useState(null);
+    const [settleTargetKey, setSettleTargetKey] = useState('');
+
+    const allAccounts = useMemo(() => buildAccountOptions(state, true), [state]);
 
     const pendingLoans = useMemo(() => {
-      return (state.transactions || []).filter(t => (t.type === 'RECEIVABLE' || t.type === 'PAYABLE') && !t.isLoanSettled);
+      return state.transactions.filter(
+        (t) => (t.type === 'RECEIVABLE' || t.type === 'PAYABLE') && !t.isLoanSettled
+      );
     }, [state.transactions]);
 
-    const monthPrefix = `${yearMonth.year}-${String(yearMonth.month).padStart(2, '0')}`;
+    const monthPrefix = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`;
 
-    const dailyDots = useMemo(() => {
+    // Dots map for calendar
+    const dayMarkers = useMemo(() => {
       const map = {};
-      (state.transactions || []).forEach(t => {
-        if (!t.date.startsWith(monthPrefix)) return;
-        if (!map[t.date]) map[t.date] = { exp: false, inc: false };
-        if (t.type === 'EXPENSE') map[t.date].exp = true;
-        if (t.type === 'INCOME') map[t.date].inc = true;
+      state.transactions.forEach((tx) => {
+        if (!tx.date || !tx.date.startsWith(monthPrefix)) return;
+        if (!map[tx.date]) map[tx.date] = { inc: false, exp: false };
+        if (tx.type === 'INCOME' || (tx.type === 'LOAN_SETTLEMENT' && tx.settlementDirection === 'IN')) {
+          map[tx.date].inc = true;
+        } else {
+          map[tx.date].exp = true;
+        }
       });
       return map;
     }, [state.transactions, monthPrefix]);
 
-    const calendarGrid = useMemo(() => {
-      const { year, month } = yearMonth;
-      const firstWeekday = new Date(year, month - 1, 1).getDay();
-      const daysCount = new Date(year, month, 0).getDate();
-      const days = Array.from({ length: daysCount }, (_, i) => {
-        const dNum = i + 1;
-        const iso = `${year}-${String(month).padStart(2, '0')}-${String(dNum).padStart(2, '0')}`;
-        return { dayNum: dNum, iso, dots: dailyDots[iso] || null };
-      });
-      return { firstWeekday, days };
-    }, [yearMonth, dailyDots]);
+    // Calendar days (week strip or full month grid)
+    const calendarCells = useMemo(() => {
+      if (monthExpanded) {
+        const firstDay = new Date(viewYear, viewMonth, 1);
+        const startPad = firstDay.getDay();
+        const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+        const cells = [];
+        for (let i = 0; i < startPad; i++) cells.push(null);
+        for (let d = 1; d <= daysInMonth; d++) {
+          cells.push(fmtYMD(new Date(viewYear, viewMonth, d)));
+        }
+        return cells;
+      }
+      // Week around selectedDate or today (if same month) or 1st of month
+      const anchor = selectedDate && selectedDate.startsWith(monthPrefix)
+        ? parseYMD(selectedDate)
+        : (viewYear === now.getFullYear() && viewMonth === now.getMonth()
+            ? now
+            : new Date(viewYear, viewMonth, 1));
+      const sunday = new Date(anchor);
+      sunday.setDate(anchor.getDate() - anchor.getDay());
+      const week = [];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(sunday);
+        d.setDate(sunday.getDate() + i);
+        week.push(fmtYMD(d));
+      }
+      return week;
+    }, [viewYear, viewMonth, monthExpanded, selectedDate, monthPrefix]);
 
-    const currentWeekDays = useMemo(() => {
-      const all = calendarGrid.days;
-      const anchor = selectedDate || (today.startsWith(monthPrefix) ? today : all[0]?.iso);
-      const idx = all.findIndex(d => d.iso === anchor);
-      const start = idx >= 0 ? Math.floor(idx / 7) * 7 : 0;
-      return all.slice(start, start + 7);
-    }, [calendarGrid, selectedDate, today, monthPrefix]);
-
-    const groupedDays = useMemo(() => {
-      const list = (state.transactions || []).filter(t => {
+    const visibleTransactions = useMemo(() => {
+      const q = searchQuery.trim().toLowerCase();
+      return state.transactions.filter((tx) => {
         if (filterPendingLoans) {
-          return (t.type === 'RECEIVABLE' || t.type === 'PAYABLE') && !t.isLoanSettled;
+          if (!((tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE') && !tx.isLoanSettled)) return false;
+        } else if (selectedDate) {
+          if (tx.date !== selectedDate) return false;
+        } else if (!q) {
+          if (!tx.date || !tx.date.startsWith(monthPrefix)) return false;
         }
-        if (selectedDate) {
-          if (t.date !== selectedDate) return false;
-        } else if (!searchQuery.trim()) {
-          if (!t.date.startsWith(monthPrefix)) return false;
-        }
-        if (searchQuery.trim()) {
-          const q = searchQuery.toLowerCase();
-          const acc = flatAccounts.find(a => a.id === t.accountId);
-          return (
-            (t.title || '').toLowerCase().includes(q) ||
-            (t.merchant || '').toLowerCase().includes(q) ||
-            (t.counterparty || '').toLowerCase().includes(q) ||
-            (acc?.name || '').toLowerCase().includes(q)
-          );
+        if (q) {
+          const hay = `${tx.title || ''} ${tx.note || ''} ${tx.counterparty || ''}`.toLowerCase();
+          if (!hay.includes(q)) return false;
         }
         return true;
       });
+    }, [state.transactions, filterPendingLoans, selectedDate, monthPrefix, searchQuery]);
 
-      const groups = {};
-      list.forEach(tx => {
-        if (!groups[tx.date]) groups[tx.date] = { date: tx.date, label: formatDateHeading(tx.date), items: [] };
-        groups[tx.date].items.push(tx);
+    const groupedByDate = useMemo(() => {
+      const map = new Map();
+      visibleTransactions.forEach((tx) => {
+        const d = tx.date || Store.todayISO();
+        if (!map.has(d)) map.set(d, []);
+        map.get(d).push(tx);
       });
-      return Object.values(groups).sort((a, b) => b.date.localeCompare(a.date));
-    }, [state.transactions, filterPendingLoans, selectedDate, searchQuery, monthPrefix, flatAccounts]);
+      return Array.from(map.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1));
+    }, [visibleTransactions]);
 
-    const stepMonth = (delta) => {
+    const shiftMonth = (delta) => {
+      const d = new Date(viewYear, viewMonth + delta, 1);
+      setViewYear(d.getFullYear());
+      setViewMonth(d.getMonth());
       setSelectedDate(null);
-      setFilterPendingLoans(false);
-      setYearMonth(prev => {
-        let m = prev.month + delta;
-        let y = prev.year;
-        if (m > 12) { m = 1; y += 1; }
-        if (m < 1) { m = 12; y -= 1; }
-        return { year: y, month: m };
-      });
     };
 
-    const resolveCategoryMeta = (tx) => {
-      const flow = tx.type === 'INCOME' ? 'INCOME' : 'EXPENSE';
-      const cat = (state.settings?.categories?.[flow] || []).find(c => c.id === tx.mainCatId);
-      const sub = cat?.subs?.find(s => s.id === tx.subCatId);
-      return {
-        iconKey: cat?.iconKey || 'tag',
-        color: cat?.color || '#94A3B8',
-        catPath: cat ? `${cat.name}${sub ? ` ▸ ${sub.name}` : ''}` : ''
-      };
+    const getAccountLabel = (tx) => {
+      if (tx.accountKind === 'CARD') {
+        const c = state.cards.find((x) => x.id === tx.accountId);
+        return c ? c.name : '信用卡';
+      }
+      const a = state.accounts.find((x) => x.id === tx.accountId);
+      return a ? a.name : '帳戶';
+    };
+
+    const getCategoryObj = (catId) => state.categories.find((c) => c.id === catId);
+
+    const openSettleSheet = (tx) => {
+      setSettlingTx(tx);
+      const match = allAccounts.find((a) => a.kind === 'ACCOUNT' && a.accountId === tx.accountId)
+        || allAccounts.find((a) => a.kind === 'ACCOUNT')
+        || allAccounts[0];
+      setSettleTargetKey(match ? match.key : '');
+    };
+
+    const confirmSettleLoan = () => {
+      if (!settlingTx || !settleTargetKey) return;
+      const picked = allAccounts.find((a) => a.key === settleTargetKey);
+      if (!picked) return;
+      Store.settleLoan(settlingTx.id, picked.kind, picked.accountId, picked.balanceId);
+      setSettlingTx(null);
+      showToast(settlingTx.type === 'RECEIVABLE' ? '已確認收回並更新餘額' : '已確認還款並更新餘額');
+    };
+
+    const handleDeleteTx = (tx) => {
+      const res = Store.deleteTransaction(tx.id);
+      setExpandedTxId(null);
+      if (res.mode === 'PAIRED_DELETE') {
+        showToast('已成對刪除代墊／借款與結清紀錄並回滾餘額');
+      } else if (res.mode === 'REOPEN_LOAN') {
+        showToast('已刪除結清紀錄，原單已回復為待收／待還狀態');
+      } else {
+        showToast('已刪除並回滾帳戶餘額');
+      }
     };
 
     return (
-      <div className="space-y-3.5 animate-fade">
-        <header className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1 min-w-0">
-            <button type="button" onClick={() => stepMonth(-1)} className="w-8 h-8 rounded-full bg-[#161618] border border-white/[0.07] text-zinc-400 flex items-center justify-center shrink-0">
-              <Icons.ChevronLeft />
+      <div className="space-y-3 pb-6">
+        {/* Row 1: Clean Un-Truncated Month Navigation & Actions */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => shiftMonth(-1)}
+              className="w-8 h-8 rounded-full bg-[#141417] border border-white/[0.08] flex items-center justify-center text-zinc-300 active:bg-white/15 shrink-0"
+            >
+              <Icon name="chevronLeft" size={15} />
             </button>
             <button
               type="button"
-              onClick={() => setIsCalExpanded(!isCalExpanded)}
-              className="px-2.5 py-1.5 rounded-xl hover:bg-[#161618] flex items-center gap-1.5 min-w-0"
+              onClick={() => setMonthExpanded(!monthExpanded)}
+              className="px-2.5 h-8 rounded-full bg-[#141417] border border-white/[0.08] flex items-center gap-1 text-[13px] font-semibold text-white whitespace-nowrap shrink-0"
             >
-              <span className="text-base font-bold text-white truncate">
-                {yearMonth.year}年 {yearMonth.month}月
-              </span>
-              <span className="text-[11px] text-[#8E8E93]">{isCalExpanded ? '▴' : '▾'}</span>
+              <span>{viewYear}年{viewMonth + 1}月</span>
+              <Icon name="chevronDown" size={13} className={`transition-transform ${monthExpanded ? 'rotate-180' : ''}`} />
             </button>
-            <button type="button" onClick={() => stepMonth(1)} className="w-8 h-8 rounded-full bg-[#161618] border border-white/[0.07] text-zinc-400 flex items-center justify-center shrink-0">
-              <Icons.ChevronRight />
+            <button
+              type="button"
+              onClick={() => shiftMonth(1)}
+              className="w-8 h-8 rounded-full bg-[#141417] border border-white/[0.08] flex items-center justify-center text-zinc-300 active:bg-white/15 shrink-0"
+            >
+              <Icon name="chevronRight" size={15} />
             </button>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
-            {pendingLoans.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setFilterPendingLoans(!filterPendingLoans)}
-                className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border shrink-0 whitespace-nowrap transition ${
-                  filterPendingLoans
-                    ? 'bg-amber-400 text-black border-amber-300 font-bold'
-                    : 'bg-amber-500/15 border-amber-400/30 text-amber-300'
-                }`}
-              >
-                待收/還 {pendingLoans.length} 筆
-              </button>
-            )}
-
             <button
               type="button"
-              onClick={() => setShowBatchSheet(true)}
-              className="h-9 px-3 rounded-full bg-[#161618] border border-white/[0.08] text-xs font-semibold text-zinc-200 flex items-center gap-1.5"
+              onClick={() => setSplitOpen(true)}
+              className="px-2.5 h-8 rounded-full bg-[#141417] border border-white/[0.08] flex items-center gap-1 text-[12px] font-medium text-zinc-200 whitespace-nowrap active:bg-white/15"
             >
-              <Icons.Bookmark />
-              <span>分流</span>
+              <Icon name="split" size={13} /> 分流
             </button>
             <button
               type="button"
-              onClick={() => {
-                setShowSearch(!showSearch);
-                setSearchQuery('');
-              }}
-              className={`w-9 h-9 rounded-full border flex items-center justify-center ${
-                showSearch ? 'bg-white text-black border-white' : 'bg-[#161618] text-zinc-400 border-white/[0.08]'
+              onClick={() => { setSearchOpen(!searchOpen); if (searchOpen) setSearchQuery(''); }}
+              className={`w-8 h-8 rounded-full border flex items-center justify-center transition ${
+                searchOpen ? 'bg-white text-black border-white' : 'bg-[#141417] border-white/[0.08] text-zinc-300'
               }`}
             >
-              <Icons.Search />
+              <Icon name="search" size={14} />
             </button>
             <button
               type="button"
-              onClick={onToggleHideMoney}
-              className="w-9 h-9 rounded-full bg-[#161618] border border-white/[0.08] text-zinc-400 flex items-center justify-center"
+              onClick={() => Store.togglePrivacy()}
+              className="w-8 h-8 rounded-full bg-[#141417] border border-white/[0.08] flex items-center justify-center text-zinc-300 active:bg-white/15"
             >
-              {hideMoney ? <Icons.EyeOff /> : <Icons.Eye />}
+              <Icon name={state.meta.privacyMode ? 'eyeOff' : 'eye'} size={14} />
             </button>
           </div>
-        </header>
+        </div>
 
-        {showSearch && (
-          <input
-            type="text"
-            autoFocus
-            placeholder="搜尋項目、商戶、對象或帳戶"
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            className="w-full px-3.5 py-2.5 rounded-2xl bg-[#161618] border border-white/10 text-white placeholder-zinc-500 focus:outline-none"
-          />
+        {/* Row 2: Slim Pending Loans Banner (Zero Wrapping) */}
+        {pendingLoans.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setFilterPendingLoans(!filterPendingLoans)}
+            className={`w-full px-3.5 py-2 rounded-2xl border flex items-center justify-between text-[12px] font-medium transition whitespace-nowrap ${
+              filterPendingLoans
+                ? 'bg-amber-400 text-black border-amber-300 font-semibold'
+                : 'bg-amber-500/10 text-amber-300 border-amber-400/25'
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
+              <Icon name="users" size={14} />
+              待收 / 待還 {pendingLoans.length} 筆
+            </span>
+            <span className="text-[11px] opacity-80">{filterPendingLoans ? '顯示全部' : '只看未結清'}</span>
+          </button>
         )}
 
-        <section className="p-3 rounded-3xl bg-[#111113] border border-white/[0.06] space-y-2">
-          <div className="grid grid-cols-7 text-center text-[10px] font-semibold text-[#636366]">
-            {WEEKDAYS.map(w => <span key={w}>{w}</span>)}
+        {/* Search Bar */}
+        {searchOpen && (
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="搜尋標題、對象或備註…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full px-3.5 py-2.5 rounded-2xl bg-[#141417] border border-white/[0.12] text-[14px] text-white outline-none"
+              autoFocus
+            />
           </div>
+        )}
 
+        {/* Week / Full Month Calendar Strip */}
+        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-3">
+          <div className="grid grid-cols-7 gap-1 mb-1.5 text-center text-[11px] text-zinc-500">
+            {WEEKDAYS.map((w) => <div key={w}>{w}</div>)}
+          </div>
           <div className="grid grid-cols-7 gap-1">
-            {isCalExpanded && Array.from({ length: calendarGrid.firstWeekday }).map((_, i) => <div key={'e_' + i} />)}
-            {(isCalExpanded ? calendarGrid.days : currentWeekDays).map(d => {
-              const isSel = selectedDate === d.iso;
-              const isToday = d.iso === today;
+            {calendarCells.map((iso, idx) => {
+              if (!iso) return <div key={`empty_${idx}`} className="h-10" />;
+              const dNum = Number(iso.slice(8, 10));
+              const isToday = iso === Store.todayISO();
+              const isSelected = iso === selectedDate;
+              const inCurrentMonth = iso.startsWith(monthPrefix);
+              const mark = dayMarkers[iso];
               return (
                 <button
-                  key={d.iso}
+                  key={iso}
                   type="button"
-                  onClick={() => {
-                    setFilterPendingLoans(false);
-                    setSelectedDate(isSel ? null : d.iso);
-                  }}
-                  className={`py-1.5 rounded-xl flex flex-col items-center justify-center transition ${
-                    isSel
+                  onClick={() => setSelectedDate(isSelected ? null : iso)}
+                  className={`h-10 rounded-xl flex flex-col items-center justify-center relative transition ${
+                    isSelected
                       ? 'bg-white text-black font-bold'
                       : isToday
-                      ? 'bg-[#1F1F23] text-white font-semibold border border-white/15'
-                      : 'text-zinc-300 hover:bg-white/[0.04]'
+                      ? 'bg-white/[0.09] text-white font-semibold border border-white/15'
+                      : inCurrentMonth
+                      ? 'text-zinc-200 active:bg-white/10'
+                      : 'text-zinc-600'
                   }`}
                 >
-                  <span className="text-xs font-mono-num">{d.dayNum}</span>
-                  <div className="h-2 flex items-center gap-0.5 mt-0.5">
-                    {d.dots?.exp && <span className={`w-1 h-1 rounded-full ${isSel ? 'bg-rose-600' : 'bg-rose-400'}`} />}
-                    {d.dots?.inc && <span className={`w-1 h-1 rounded-full ${isSel ? 'bg-emerald-600' : 'bg-emerald-400'}`} />}
+                  <span className="text-[13px] tabular-nums leading-none">{dNum}</span>
+                  <div className="flex gap-0.5 mt-1 h-1">
+                    {mark && mark.exp && <span className={`w-1 h-1 rounded-full ${isSelected ? 'bg-rose-600' : 'bg-rose-400'}`} />}
+                    {mark && mark.inc && <span className={`w-1 h-1 rounded-full ${isSelected ? 'bg-emerald-600' : 'bg-emerald-400'}`} />}
                   </div>
                 </button>
               );
             })}
           </div>
+        </div>
 
-          {(selectedDate || filterPendingLoans) && (
-            <div className="pt-1 border-t border-white/[0.05] flex items-center justify-between text-[11px] px-1">
-              <span className="text-amber-300 font-semibold">
-                {filterPendingLoans ? '僅顯示待結清款項' : `篩選：${selectedDate}`}
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedDate(null);
-                  setFilterPendingLoans(false);
-                }}
-                className="text-zinc-300 font-semibold"
-              >
-                顯示全月
-              </button>
-            </div>
-          )}
-        </section>
-
-        {groupedDays.length === 0 ? (
-          <div className="py-16 rounded-3xl bg-[#111113] border border-white/[0.06] text-center space-y-3">
-            <div className="text-sm font-semibold text-zinc-400">尚無相關紀錄</div>
-            <button
-              type="button"
-              onClick={() => onOpenEditor(selectedDate ? { date: selectedDate } : null)}
-              className="px-4 py-2 rounded-full bg-white text-black text-xs font-bold"
-            >
-              ＋ 新增紀錄
-            </button>
+        {/* Grouped Transaction List */}
+        {groupedByDate.length === 0 ? (
+          <div className="rounded-2xl bg-[#111114] border border-white/[0.08] py-12 text-center text-[13px] text-zinc-500">
+            {selectedDate ? `${selectedDate} 尚無收支紀錄` : '本月尚無紀錄，點擊底部 ＋ 快速記帳'}
           </div>
         ) : (
-          <div className="space-y-4">
-            {groupedDays.map(day => (
-              <section key={day.date} className="space-y-1.5">
-                <div className="flex items-center justify-between px-1 text-[11px] font-semibold text-[#8E8E93]">
-                  <span>{day.label}</span>
-                  <span className="font-mono-num">{day.items.length} 筆</span>
+          <div className="space-y-3.5">
+            {groupedByDate.map(([dateIso, list]) => (
+              <div key={dateIso} className="space-y-1.5">
+                <div className="px-1 flex items-center justify-between text-[12px] text-zinc-400">
+                  <span className="font-medium">{formatGroupDate(dateIso)}</span>
+                  <span className="tabular-nums text-zinc-500">{list.length} 筆</span>
                 </div>
 
-                <div className="rounded-3xl bg-[#111113] border border-white/[0.06] divide-y divide-white/[0.06] overflow-hidden">
-                  {day.items.map(tx => {
-                    const bucketMeta = buckets.find(b => b.id === tx.bucketId);
-                    const acc = flatAccounts.find(a => a.id === tx.accountId);
-                    const toAcc = tx.toAccountId ? flatAccounts.find(a => a.id === tx.toAccountId) : null;
-                    const catMeta = resolveCategoryMeta(tx);
+                <div className="rounded-2xl bg-[#111114] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
+                  {list.map((tx) => {
                     const isExpanded = expandedTxId === tx.id;
-                    const isLoanPending = (tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE') && !tx.isLoanSettled;
+                    const cat = getCategoryObj(tx.categoryId);
+                    const isLoan = tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE';
+                    const isSettlement = tx.type === 'LOAN_SETTLEMENT';
+                    const isPositive = tx.type === 'INCOME' || (isSettlement && tx.settlementDirection === 'IN');
+                    const isTransfer = tx.type === 'TRANSFER';
+
+                    const iconName = isTransfer
+                      ? 'swap'
+                      : isLoan || isSettlement
+                      ? 'users'
+                      : (cat ? cat.icon : 'tag');
+                    const iconColor = isTransfer
+                      ? '#38BDF8'
+                      : isLoan
+                      ? '#FBBF24'
+                      : isSettlement
+                      ? '#34D399'
+                      : (cat ? cat.color : '#9CA3AF');
 
                     return (
                       <div key={tx.id}>
-                        <div
+                        <button
+                          type="button"
                           onClick={() => setExpandedTxId(isExpanded ? null : tx.id)}
-                          className={`px-3.5 py-3 flex items-center justify-between gap-3 cursor-pointer transition ${
-                            isExpanded ? 'bg-white/[0.05]' : 'hover:bg-white/[0.02]'
+                          className={`w-full px-3.5 py-3 flex items-center justify-between gap-3 text-left transition ${
+                            isExpanded ? 'bg-white/[0.04]' : 'active:bg-white/[0.03]'
                           }`}
                         >
                           <div className="flex items-center gap-3 min-w-0">
-                            <div
-                              className="w-9 h-9 rounded-2xl flex items-center justify-center shrink-0 border border-white/[0.06]"
-                              style={{ backgroundColor: `${catMeta.color}18`, color: catMeta.color }}
-                            >
-                              <CategoryIcon iconKey={catMeta.iconKey} type={tx.type} />
+                            <div className="w-9 h-9 rounded-full bg-white/[0.06] flex items-center justify-center shrink-0" style={{ color: iconColor }}>
+                              <Icon name={iconName} size={17} />
                             </div>
-
                             <div className="min-w-0">
                               <div className="flex items-center gap-1.5">
-                                <span className="text-sm font-semibold text-white truncate">{tx.title}</span>
-                                {(tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE') && (
-                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0 whitespace-nowrap ${
-                                    tx.isLoanSettled ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
-                                  }`}>
-                                    {tx.isLoanSettled ? '已結清' : `${tx.type === 'RECEIVABLE' ? '待收' : '待還'}${tx.counterparty ? `·${tx.counterparty}` : ''}`}
+                                <span className="text-[14px] font-semibold text-white truncate">{tx.title}</span>
+                                {isLoan && (
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded-md text-[10px] font-semibold whitespace-nowrap shrink-0 ${
+                                      tx.isLoanSettled
+                                        ? 'bg-emerald-500/15 text-emerald-300'
+                                        : 'bg-amber-500/20 text-amber-300'
+                                    }`}
+                                  >
+                                    {tx.isLoanSettled
+                                      ? '已結清'
+                                      : `${tx.type === 'RECEIVABLE' ? '待收' : '待還'}${tx.counterparty ? '·' + tx.counterparty : ''}`}
+                                  </span>
+                                )}
+                                {isSettlement && (
+                                  <span className="px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-emerald-500/15 text-emerald-300 whitespace-nowrap shrink-0">
+                                    結清
                                   </span>
                                 )}
                               </div>
-
-                              <div className="flex items-center gap-1.5 text-[11px] text-[#8E8E93] mt-0.5 truncate">
-                                {bucketMeta && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: bucketMeta.color }} />}
-                                <span className="truncate">
-                                  {tx.type === 'TRANSFER'
-                                    ? `${acc?.name || '轉出'} ➔ ${toAcc?.name || '轉入'}`
-                                    : (acc?.name || '帳戶')}
-                                </span>
-                                <span>·</span>
-                                <span className="font-mono-num shrink-0">{tx.time}</span>
+                              <div className="text-[11px] text-zinc-400 truncate mt-0.5">
+                                {getAccountLabel(tx)} · {tx.time || ''}
                               </div>
                             </div>
                           </div>
 
-                          <div className={`text-sm font-bold font-mono-num shrink-0 ${
-                            tx.type === 'INCOME' || (tx.type === 'LOAN_SETTLEMENT' && tx.loanDirection === 'IN')
-                              ? 'text-emerald-400'
-                              : tx.type === 'TRANSFER'
-                              ? 'text-sky-400'
-                              : isLoanPending
-                              ? 'text-amber-300'
-                              : 'text-white'
-                          }`}>
-                            {tx.type === 'INCOME' || (tx.type === 'LOAN_SETTLEMENT' && tx.loanDirection === 'IN')
-                              ? '+'
-                              : tx.type === 'TRANSFER'
-                              ? ''
-                              : '-'}
-                            {Store.formatMoney(tx.amount, tx.currency, hideMoney)}
+                          <div className="text-right shrink-0">
+                            <div
+                              className={`text-[14px] font-semibold tabular-nums whitespace-nowrap ${
+                                isPositive
+                                  ? 'text-emerald-400'
+                                  : isTransfer
+                                  ? 'text-sky-300'
+                                  : 'text-white'
+                              }`}
+                            >
+                              {isTransfer
+                                ? Store.formatMoney(tx.amount, tx.currency)
+                                : Store.formatMoney(isPositive ? tx.amount : -tx.amount, tx.currency, { showPlus: isPositive })}
+                            </div>
                           </div>
-                        </div>
+                        </button>
 
+                        {/* Expanded Detail & Actions */}
                         {isExpanded && (
-                          <div className="px-4 pb-3.5 pt-2.5 bg-black/45 border-t border-white/[0.06] space-y-2.5 text-xs animate-fade">
-                            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                              {bucketMeta && (
-                                <span className="px-2.5 py-0.5 rounded-full bg-white/[0.07] text-zinc-200 flex items-center gap-1.5">
-                                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: bucketMeta.color }} />
-                                  <span>{bucketMeta.name}</span>
-                                </span>
-                              )}
-                              {catMeta.catPath && (
-                                <span className="px-2.5 py-0.5 rounded-full bg-white/[0.07] text-zinc-300">
-                                  {catMeta.catPath}
-                                </span>
-                              )}
-                              {tx.merchant && (
-                                <span className="px-2.5 py-0.5 rounded-full bg-white/[0.07] text-zinc-300">
-                                  {tx.merchant}
-                                </span>
-                              )}
-                            </div>
+                          <div className="px-3.5 pb-3.5 pt-1 bg-white/[0.03] border-t border-white/[0.05] space-y-2.5">
+                            {tx.note && <div className="text-[12px] text-zinc-400">備註：{tx.note}</div>}
 
-                            {tx.note && (
-                              <div className="px-3 py-2 rounded-xl bg-white/[0.04] text-zinc-300">
-                                {tx.note}
-                              </div>
-                            )}
-
-                            {isLoanPending && (
+                            {/* Pending Loan: Confirm Settle */}
+                            {isLoan && !tx.isLoanSettled && (
                               <button
                                 type="button"
-                                onClick={() => {
-                                  Store.settleLoanTransaction(tx.id, tx.accountId);
-                                  setExpandedTxId(null);
-                                  onNotify('已結清款項並還原帳戶餘額');
-                                }}
-                                className="w-full min-h-[42px] rounded-xl bg-amber-400 text-black font-bold text-xs"
+                                onClick={() => openSettleSheet(tx)}
+                                className="w-full py-2.5 rounded-xl bg-emerald-400 text-black text-[13px] font-bold"
                               >
-                                確認已{tx.type === 'RECEIVABLE' ? '收回款項' : '完成還款'}
+                                {tx.type === 'RECEIVABLE' ? '確認收回款項' : '確認已還款'}
                               </button>
                             )}
 
-                            {(tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE') && tx.isLoanSettled && (
+                            {/* Settled Loan: One-tap Undo Settlement */}
+                            {isLoan && tx.isLoanSettled && (
                               <button
                                 type="button"
                                 onClick={() => {
-                                  const ok = Store.unsettleLoanTransaction(tx.id);
-                                  if (ok) {
-                                    setExpandedTxId(null);
-                                    onNotify(`已撤銷${tx.type === 'RECEIVABLE' ? '收回' : '還款'}並回復為待處理狀態`);
-                                  }
+                                  Store.unsettleLoan(tx.id);
+                                  showToast('已撤銷結清並回復為待收／待還狀態');
                                 }}
-                                className="w-full min-h-[42px] rounded-xl bg-amber-500/15 border border-amber-400/35 text-amber-300 font-bold text-xs"
+                                className="w-full py-2.5 rounded-xl bg-amber-400/15 border border-amber-400/30 text-amber-300 text-[13px] font-semibold flex items-center justify-center gap-1.5"
                               >
-                                撤銷{tx.type === 'RECEIVABLE' ? '收回' : '還款'}（回復{tx.type === 'RECEIVABLE' ? '待收' : '待還'}狀態）
+                                <Icon name="undo" size={14} />
+                                {tx.type === 'RECEIVABLE' ? '撤銷收回（回復待收狀態）' : '撤銷還款（回復待還狀態）'}
                               </button>
                             )}
 
-                            <div className="grid grid-cols-2 gap-2 pt-0.5">
+                            {/* Standard Edit & Paired Delete Controls */}
+                            <div className="flex gap-2">
+                              {!isSettlement && (
+                                <button
+                                  type="button"
+                                  onClick={() => onEditTx(tx)}
+                                  className="flex-1 py-2 rounded-xl bg-white/[0.08] text-zinc-200 text-[12px] font-medium flex items-center justify-center gap-1"
+                                >
+                                  <Icon name="edit" size={14} /> 編輯
+                                </button>
+                              )}
                               <button
                                 type="button"
-                                disabled={tx.isLockedSettled}
-                                onClick={() => {
-                                  const outcome = Store.deleteTransaction(tx.id);
-                                  setExpandedTxId(null);
-                                  if (outcome === 'PAIR_DELETED') {
-                                    onNotify('已成對刪除原單及結清紀錄，並回滾雙方餘額');
-                                  } else if (outcome === 'REVERTED_LOAN') {
-                                    onNotify('已刪除結清紀錄，原單已回復為待處理狀態');
-                                  } else {
-                                    onNotify('已刪除並回滾帳戶餘額');
-                                  }
-                                }}
-                                className="min-h-[40px] rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 font-semibold disabled:opacity-35"
+                                onClick={() => handleDeleteTx(tx)}
+                                className="flex-1 py-2 rounded-xl bg-rose-500/15 border border-rose-500/25 text-rose-400 text-[12px] font-medium flex items-center justify-center gap-1"
                               >
-                                刪除
-                              </button>
-                              <button
-                                type="button"
-                                disabled={tx.isLockedSettled}
-                                onClick={() => onOpenEditor(tx)}
-                                className="min-h-[40px] rounded-xl bg-white text-black font-bold disabled:opacity-35"
-                              >
-                                修改
+                                <Icon name="trash" size={14} />
+                                {isLoan && tx.isLoanSettled
+                                  ? '成對刪除原單與結清'
+                                  : isSettlement
+                                  ? '刪除並回復原單待收'
+                                  : '刪除並回滾'}
                               </button>
                             </div>
                           </div>
@@ -442,1072 +1408,62 @@
                     );
                   })}
                 </div>
-              </section>
+              </div>
             ))}
           </div>
         )}
 
-        {showBatchSheet && (
-          <PaydayBatchSheet
-            templates={state.settings?.paydayTemplates || []}
-            accounts={flatAccounts}
-            buckets={buckets.filter(b => !b.archived)}
-            categories={state.settings?.categories || { EXPENSE: [], INCOME: [] }}
-            baseCurrency={baseCurrency}
-            targetDate={selectedDate || today}
-            onClose={() => setShowBatchSheet(false)}
-            onSaveTemplates={(nextTpls) => {
-              Store.savePaydayTemplates(nextTpls);
-              onNotify('已儲存分流規則設定');
-            }}
-            onExecute={(items, runDate) => {
-              Store.executePaydayBatch(items, runDate || selectedDate || today);
-              setShowBatchSheet(false);
-              onNotify('已完成批次分流入帳');
-            }}
-          />
-        )}
-      </div>
-    );
-  }
+        {/* Salary Split Drawer */}
+        <SplitRulesSheet
+          open={splitOpen}
+          state={state}
+          onClose={() => setSplitOpen(false)}
+          showToast={showToast}
+        />
 
-  function PaydayBatchSheet({ templates, accounts, buckets, categories, baseCurrency, targetDate, onClose, onSaveTemplates, onExecute }) {
-    const [items, setItems] = useState(templates || []);
-    const [mode, setMode] = useState((templates || []).length > 0 ? 'RUN' : 'MANAGE');
-    const [runDate, setRunDate] = useState(targetDate);
-    const [editingForm, setEditingForm] = useState(null);
-
-    const cashAccounts = useMemo(() => accounts.filter(a => a.kind !== 'CREDIT'), [accounts]);
-
-    const startNewItem = () => {
-      const defAcc = cashAccounts[0] || accounts[0];
-      const defToAcc = cashAccounts[1] || defAcc;
-      setEditingForm({
-        isNew: true,
-        id: 'pt_' + Date.now(),
-        enabled: true,
-        title: '',
-        type: 'TRANSFER',
-        mainCatId: 'TRANSFER',
-        subCatId: 'TRANSFER',
-        amount: 0,
-        currency: defAcc?.currency || baseCurrency,
-        bucketId: buckets[0]?.id || 'PUBLIC',
-        accountId: defAcc?.id || '',
-        toAccountId: defToAcc?.id || ''
-      });
-    };
-
-    const startEditItem = (it) => {
-      setEditingForm({ ...it, isNew: false });
-    };
-
-    const commitForm = () => {
-      if (!editingForm) return;
-      const resolvedAccId = editingForm.accountId || accounts[0]?.id || '';
-      const srcAcc = accounts.find(a => a.id === resolvedAccId);
-      const toAcc = accounts.find(a => a.id === editingForm.toAccountId);
-      const cleanTitle = editingForm.title.trim() || (
-        editingForm.type === 'TRANSFER'
-          ? `${srcAcc?.name || '轉出'} ➔ ${toAcc?.name || '轉入'}`
-          : editingForm.type === 'INCOME'
-          ? '固定收入入帳'
-          : '固定支出扣款'
-      );
-      const savedItem = {
-        id: editingForm.id,
-        enabled: editingForm.enabled !== false,
-        title: cleanTitle,
-        type: editingForm.type,
-        mainCatId: editingForm.type === 'TRANSFER' ? 'TRANSFER' : (editingForm.mainCatId || (editingForm.type === 'INCOME' ? 'cat_salary' : 'cat_home')),
-        subCatId: editingForm.type === 'TRANSFER' ? 'TRANSFER' : (editingForm.subCatId || (editingForm.type === 'INCOME' ? 'sub_main_sal' : 'sub_mortgage')),
-        amount: Math.max(0, Number(editingForm.amount) || 0),
-        currency: srcAcc?.currency || editingForm.currency || baseCurrency,
-        bucketId: editingForm.bucketId || buckets[0]?.id || 'PUBLIC',
-        accountId: resolvedAccId,
-        toAccountId: editingForm.type === 'TRANSFER' ? (editingForm.toAccountId || resolvedAccId) : null
-      };
-
-      const nextList = editingForm.isNew
-        ? [...items, savedItem]
-        : items.map(x => x.id === savedItem.id ? savedItem : x);
-      setItems(nextList);
-      onSaveTemplates(nextList);
-      setEditingForm(null);
-    };
-
-    const removeItem = (id) => {
-      const nextList = items.filter(x => x.id !== id);
-      setItems(nextList);
-      onSaveTemplates(nextList);
-    };
-
-    const renderFlowLine = (it) => {
-      const src = accounts.find(a => a.id === it.accountId);
-      const dst = it.toAccountId ? accounts.find(a => a.id === it.toAccountId) : null;
-      if (it.type === 'INCOME') return `外部入帳 ➔ ${src?.name || '未選帳戶'}`;
-      if (it.type === 'EXPENSE') return `${src?.name || '未選帳戶'} ➔ 固定支出`;
-      return `${src?.name || '轉出戶'} ➔ ${dst?.name || '轉入戶'}`;
-    };
-
-    const enabledCount = items.filter(i => i.enabled && Number(i.amount) > 0).length;
-
-    return (
-      <BottomSheet
-        title="月度發薪分流"
-        subtitle={mode === 'RUN' ? '勾選並核對本月金額後一鍵入帳' : '自由增刪項目、設定流轉方向與對應帳戶'}
-        onClose={onClose}
-      >
-        <div className="grid grid-cols-2 p-1 rounded-2xl bg-black border border-white/[0.08] text-xs font-semibold">
-          <button
-            type="button"
-            onClick={() => { setMode('RUN'); setEditingForm(null); }}
-            className={`py-2 rounded-xl transition ${mode === 'RUN' ? 'bg-[#2C2C2E] text-white' : 'text-[#8E8E93]'}`}
-          >
-            執行入帳 ({items.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('MANAGE')}
-            className={`py-2 rounded-xl transition ${mode === 'MANAGE' ? 'bg-[#2C2C2E] text-white' : 'text-[#8E8E93]'}`}
-          >
-            管理與新增
-          </button>
-        </div>
-
-        {mode === 'RUN' ? (
-          <div className="space-y-3">
-            <label className="px-3.5 py-2.5 rounded-2xl bg-black border border-white/[0.08] flex items-center justify-between text-xs font-semibold text-zinc-300">
-              <span>批次入帳日期</span>
-              <input
-                type="date"
-                value={runDate}
-                onChange={e => setRunDate(e.target.value || targetDate)}
-                className="bg-transparent text-white font-mono-num font-bold text-right focus:outline-none"
-              />
-            </label>
-
-            {items.length === 0 ? (
-              <div className="py-8 text-center space-y-2.5">
-                <div className="text-xs text-[#8E8E93]">尚未設定任何分流項目</div>
-                <button
-                  type="button"
-                  onClick={() => { setMode('MANAGE'); startNewItem(); }}
-                  className="px-4 py-2 rounded-full bg-white text-black text-xs font-bold"
-                >
-                  ＋ 建立首筆分流規則
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="space-y-2">
-                  {items.map((it, idx) => {
-                    const bMeta = buckets.find(b => b.id === it.bucketId);
-                    const typeBadge = it.type === 'INCOME'
-                      ? { text: '收入', cls: 'bg-emerald-500/15 text-emerald-300' }
-                      : it.type === 'EXPENSE'
-                      ? { text: '支出', cls: 'bg-rose-500/15 text-rose-300' }
-                      : { text: '轉撥', cls: 'bg-sky-500/15 text-sky-300' };
-                    return (
-                      <div
-                        key={it.id}
-                        className={`p-3 rounded-2xl bg-black border border-white/[0.08] flex items-center justify-between gap-2 ${
-                          it.enabled ? '' : 'opacity-45'
-                        }`}
-                      >
-                        <div
-                          onClick={() => setItems(prev => prev.map((x, i) => i === idx ? { ...x, enabled: !x.enabled } : x))}
-                          className="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer"
-                        >
-                          <div className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 ${
-                            it.enabled ? 'bg-emerald-400 text-black' : 'bg-zinc-800'
-                          }`}>
-                            {it.enabled && <Icons.Check />}
-                          </div>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${typeBadge.cls}`}>
-                                {typeBadge.text}
-                              </span>
-                              <span className="text-xs font-bold text-white truncate">{it.title}</span>
-                            </div>
-                            <div className="text-[10px] text-[#8E8E93] flex items-center gap-1.5 mt-0.5 truncate">
-                              {bMeta && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: bMeta.color }} />}
-                              <span className="truncate">{renderFlowLine(it)}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <NumericInput
-                          value={it.amount}
-                          label={it.title}
-                          subtitle={renderFlowLine(it)}
-                          currency={it.currency || baseCurrency}
-                          onChange={val => setItems(prev => prev.map((x, i) => i === idx ? { ...x, amount: Math.max(0, val) } : x))}
-                          className="min-w-[88px] px-2.5 py-1.5 rounded-xl bg-[#161618] border border-white/15 text-right text-xs shrink-0"
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <button
-                  type="button"
-                  disabled={enabledCount === 0}
-                  onClick={() => onExecute(items, runDate)}
-                  className="w-full min-h-[48px] rounded-2xl bg-white text-black font-bold text-sm disabled:opacity-40"
-                >
-                  確認批次入帳 ({enabledCount} 筆)
-                </button>
-              </>
-            )}
-          </div>
-        ) : editingForm ? (
-          <div className="space-y-3 text-xs animate-fade">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-white">{editingForm.isNew ? '新增分流項目' : '編輯分流項目'}</span>
-              <button type="button" onClick={() => setEditingForm(null)} className="text-[#8E8E93]">取消</button>
-            </div>
-
-            <div className="grid grid-cols-3 gap-1.5">
-              {[
-                { id: 'INCOME',   label: '收入入帳', active: 'bg-emerald-400 text-black border-emerald-300' },
-                { id: 'EXPENSE',  label: '固定支出', active: 'bg-rose-500 text-white border-rose-400' },
-                { id: 'TRANSFER', label: '帳戶轉撥', active: 'bg-sky-400 text-black border-sky-300' }
-              ].map(t => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => {
-                    const nextCats = categories[t.id] || [];
-                    const firstCat = nextCats[0];
-                    const firstSub = firstCat?.subs?.[0];
-                    setEditingForm(prev => ({
-                      ...prev,
-                      type: t.id,
-                      mainCatId: t.id === 'TRANSFER' ? 'TRANSFER' : (firstCat?.id || 'cat_home'),
-                      subCatId: t.id === 'TRANSFER' ? 'TRANSFER' : (firstSub?.id || 'sub_mortgage'),
-                      toAccountId: t.id === 'TRANSFER' ? (prev.toAccountId || cashAccounts[1]?.id || prev.accountId) : null
-                    }));
-                  }}
-                  className={`py-2.5 rounded-xl font-bold border transition ${
-                    editingForm.type === t.id ? t.active : 'bg-black text-[#8E8E93] border-white/[0.08]'
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-5 gap-2">
-              <div className="col-span-3">
-                <label className="block text-[11px] text-[#8E8E93] mb-1">項目名稱</label>
-                <input
-                  type="text"
-                  placeholder={editingForm.type === 'INCOME' ? '如：每月薪資' : editingForm.type === 'EXPENSE' ? '如：物業按揭' : '如：撥入預留池'}
-                  value={editingForm.title}
-                  onChange={e => setEditingForm(prev => ({ ...prev, title: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl bg-black border border-white/15 text-white font-semibold"
-                />
-              </div>
-              <div className="col-span-2">
-                <label className="block text-[11px] text-[#8E8E93] mb-1">預設金額</label>
-                <NumericInput
-                  value={editingForm.amount}
-                  label="預設分流金額"
-                  currency={accounts.find(a => a.id === editingForm.accountId)?.currency || baseCurrency}
-                  onChange={val => setEditingForm(prev => ({ ...prev, amount: Math.max(0, val) }))}
-                  className="w-full px-3 py-2.5 rounded-xl bg-black border border-white/15 text-right text-sm"
-                />
-              </div>
-            </div>
-
-            <div className="p-3 rounded-2xl bg-black border border-white/[0.08] space-y-2.5">
-              <div>
-                <label className="block text-[11px] text-[#8E8E93] mb-1">
-                  {editingForm.type === 'INCOME' ? '入帳目標帳戶' : editingForm.type === 'EXPENSE' ? '扣款來源帳戶' : '轉出帳戶 (From)'}
-                </label>
-                <select
-                  value={editingForm.accountId}
-                  onChange={e => setEditingForm(prev => ({ ...prev, accountId: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl bg-[#161618] border border-white/10 text-white font-semibold"
-                >
-                  {(editingForm.type === 'EXPENSE' ? accounts : cashAccounts).map(a => (
-                    <option key={a.id} value={a.id} className="bg-zinc-900">
-                      {a.fullName} ({a.currency})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {editingForm.type === 'TRANSFER' && (
-                <>
-                  <div className="flex items-center justify-center">
-                    <button
-                      type="button"
-                      onClick={() => setEditingForm(prev => ({
-                        ...prev,
-                        accountId: prev.toAccountId || prev.accountId,
-                        toAccountId: prev.accountId
-                      }))}
-                      className="px-3 py-1 rounded-full bg-sky-500/15 border border-sky-400/30 text-[11px] font-bold text-sky-300 flex items-center gap-1.5 active:scale-95 transition"
-                    >
-                      <Icons.ArrowLeftRight />
-                      <span>對調轉出 / 轉入方向</span>
-                    </button>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-sky-400 mb-1">轉入目標帳戶 (To)</label>
-                    <select
-                      value={editingForm.toAccountId || ''}
-                      onChange={e => setEditingForm(prev => ({ ...prev, toAccountId: e.target.value }))}
-                      className="w-full px-3 py-2.5 rounded-xl bg-[#161618] border border-white/10 text-white font-semibold"
-                    >
-                      {cashAccounts.map(a => (
-                        <option key={a.id} value={a.id} className="bg-zinc-900">
-                          {a.fullName} ({a.currency})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {editingForm.type !== 'TRANSFER' && (
-              <div>
-                <label className="block text-[11px] text-[#8E8E93] mb-1">入帳分類</label>
-                <select
-                  value={`${editingForm.mainCatId}::${editingForm.subCatId}`}
-                  onChange={e => {
-                    const [mc, sc] = e.target.value.split('::');
-                    setEditingForm(prev => ({ ...prev, mainCatId: mc, subCatId: sc }));
-                  }}
-                  className="w-full px-3 py-2.5 rounded-xl bg-black border border-white/15 text-white font-semibold"
-                >
-                  {(categories[editingForm.type] || []).filter(c => !c.archived).map(c => (
-                    (c.subs || []).filter(s => !s.archived).map(s => (
-                      <option key={s.id} value={`${c.id}::${s.id}`} className="bg-zinc-900">
-                        {c.name} ▸ {s.name}
-                      </option>
-                    ))
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-[11px] text-[#8E8E93] mb-1.5">歸屬資金池</label>
-              <div className="flex flex-wrap gap-1.5">
-                {buckets.map(b => (
-                  <button
-                    key={b.id}
-                    type="button"
-                    onClick={() => setEditingForm(prev => ({ ...prev, bucketId: b.id }))}
-                    className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 ${
-                      editingForm.bucketId === b.id ? 'bg-white text-black border-white font-bold' : 'bg-black text-zinc-300 border-white/[0.08]'
-                    }`}
-                  >
-                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: b.color }} />
-                    <span>{b.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
+        {/* Loan Settlement Account Picker Sheet */}
+        <BottomSheet
+          open={Boolean(settlingTx)}
+          title={settlingTx && settlingTx.type === 'RECEIVABLE' ? '選擇收款入帳帳戶' : '選擇還款扣款帳戶'}
+          subtitle={settlingTx ? `${settlingTx.title} · ${Store.formatMoney(settlingTx.amount, settlingTx.currency)}` : ''}
+          onClose={() => setSettlingTx(null)}
+          footer={
             <button
               type="button"
-              onClick={commitForm}
-              className="w-full min-h-[46px] rounded-2xl bg-white text-black font-bold text-sm"
+              onClick={confirmSettleLoan}
+              className="w-full py-3.5 rounded-2xl bg-emerald-400 text-black text-[15px] font-bold"
             >
-              儲存此分流項目
+              確認結清（不計入純收支）
             </button>
-          </div>
-        ) : (
-          <div className="space-y-2.5">
-            {items.map(it => {
-              const bMeta = buckets.find(b => b.id === it.bucketId);
-              const typeLabel = it.type === 'INCOME' ? '收入' : it.type === 'EXPENSE' ? '支出' : '轉撥';
+          }
+        >
+          <div className="space-y-2">
+            {allAccounts.map((opt) => {
+              const sel = opt.key === settleTargetKey;
               return (
-                <div key={it.id} className="p-3 rounded-2xl bg-black border border-white/[0.08] flex items-center justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: bMeta?.color || '#38BDF8' }} />
-                      <span className="text-xs font-bold text-white truncate">{it.title}</span>
-                      <span className="text-[10px] text-[#8E8E93] shrink-0">({typeLabel})</span>
-                    </div>
-                    <div className="text-[10px] text-[#8E8E93] mt-0.5 truncate">
-                      {renderFlowLine(it)} · <span className="font-mono-num text-zinc-300">{Store.formatMoney(it.amount, it.currency || baseCurrency)}</span>
-                    </div>
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setSettleTargetKey(opt.key)}
+                  className={`w-full px-4 py-3 rounded-2xl border flex items-center justify-between text-left ${
+                    sel ? 'bg-white text-black border-white' : 'bg-black/45 text-white border-white/10'
+                  }`}
+                >
+                  <div>
+                    <div className="text-[14px] font-semibold">{opt.label}</div>
+                    <div className={`text-[11px] ${sel ? 'text-zinc-600' : 'text-zinc-400'}`}>{opt.sublabel}</div>
                   </div>
-
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => startEditItem(it)}
-                      className="px-2.5 py-1.5 rounded-xl bg-[#161618] border border-white/10 text-[11px] font-semibold text-white"
-                    >
-                      編輯
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removeItem(it.id)}
-                      className="w-8 h-8 rounded-xl bg-rose-500/15 text-rose-300 flex items-center justify-center"
-                    >
-                      <Icons.X />
-                    </button>
+                  <div className="text-[13px] font-semibold tabular-nums">
+                    {opt.kind === 'CARD' ? '信用卡' : Store.formatMoney(opt.amount, opt.currency)}
                   </div>
-                </div>
+                </button>
               );
             })}
-
-            <button
-              type="button"
-              onClick={startNewItem}
-              className="w-full min-h-[46px] rounded-2xl bg-white text-black font-bold text-sm flex items-center justify-center gap-1.5"
-            >
-              <span>＋</span>
-              <span>新增分流項目</span>
-            </button>
           </div>
-        )}
-      </BottomSheet>
-    );
-  }
-
-  function MozeRecordEditorSheet({ preset, onClose, onSaved }) {
-    const state = window.WealthUI.useWealthStore();
-    const baseCurrency = state.settings?.baseCurrency || 'MOP';
-    const fxRates = state.settings?.fxRates || [];
-    const buckets = (state.settings?.buckets || []).filter(b => !b.archived);
-    const categories = state.settings?.categories || { EXPENSE: [], INCOME: [] };
-    const flatAccounts = useMemo(() => Store.getFlatAccounts(), [state]);
-
-    const editTx = preset?.id && (state.transactions || []).some(t => t.id === preset.id) ? preset : null;
-    const [recType, setRecType] = useState(preset?.type || 'EXPENSE');
-    const [currency, setCurrency] = useState(preset?.currency || baseCurrency);
-    const [amountStr, setAmountStr] = useState(preset?.amount ? String(preset.amount) : '0');
-
-    const flowKey = recType === 'INCOME' ? 'INCOME' : 'EXPENSE';
-    const catList = (categories[flowKey] || []).filter(c => !c.archived);
-    const initialCat = catList.find(c => c.id === preset?.mainCatId) || catList[0];
-    const [selectedCatId, setSelectedCatId] = useState(initialCat?.id);
-    const selectedCat = catList.find(c => c.id === selectedCatId) || catList[0];
-
-    const activeSubs = (selectedCat?.subs || []).filter(s => !s.archived);
-    const initialSub = activeSubs.find(s => s.id === preset?.subCatId) || activeSubs[0];
-    const [selectedSubId, setSelectedSubId] = useState(initialSub?.id);
-    const selectedSub = activeSubs.find(s => s.id === selectedSubId) || activeSubs[0];
-
-    const [bucketId, setBucketId] = useState(preset?.bucketId || selectedSub?.defaultBucket || buckets[0]?.id || 'PUBLIC');
-    const [accountId, setAccountId] = useState(preset?.accountId || flatAccounts[0]?.id || '');
-    const [toAccountId, setToAccountId] = useState(preset?.toAccountId || flatAccounts[1]?.id || flatAccounts[0]?.id || '');
-    const [accGroupFilter, setAccGroupFilter] = useState('ALL');
-    const [expandCatGrid, setExpandCatGrid] = useState(false);
-    const [expandAccGrid, setExpandAccGrid] = useState(false);
-    const [creditCycle, setCreditCycle] = useState(preset?.creditCycle || 'UNBILLED');
-    const [counterparty, setCounterparty] = useState(preset?.counterparty || '');
-    const [loanMode, setLoanMode] = useState(preset?.receivableMode || 'NEW');
-    const [title, setTitle] = useState(preset?.title || '');
-    const [merchant, setMerchant] = useState(preset?.merchant || '');
-    const [note, setNote] = useState(preset?.note || '');
-    const [recordDate, setRecordDate] = useState(preset?.date || Store.todayISO());
-    const [saveAsTemplate, setSaveAsTemplate] = useState(false);
-    const [showDetails, setShowDetails] = useState(Boolean(preset?.merchant || preset?.note || preset?.title));
-    const [showKeypad, setShowKeypad] = useState(!editTx);
-    const [showCatMgr, setShowCatMgr] = useState(false);
-
-    const currentAccount = flatAccounts.find(a => a.id === accountId) || flatAccounts[0];
-    const toAccount = flatAccounts.find(a => a.id === toAccountId) || flatAccounts[1] || flatAccounts[0];
-    const typeStyle = RECORD_TYPES[recType] || RECORD_TYPES.EXPENSE;
-
-    const evaluatedAmount = useMemo(() => evaluateMathExpr(amountStr, false), [amountStr]);
-    const hasOperator = /[+\-]/.test(amountStr.slice(1));
-
-    const isCrossCurrency = currentAccount && currency !== currentAccount.currency && recType !== 'TRANSFER';
-    const autoAccountAmount = useMemo(() => {
-      if (!isCrossCurrency) return evaluatedAmount;
-      const txRate = Store.getRateToBase(currency);
-      const accRate = Store.getRateToBase(currentAccount.currency);
-      return Math.round((evaluatedAmount * (txRate / (accRate || 1))) * 100) / 100;
-    }, [isCrossCurrency, evaluatedAmount, currency, currentAccount]);
-    const [customAccountAmt, setCustomAccountAmt] = useState(preset?.accountAmount ?? null);
-    const finalAccountAmount = isCrossCurrency
-      ? (customAccountAmt !== null ? Number(customAccountAmt) : autoAccountAmount)
-      : evaluatedAmount;
-
-    const filteredAccounts = useMemo(() => {
-      if (accGroupFilter === 'ALL') return flatAccounts;
-      return flatAccounts.filter(a => a.group === accGroupFilter);
-    }, [flatAccounts, accGroupFilter]);
-
-    const handleSubmit = (overrideAmt = null) => {
-      const amt = overrideAmt !== null ? Number(overrideAmt) : evaluateMathExpr(amountStr, false);
-      if (amt <= 0) return;
-
-      const now = new Date();
-      const timeStr = editTx?.time || `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      const defaultTitle = recType === 'TRANSFER'
-        ? `${currentAccount?.name || '轉出'} ➔ ${toAccount?.name || '轉入'}`
-        : (selectedSub?.name || selectedCat?.name || RECORD_TYPES[recType]?.label);
-
-      const warnings = Store.saveTransaction({
-        id: editTx ? editTx.id : ('tx_' + Date.now()),
-        date: recordDate,
-        time: timeStr,
-        type: recType,
-        mainCatId: recType === 'TRANSFER' ? 'TRANSFER' : (selectedCat?.id || 'cat_food'),
-        subCatId: recType === 'TRANSFER' ? 'TRANSFER' : (selectedSub?.id || 'sub_dining'),
-        title: title.trim() || defaultTitle,
-        merchant: merchant.trim(),
-        bucketId,
-        accountId: currentAccount?.id || '',
-        toAccountId: recType === 'TRANSFER' ? (toAccount?.id || '') : null,
-        currency,
-        amount: amt,
-        accountAmount: isCrossCurrency ? finalAccountAmount : amt,
-        creditCycle: currentAccount?.kind === 'CREDIT' ? creditCycle : null,
-        counterparty: counterparty.trim(),
-        receivableMode: loanMode,
-        isLoanSettled: editTx?.isLoanSettled || false,
-        settlementTxId: editTx?.settlementTxId || null,
-        isLockedSettled: false,
-        note: note.trim()
-      }, saveAsTemplate);
-
-      onSaved(warnings);
-      onClose();
-    };
-
-    if (showCatMgr) {
-      return <CategoryManagerSheet onClose={() => setShowCatMgr(false)} />;
-    }
-
-    const currencyList = Array.from(new Set([baseCurrency, 'MOP', 'HKD', 'USD', 'CNY', ...fxRates.map(f => f.code)])).slice(0, 6);
-
-    return (
-      <div
-        style={{
-          height: 'var(--app-height, 100dvh)',
-          paddingTop: 'max(12px, env(safe-area-inset-top))'
-        }}
-        className="fixed inset-0 z-50 bg-black flex flex-col max-w-[440px] mx-auto animate-sheet-up overflow-hidden"
-      >
-        <div className="px-4 pb-2.5 border-b border-white/[0.07] flex items-center justify-between gap-1.5 shrink-0">
-          <button type="button" onClick={onClose} className="min-h-[38px] px-3 rounded-2xl bg-[#161618] text-xs font-semibold text-zinc-300">
-            取消
-          </button>
-
-          <div className="flex items-center bg-[#161618] p-1 rounded-2xl border border-white/[0.06]">
-            {Object.values(RECORD_TYPES).map(t => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => {
-                  setRecType(t.id);
-                  const nextList = (categories[t.id === 'INCOME' ? 'INCOME' : 'EXPENSE'] || []).filter(c => !c.archived);
-                  const firstC = nextList[0];
-                  const firstS = (firstC?.subs || []).filter(s => !s.archived)[0];
-                  setSelectedCatId(firstC?.id);
-                  setSelectedSubId(firstS?.id);
-                  if (firstS?.defaultBucket) setBucketId(firstS.defaultBucket);
-                }}
-                className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition ${
-                  recType === t.id ? t.pill : 'text-[#8E8E93]'
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          <button type="button" onClick={() => handleSubmit()} className="min-h-[38px] px-3.5 rounded-2xl bg-white text-black text-xs font-bold">
-            {editTx ? '更新' : '儲存'}
-          </button>
-        </div>
-
-        <div
-          onClick={() => setShowKeypad(true)}
-          className="px-4 py-2.5 bg-[#0B0B0D] border-b border-white/[0.07] flex items-center justify-between gap-2 cursor-pointer shrink-0"
-        >
-          <div data-no-swipe="true" className="flex items-center gap-1 bg-[#161618] p-1 rounded-2xl border border-white/[0.06] overflow-x-auto">
-            {currencyList.map(c => (
-              <button
-                key={c}
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setCurrency(c);
-                  setCustomAccountAmt(null);
-                }}
-                className={`px-2.5 py-1 rounded-xl text-xs font-mono-num font-bold shrink-0 ${
-                  currency === c ? 'bg-white text-black' : 'text-[#8E8E93]'
-                }`}
-              >
-                {c}
-              </button>
-            ))}
-          </div>
-
-          <div className="text-right shrink-0">
-            <div className={`text-3xl font-bold font-mono-num tracking-tight ${typeStyle.accent}`}>
-              {amountStr}
-            </div>
-            {hasOperator && (
-              <div className="text-[11px] font-mono-num text-[#8E8E93]">
-                = {Store.formatMoney(evaluatedAmount, currency)}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {isCrossCurrency && (
-          <div className="px-4 py-2 bg-[#161618] border-b border-white/[0.08] flex items-center justify-between gap-2 text-xs shrink-0">
-            <span className="text-[#8E8E93]">折算 {currentAccount.currency} 實扣</span>
-            <NumericInput
-              value={finalAccountAmount}
-              label={`折算 ${currentAccount.currency} 實扣金額`}
-              currency={currentAccount.currency}
-              onChange={val => setCustomAccountAmt(val)}
-              textClassName="text-amber-300"
-              className="min-w-[100px] px-2.5 py-1 rounded-xl bg-black border border-white/15 text-right text-xs"
-            />
-          </div>
-        )}
-
-        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3.5 space-y-4">
-          {(recType === 'EXPENSE' || recType === 'INCOME') && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-[#8E8E93]">分類</span>
-                  <button
-                    type="button"
-                    onClick={() => setExpandCatGrid(!expandCatGrid)}
-                    className="text-[11px] text-zinc-400 px-2 py-0.5 rounded bg-[#161618]"
-                  >
-                    {expandCatGrid ? '收合' : '展開'}
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowCatMgr(true)}
-                  className="text-[11px] font-semibold text-zinc-300 flex items-center gap-1"
-                >
-                  <Icons.Sliders />
-                  <span>管理分類</span>
-                </button>
-              </div>
-
-              <div data-no-swipe="true" className={expandCatGrid ? 'grid grid-cols-3 gap-2' : 'flex gap-2 overflow-x-auto snap-x-rail pb-1'}>
-                {catList.map(c => {
-                  const isSel = c.id === selectedCat?.id;
-                  return (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedCatId(c.id);
-                        const firstS = (c.subs || []).filter(s => !s.archived)[0];
-                        if (firstS) {
-                          setSelectedSubId(firstS.id);
-                          setBucketId(firstS.defaultBucket);
-                        }
-                      }}
-                      className={`snap-x-item shrink-0 ${expandCatGrid ? '' : 'min-w-[106px]'} py-2.5 px-3 rounded-2xl border flex items-center gap-2 transition ${
-                        isSel ? 'bg-white text-black border-white font-bold' : 'bg-[#111113] text-zinc-200 border-white/[0.07]'
-                      }`}
-                    >
-                      <span style={{ color: isSel ? '#000' : c.color }}><CategoryIcon iconKey={c.iconKey} /></span>
-                      <span className="text-xs truncate">{c.name}</span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {activeSubs.length > 0 && (
-                <div data-no-swipe="true" className="flex gap-1.5 overflow-x-auto snap-x-rail pt-0.5">
-                  {activeSubs.map(s => {
-                    const isSubSel = s.id === selectedSub?.id;
-                    const bMeta = buckets.find(b => b.id === s.defaultBucket);
-                    return (
-                      <button
-                        key={s.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedSubId(s.id);
-                          if (s.defaultBucket) setBucketId(s.defaultBucket);
-                        }}
-                        className={`snap-x-item shrink-0 px-3 py-1.5 rounded-xl text-xs font-semibold border flex items-center gap-1.5 ${
-                          isSubSel ? 'bg-[#2C2C2E] text-white border-white/25' : 'bg-[#111113] text-[#8E8E93] border-white/[0.06]'
-                        }`}
-                      >
-                        {bMeta && <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: bMeta.color }} />}
-                        <span>{s.name}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-
-          {(recType === 'RECEIVABLE' || recType === 'PAYABLE') && (
-            <div className="p-3.5 rounded-2xl bg-[#111113] border border-white/[0.07] space-y-2.5">
-              <input
-                type="text"
-                placeholder={recType === 'RECEIVABLE' ? '對象名稱（向誰收款）' : '對象名稱（還給誰）'}
-                value={counterparty}
-                onChange={e => setCounterparty(e.target.value)}
-                onFocus={() => setShowKeypad(false)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white font-semibold"
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setLoanMode('NEW')}
-                  className={`py-2 rounded-xl text-xs font-semibold border ${
-                    loanMode === 'NEW' ? 'bg-white text-black border-white' : 'bg-black text-[#8E8E93] border-white/[0.08]'
-                  }`}
-                >
-                  {recType === 'RECEIVABLE' ? '新代刷/借出' : '新借入'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLoanMode('EXISTING')}
-                  className={`py-2 rounded-xl text-xs font-semibold border ${
-                    loanMode === 'EXISTING' ? 'bg-white text-black border-white' : 'bg-black text-[#8E8E93] border-white/[0.08]'
-                  }`}
-                >
-                  既有款項（不動帳戶）
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-[#8E8E93]">
-                  {recType === 'TRANSFER' ? '轉出帳戶' : '帳戶'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setExpandAccGrid(!expandAccGrid)}
-                  className="text-[11px] text-zinc-400 px-2 py-0.5 rounded bg-[#161618]"
-                >
-                  {expandAccGrid ? '收合' : `全部 (${filteredAccounts.length})`}
-                </button>
-              </div>
-
-              {currentAccount?.kind === 'CREDIT' && recType !== 'TRANSFER' && (
-                <button
-                  type="button"
-                  onClick={() => setCreditCycle(creditCycle === 'UNBILLED' ? 'BILLED' : 'UNBILLED')}
-                  className="px-2.5 py-1 rounded-lg bg-[#161618] border border-white/10 text-[11px] font-semibold text-amber-300"
-                >
-                  {creditCycle === 'UNBILLED' ? '進行中下期' : '補入本期應繳'}
-                </button>
-              )}
-            </div>
-
-            <div data-no-swipe="true" className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-              {['ALL', '電子錢包', '信用卡', '銀行活期', '投資保單'].map(g => (
-                <button
-                  key={g}
-                  type="button"
-                  onClick={() => setAccGroupFilter(g)}
-                  className={`px-2.5 py-1 rounded-full text-[10px] font-semibold shrink-0 border ${
-                    accGroupFilter === g ? 'bg-zinc-200 text-black border-white' : 'bg-[#111113] text-[#8E8E93] border-white/[0.06]'
-                  }`}
-                >
-                  {g === 'ALL' ? '全部' : g}
-                </button>
-              ))}
-            </div>
-
-            <div data-no-swipe="true" className={expandAccGrid ? 'grid grid-cols-3 gap-2' : 'flex gap-2 overflow-x-auto snap-x-rail pb-1'}>
-              {filteredAccounts.map(acc => {
-                const isSel = acc.id === accountId;
-                return (
-                  <button
-                    key={acc.id}
-                    type="button"
-                    onClick={() => {
-                      setAccountId(acc.id);
-                      setCurrency(acc.currency);
-                      setCustomAccountAmt(null);
-                    }}
-                    className={`snap-x-item shrink-0 ${expandAccGrid ? '' : 'w-[122px]'} p-2.5 rounded-2xl border text-left transition ${
-                      isSel ? 'bg-white text-black border-white' : 'bg-[#111113] text-white border-white/[0.07]'
-                    }`}
-                  >
-                    <div className={`text-[10px] ${isSel ? 'text-zinc-600' : 'text-[#8E8E93]'}`}>{acc.group}</div>
-                    <div className="text-xs font-bold truncate mt-0.5">{acc.name}</div>
-                    <div className={`text-[10px] font-mono-num truncate mt-0.5 ${isSel ? 'text-zinc-700' : 'text-[#8E8E93]'}`}>
-                      {Store.formatMoney(acc.balance, acc.currency)}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {recType === 'TRANSFER' && (
-              <div className="pt-1 space-y-1.5">
-                <span className="text-xs font-semibold text-sky-400">轉入目標帳戶</span>
-                <div data-no-swipe="true" className="flex gap-2 overflow-x-auto snap-x-rail pb-1">
-                  {flatAccounts.filter(a => a.kind !== 'CREDIT').map(acc => {
-                    const isSel = acc.id === toAccountId;
-                    return (
-                      <button
-                        key={acc.id}
-                        type="button"
-                        onClick={() => setToAccountId(acc.id)}
-                        className={`snap-x-item shrink-0 w-[122px] p-2.5 rounded-2xl border text-left ${
-                          isSel ? 'bg-sky-400 text-black border-sky-300' : 'bg-[#111113] text-white border-white/[0.07]'
-                        }`}
-                      >
-                        <div className="text-xs font-bold truncate">{acc.name}</div>
-                        <div className={`text-[10px] font-mono-num truncate mt-0.5 ${isSel ? 'text-zinc-900' : 'text-[#8E8E93]'}`}>
-                          {Store.formatMoney(acc.balance, acc.currency)}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <span className="text-xs font-semibold text-[#8E8E93]">資金池</span>
-            <div data-no-swipe="true" className="flex gap-2 overflow-x-auto snap-x-rail pb-1">
-              {buckets.map(b => {
-                const isSel = bucketId === b.id;
-                return (
-                  <button
-                    key={b.id}
-                    type="button"
-                    onClick={() => setBucketId(b.id)}
-                    className={`snap-x-item shrink-0 min-w-[104px] py-2.5 px-3 rounded-2xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
-                      isSel ? 'bg-white text-black border-white font-bold' : 'bg-[#111113] text-zinc-300 border-white/[0.07]'
-                    }`}
-                  >
-                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: b.color }} />
-                    <span>{b.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="space-y-2 pb-2">
-            <div className="grid grid-cols-2 gap-2">
-              <label className="py-2.5 px-3.5 rounded-2xl bg-[#111113] border border-white/[0.07] flex items-center justify-between text-xs font-semibold text-zinc-300">
-                <span>日期</span>
-                <input
-                  type="date"
-                  value={recordDate}
-                  onChange={e => setRecordDate(e.target.value || Store.todayISO())}
-                  className="bg-transparent text-white font-mono-num font-bold text-right focus:outline-none"
-                />
-              </label>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setShowDetails(!showDetails);
-                  setShowKeypad(false);
-                }}
-                className={`py-2.5 px-3.5 rounded-2xl border flex items-center justify-between text-xs font-semibold ${
-                  showDetails ? 'bg-[#2C2C2E] text-white border-white/20' : 'bg-[#111113] text-zinc-300 border-white/[0.07]'
-                }`}
-              >
-                <span>商戶 / 備註</span>
-                <span>{showDetails ? '▴' : '▾'}</span>
-              </button>
-            </div>
-
-            {showDetails && (
-              <div className="p-3.5 rounded-2xl bg-[#111113] border border-white/[0.07] space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-[#8E8E93]">自訂名稱</span>
-                  <button
-                    type="button"
-                    onClick={() => setSaveAsTemplate(!saveAsTemplate)}
-                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
-                      saveAsTemplate ? 'bg-amber-400 text-black border-amber-300' : 'bg-black text-[#8E8E93] border-white/10'
-                    }`}
-                  >
-                    {saveAsTemplate ? '★ 存為範本' : '存為範本'}
-                  </button>
-                </div>
-                <input
-                  type="text"
-                  placeholder={selectedSub?.name || '項目名稱'}
-                  value={title}
-                  onChange={e => setTitle(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/10 text-white font-semibold"
-                />
-
-                {selectedSub?.merchants?.length > 0 && (
-                  <div data-no-swipe="true" className="flex gap-1.5 overflow-x-auto pb-1">
-                    {selectedSub.merchants.map(m => (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => setMerchant(m)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-medium shrink-0 border ${
-                          merchant === m ? 'bg-white text-black border-white' : 'bg-black text-zinc-300 border-white/[0.08]'
-                        }`}
-                      >
-                        {m}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <input
-                  type="text"
-                  placeholder="商戶地點"
-                  value={merchant}
-                  onChange={e => setMerchant(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/10 text-white"
-                />
-                <input
-                  type="text"
-                  placeholder="備註"
-                  value={note}
-                  onChange={e => setNote(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/10 text-white"
-                />
-              </div>
-            )}
-          </div>
-        </div>
-
-        {showKeypad && (
-          <NumericKeypad
-            valueStr={amountStr}
-            onChangeStr={(next) => {
-              setCustomAccountAmt(null);
-              setAmountStr(next);
-            }}
-            confirmLabel={editTx ? '更新' : '完成'}
-            onCollapse={() => setShowKeypad(false)}
-            onConfirm={(val) => handleSubmit(val)}
-          />
-        )}
+        </BottomSheet>
       </div>
     );
   }
 
-  function CategoryManagerSheet({ onClose }) {
-    const state = window.WealthUI.useWealthStore();
-    const buckets = (state.settings?.buckets || []).filter(b => !b.archived);
-    const categories = state.settings?.categories || { EXPENSE: [], INCOME: [] };
-    const [flow, setFlow] = useState('EXPENSE');
-    const [newSubMap, setNewSubMap] = useState({});
-
-    const list = (categories[flow] || []).filter(c => !c.archived);
-
-    const updateSubBucket = (catId, subId, nextBucketId) => {
-      Store.setState(prev => ({
-        ...prev,
-        settings: {
-          ...prev.settings,
-          categories: {
-            ...prev.settings.categories,
-            [flow]: prev.settings.categories[flow].map(c => c.id !== catId ? c : {
-              ...c,
-              subs: c.subs.map(s => s.id === subId ? { ...s, defaultBucket: nextBucketId } : s)
-            })
-          }
-        }
-      }));
-    };
-
-    const addSub = (catId) => {
-      const name = (newSubMap[catId] || '').trim();
-      if (!name) return;
-      Store.setState(prev => ({
-        ...prev,
-        settings: {
-          ...prev.settings,
-          categories: {
-            ...prev.settings.categories,
-            [flow]: prev.settings.categories[flow].map(c => c.id !== catId ? c : {
-              ...c,
-              subs: [...c.subs, { id: 'sub_' + Date.now(), name, defaultBucket: buckets[0]?.id || 'PUBLIC', merchants: [], archived: false }]
-            })
-          }
-        }
-      }));
-      setNewSubMap(prev => ({ ...prev, [catId]: '' }));
-    };
-
-    return (
-      <div
-        style={{
-          height: 'var(--app-height, 100dvh)',
-          paddingTop: 'max(14px, env(safe-area-inset-top))'
-        }}
-        className="fixed inset-0 z-50 bg-black flex flex-col max-w-[440px] mx-auto animate-sheet-up overflow-hidden"
-      >
-        <div className="px-4 pb-3 border-b border-white/[0.08] flex items-center justify-between shrink-0">
-          <h3 className="text-base font-bold text-white">分類與預設資金池</h3>
-          <button type="button" onClick={onClose} className="min-h-[38px] px-4 rounded-2xl bg-white text-black text-xs font-bold">
-            完成
-          </button>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3" style={{ paddingBottom: 'max(24px, env(safe-area-inset-bottom))' }}>
-          <div className="grid grid-cols-2 p-1 rounded-2xl bg-[#161618] border border-white/[0.06] text-xs font-semibold">
-            <button type="button" onClick={() => setFlow('EXPENSE')} className={`py-2 rounded-xl ${flow === 'EXPENSE' ? 'bg-[#2C2C2E] text-white' : 'text-[#8E8E93]'}`}>
-              支出分類
-            </button>
-            <button type="button" onClick={() => setFlow('INCOME')} className={`py-2 rounded-xl ${flow === 'INCOME' ? 'bg-[#2C2C2E] text-white' : 'text-[#8E8E93]'}`}>
-              收入分類
-            </button>
-          </div>
-
-          {list.map(cat => (
-            <div key={cat.id} className="p-3.5 rounded-2xl bg-[#111113] border border-white/[0.06] space-y-2.5 text-xs">
-              <div className="font-bold text-white text-sm">{cat.name}</div>
-              <div className="divide-y divide-white/[0.05]">
-                {(cat.subs || []).filter(s => !s.archived).map(sub => (
-                  <div key={sub.id} className="py-2 flex items-center justify-between gap-2">
-                    <span className="text-zinc-200 font-medium">{sub.name}</span>
-                    <select
-                      value={sub.defaultBucket}
-                      onChange={e => updateSubBucket(cat.id, sub.id, e.target.value)}
-                      className="px-2.5 py-1 rounded-lg bg-black border border-white/10 text-xs font-semibold text-white"
-                    >
-                      {buckets.map(b => (
-                        <option key={b.id} value={b.id} className="bg-zinc-900">{b.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
-              </div>
-              <div className="flex gap-1.5 pt-1">
-                <input
-                  type="text"
-                  placeholder={`新增「${cat.name}」子分類`}
-                  value={newSubMap[cat.id] || ''}
-                  onChange={e => setNewSubMap(prev => ({ ...prev, [cat.id]: e.target.value }))}
-                  className="flex-1 px-3 py-2 rounded-xl bg-black border border-white/10 text-white"
-                />
-                <button type="button" onClick={() => addSub(cat.id)} className="px-3.5 rounded-xl bg-white/15 text-white font-semibold">
-                  新增
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  window.WealthMod3 = { LedgerMainView, MozeRecordEditorSheet };
+  window.WealthLedger = { LedgerView, TransactionEditorSheet };
 })();

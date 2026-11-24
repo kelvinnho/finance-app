@@ -1,1304 +1,844 @@
 (function () {
-  const { useState, useMemo } = React;
-  const Store = window.WealthStore;
-  const { Icons, BottomSheet, NumericInput } = window.WealthUI;
+  'use strict';
 
-  const CARD_THEMES = [
-    { id: 'titanium', name: '鈦金屬黑', gradient: 'from-[#334155] via-[#1E293B] to-[#090D16]' },
-    { id: 'purple',   name: '極光紫',   gradient: 'from-[#5B21B6] via-[#4C1D95] to-[#1E1B4B]' },
-    { id: 'crimson',  name: '緋紅金',   gradient: 'from-[#991B1B] via-[#7F1D1D] to-[#2A0808]' },
-    { id: 'ocean',    name: '深海藍',   gradient: 'from-[#0369A1] via-[#075985] to-[#082F49]' },
-    { id: 'emerald',  name: '翡翠綠',   gradient: 'from-[#047857] via-[#064E3B] to-[#022C22]' },
-    { id: 'sunset',   name: '琥珀橙',   gradient: 'from-[#EA580C] via-[#9A3412] to-[#3B1106]' },
-    { id: 'rose',     name: '玫瑰金',   gradient: 'from-[#BE123C] via-[#881337] to-[#2E0514]' },
-    { id: 'gold',     name: '黑金尊貴', gradient: 'from-[#78350F] via-[#451A03] to-[#1C0A00]' }
+  const { useState, useMemo, useEffect } = React;
+
+  const ACCOUNT_TYPES = [
+    { value: 'BANK', label: '銀行活期' },
+    { value: 'EWALLET', label: '電子錢包' },
+    { value: 'BROKER', label: '證券交割' },
+    { value: 'CASH', label: '實體現金' }
   ];
 
-  const SUB_BUCKET_COLORS = ['#F43F5E', '#38BDF8', '#34D399', '#F59E0B', '#A855F7', '#14B8A6'];
-  const TYPE_LABELS = { ALL: '全部', BANK: '銀行', EWALLET: '電子錢包', INVEST: '投資保單' };
+  function WalletView({ state, showToast }) {
+    const { Icon, BottomSheet, NumericInput } = window.WealthUI;
+    const Store = window.WealthStore;
 
-  function WalletView({ hideMoney, onNotify }) {
-    const state = window.WealthUI.useWealthStore();
-    const cards = (state.walletCards || []).filter(c => !c.archived);
-    const buckets = (state.settings?.buckets || []).filter(b => !b.archived);
-    const baseCurrency = state.settings?.baseCurrency || 'MOP';
-    const netSummary = useMemo(() => Store.computeNetWorthSummary(), [state]);
+    const [focusedAccId, setFocusedAccId] = useState(null);
+    const [selectedBalMap, setSelectedBalMap] = useState({});
+    const [flipped, setFlipped] = useState(false);
 
-    const [categoryFilter, setCategoryFilter] = useState('ALL');
-    const [activeCardId, setActiveCardId] = useState(() => cards[0]?.id || null);
-    const [activeCurrencyIdx, setActiveCurrencyIdx] = useState({});
-    const [isCardFlipped, setIsCardFlipped] = useState(false);
-    const [confirmDeleteCard, setConfirmDeleteCard] = useState(false);
-    const [expandedSbId, setExpandedSbId] = useState(null);
-    const [modalType, setModalType] = useState(null);
-
-    const filteredCards = useMemo(() => {
-      if (categoryFilter === 'ALL') return cards;
-      return cards.filter(c => c.type === categoryFilter);
-    }, [cards, categoryFilter]);
-
-    const activeCardIndex = filteredCards.findIndex(c => c.id === activeCardId);
-    const activeCard = activeCardIndex !== -1 ? filteredCards[activeCardIndex] : null;
-    const currentAccIdx = activeCard ? (activeCurrencyIdx[activeCard.id] || 0) : 0;
-    const activeAccount = activeCard ? (activeCard.accounts[currentAccIdx] || activeCard.accounts[0]) : null;
-    const cardTheme = CARD_THEMES.find(t => t.id === activeCard?.themeId) || CARD_THEMES[0];
-
-    const selectCardSmooth = (cardId) => {
-      setIsCardFlipped(false);
-      setConfirmDeleteCard(false);
-      setActiveCardId(cardId);
-      const target = cards.find(c => c.id === cardId);
-      const firstAcc = target?.accounts?.[activeCurrencyIdx[cardId] || 0] || target?.accounts?.[0];
-      setExpandedSbId(firstAcc?.subBuckets?.[0]?.id || null);
-    };
-
-    const stepCard = (dir) => {
-      if (!filteredCards.length || activeCardIndex === -1) return;
-      const nextIdx = (activeCardIndex + dir + filteredCards.length) % filteredCards.length;
-      selectCardSmooth(filteredCards[nextIdx].id);
-    };
-
-    const cardSwipeHandlers = window.WealthUI.useHorizontalSwipe({
-      enabled: Boolean(activeCard && !isCardFlipped),
-      onSwipeLeft: () => stepCard(1),
-      onSwipeRight: () => stepCard(-1)
+    // BottomSheet States
+    const [addAccOpen, setAddAccOpen] = useState(false);
+    const [newAcc, setNewAcc] = useState({
+      name: '',
+      subtitle: '活期帳戶',
+      type: 'BANK',
+      theme: 'sapphire',
+      currency: state.meta.baseCurrency,
+      initialAmount: 0,
+      poolId: 'pool_liquid'
     });
 
-    const updateActiveAccount = (updater) => {
-      if (!activeCard || !activeAccount) return;
-      Store.setState(prev => {
-        const updatedTarget = updater(activeAccount);
-        const nextBuckets = updatedTarget.isPrimary
-          ? prev.settings.buckets.map(b => b.id === updatedTarget.purpose ? { ...b, primaryAccountId: updatedTarget.id } : b)
-          : prev.settings.buckets;
+    const [calibOpen, setCalibOpen] = useState(false);
+    const [calibDraft, setCalibDraft] = useState({ amount: 0, poolId: 'pool_liquid' });
 
-        return {
-          ...prev,
-          settings: { ...prev.settings, buckets: nextBuckets },
-          walletCards: prev.walletCards.map(c => ({
-            ...c,
-            accounts: c.accounts.map(a => {
-              if (c.id === activeCard.id && a.id === activeAccount.id) return updatedTarget;
-              if (updatedTarget.isPrimary && a.purpose === updatedTarget.purpose) {
-                return { ...a, isPrimary: false };
-              }
-              return a;
-            })
-          }))
-        };
+    const [addCurOpen, setAddCurOpen] = useState(false);
+    const [addCurDraft, setAddCurDraft] = useState({ currency: 'HKD', amount: 0, poolId: 'pool_liquid' });
+
+    const [topUpOpen, setTopUpOpen] = useState(false);
+    const [topUpDraft, setTopUpDraft] = useState({ fromKey: '', amount: 1000 });
+
+    const [addAllocOpen, setAddAllocOpen] = useState(false);
+    const [allocDraft, setAllocDraft] = useState({ name: '', amount: 5000, locked: true, poolId: 'pool_reserve' });
+
+    const [editCardDraft, setEditCardDraft] = useState({ name: '', subtitle: '', type: 'BANK', theme: 'obsidian' });
+
+    const metrics = useMemo(() => Store.getSummaryMetrics(state), [state]);
+
+    const focusedAcc = useMemo(() => {
+      if (!focusedAccId) return null;
+      return state.accounts.find((a) => a.id === focusedAccId) || null;
+    }, [state.accounts, focusedAccId]);
+
+    const activeBalance = useMemo(() => {
+      if (!focusedAcc || !focusedAcc.balances.length) return null;
+      const pickedId = selectedBalMap[focusedAcc.id];
+      return focusedAcc.balances.find((b) => b.id === pickedId) || focusedAcc.balances[0];
+    }, [focusedAcc, selectedBalMap]);
+
+    useEffect(() => {
+      if (focusedAcc) {
+        setEditCardDraft({
+          name: focusedAcc.name,
+          subtitle: focusedAcc.subtitle || '',
+          type: focusedAcc.type || 'BANK',
+          theme: focusedAcc.theme || 'obsidian'
+        });
+      } else {
+        setFlipped(false);
+      }
+    }, [focusedAcc]);
+
+    // Available Bank funding options for E-Wallet top-up
+    const bankSources = useMemo(() => {
+      const list = [];
+      state.accounts.forEach((a) => {
+        if (a.type === 'EWALLET') return;
+        a.balances.forEach((b) => {
+          list.push({
+            key: `${a.id}::${b.id}`,
+            accId: a.id,
+            balId: b.id,
+            currency: b.currency,
+            label: `${a.name} · ${a.subtitle || b.currency} (${Store.formatMoney(b.amount, b.currency)})`
+          });
+        });
       });
+      return list;
+    }, [state.accounts]);
+
+    const openTopUpSheet = () => {
+      if (!activeBalance) return;
+      const matching = bankSources.find((s) => s.currency === activeBalance.currency) || bankSources[0];
+      setTopUpDraft({
+        fromKey: matching ? matching.key : '',
+        amount: 1000
+      });
+      setTopUpOpen(true);
     };
 
-    const updateActiveCard = (updater) => {
-      if (!activeCard) return;
-      Store.setState(prev => ({
-        ...prev,
-        walletCards: prev.walletCards.map(c => c.id === activeCard.id ? updater(c) : c)
-      }));
+    const handleConfirmTopUp = () => {
+      if (!focusedAcc || !activeBalance || !topUpDraft.fromKey) {
+        showToast('請先選擇扣款銀行戶口');
+        return;
+      }
+      if (Number(topUpDraft.amount) <= 0) {
+        showToast('增值金額須大於 0');
+        return;
+      }
+      const [fromAccId, fromBalId] = topUpDraft.fromKey.split('::');
+      Store.topUpEWallet(fromAccId, fromBalId, focusedAcc.id, activeBalance.id, Number(topUpDraft.amount));
+      setTopUpOpen(false);
+      showToast(`已增值 ${Store.formatMoney(topUpDraft.amount, activeBalance.currency)}`);
     };
 
-    const deleteCurrentCard = () => {
-      if (!activeCard) return;
-      const remaining = cards.filter(c => c.id !== activeCard.id);
-      Store.setState(prev => ({
-        ...prev,
-        walletCards: prev.walletCards.map(c => c.id === activeCard.id ? { ...c, archived: true } : c)
-      }));
-      setIsCardFlipped(false);
-      setConfirmDeleteCard(false);
-      setActiveCardId(remaining[0]?.id || null);
-      onNotify('已封存該銀包卡片');
+    const handleCreateAccount = () => {
+      if (!newAcc.name.trim()) {
+        showToast('請輸入帳戶名稱');
+        return;
+      }
+      const created = Store.addAccount(newAcc);
+      setAddAccOpen(false);
+      setNewAcc({
+        name: '',
+        subtitle: '活期帳戶',
+        type: 'BANK',
+        theme: 'sapphire',
+        currency: state.meta.baseCurrency,
+        initialAmount: 0,
+        poolId: 'pool_liquid'
+      });
+      setFocusedAccId(created.id);
+      showToast(`已新增 ${created.name}`);
     };
 
-    const updateSubBucket = (sbId, patch) => {
-      updateActiveAccount(acc => ({
-        ...acc,
-        subBuckets: (acc.subBuckets || []).map(sb => sb.id === sbId ? { ...sb, ...patch } : sb)
-      }));
+    const getThemeObj = (id) => Store.CARD_THEMES.find((t) => t.id === id) || Store.CARD_THEMES[0];
+
+    const poolName = (id) => {
+      const p = state.pools.find((x) => x.id === id);
+      return p ? p.name : '未指定';
     };
 
-    const deleteSubBucket = (sbId) => {
-      updateActiveAccount(acc => ({
-        ...acc,
-        subBuckets: (acc.subBuckets || []).filter(sb => sb.id !== sbId)
-      }));
-    };
+    // Allocations for focused account & currency
+    const activeAllocations = useMemo(() => {
+      if (!focusedAcc || !activeBalance) return [];
+      return (focusedAcc.allocations || []).filter((al) => al.currency === activeBalance.currency);
+    }, [focusedAcc, activeBalance]);
+
+    const allocatedSum = useMemo(() => {
+      return activeAllocations.reduce((s, x) => s + Number(x.amount || 0), 0);
+    }, [activeAllocations]);
+
+    const freeAmount = activeBalance ? Math.max(0, Store.round2(activeBalance.amount - allocatedSum)) : 0;
 
     return (
-      <div className="space-y-3.5 animate-fade">
-        <div className="px-4 py-3 rounded-2xl bg-[#111113] border border-white/[0.06] flex items-center justify-between">
-          <div>
-            <div className="text-[11px] text-[#8E8E93]">活期與錢包可用</div>
-            <div className="text-xl font-bold font-mono-num text-white mt-0.5">
-              {Store.formatMoney(netSummary.liquidCash, baseCurrency, hideMoney)}
+      <div className="space-y-4 pb-6">
+        {/* Top Summary Card */}
+        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] text-zinc-400 mb-1">活期與錢包可用</div>
+            <div className="text-[26px] font-bold text-white tabular-nums tracking-tight leading-none truncate">
+              {Store.formatMoney(metrics.liquidCash, state.meta.baseCurrency)}
             </div>
           </div>
-          <div className="text-right">
-            <div className="text-[11px] text-[#8E8E93]">凍結底倉與定存</div>
-            <div className="text-xs font-mono-num font-semibold text-zinc-300 mt-0.5">
-              {Store.formatMoney(netSummary.lockedAndFrozen, baseCurrency, hideMoney)}
+          <div className="text-right shrink-0">
+            <div className="text-[11px] text-zinc-500 mb-1">凍結與定存鎖定</div>
+            <div className="text-[15px] font-semibold text-zinc-300 tabular-nums">
+              {Store.formatMoney(metrics.lockedAndInvestments, state.meta.baseCurrency)}
             </div>
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-2">
-          {activeCard ? (
+        {/* Mode A: Apple Wallet Overview List */}
+        {!focusedAcc && (
+          <div className="space-y-3">
+            <div className="rounded-2xl bg-[#111114] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
+              {state.accounts.length === 0 ? (
+                <div className="p-8 text-center text-[13px] text-zinc-500">
+                  尚未建立任何銀包帳戶，點擊下方新增。
+                </div>
+              ) : (
+                state.accounts.map((acc) => {
+                  const primaryBal = acc.balances[0] || { currency: state.meta.baseCurrency, amount: 0 };
+                  const hasLocked = (acc.allocations || []).some((al) => al.locked && al.amount > 0);
+                  const theme = getThemeObj(acc.theme);
+                  return (
+                    <button
+                      key={acc.id}
+                      type="button"
+                      onClick={() => { setFocusedAccId(acc.id); setFlipped(false); }}
+                      className="w-full px-4 py-3.5 flex items-center justify-between gap-3 text-left active:bg-white/[0.04] transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div
+                          className="w-9 h-9 rounded-xl border border-white/15 shrink-0 flex items-center justify-center"
+                          style={{ background: theme.bg }}
+                        >
+                          <span className="w-2.5 h-2.5 rounded-full" style={{ background: theme.accent }} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-[15px] font-semibold text-white truncate">{acc.name}</div>
+                          <div className="text-[12px] text-zinc-400 truncate mt-0.5">
+                            {acc.balances.map((b) => b.currency).join(' / ')} · {acc.subtitle || '活期'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-[15px] font-semibold text-white tabular-nums">
+                          {Store.formatMoney(primaryBal.amount, primaryBal.currency)}
+                        </div>
+                        <div className="text-[11px] text-zinc-500 mt-0.5">
+                          {hasLocked ? '含凍結底倉' : (acc.balances.length > 1 ? `共 ${acc.balances.length} 幣種` : poolName(primaryBal.poolId))}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
             <button
               type="button"
-              onClick={() => {
-                setIsCardFlipped(false);
-                setActiveCardId(null);
-              }}
-              className="min-h-[38px] px-3 rounded-full bg-[#161618] border border-white/[0.08] text-xs font-semibold text-zinc-200 flex items-center gap-1"
+              onClick={() => setAddAccOpen(true)}
+              className="w-full py-3 rounded-2xl border border-dashed border-white/15 text-[13px] font-medium text-zinc-300 flex items-center justify-center gap-1.5 active:bg-white/[0.04]"
             >
-              <Icons.ChevronLeft />
-              <span>卡包總覽 ({filteredCards.length})</span>
+              <Icon name="plus" size={16} /> 新增銀包 / 銀行帳戶
             </button>
-          ) : (
-            <div data-no-swipe="true" className="flex items-center gap-1 bg-[#161618] p-1 rounded-full border border-white/[0.06] overflow-x-auto">
-              {Object.entries(TYPE_LABELS).map(([k, label]) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => setCategoryFilter(k)}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-semibold shrink-0 transition ${
-                    categoryFilter === k ? 'bg-white text-black' : 'text-[#8E8E93]'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+          </div>
+        )}
+
+        {/* Mode B: Focused Apple Wallet Card View + Slicing */}
+        {focusedAcc && activeBalance && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setFocusedAccId(null)}
+                className="inline-flex items-center gap-1 text-[13px] text-zinc-400 active:text-white"
+              >
+                <Icon name="chevronLeft" size={16} /> 全部帳戶
+              </button>
+              <button
+                type="button"
+                onClick={() => setFlipped(!flipped)}
+                className="px-3 py-1 rounded-full bg-white/[0.08] text-[12px] text-zinc-200 active:bg-white/15"
+              >
+                {flipped ? '返回正面' : '卡片設定'}
+              </button>
             </div>
-          )}
 
-          <button
-            type="button"
-            onClick={() => setModalType('NEW_CARD')}
-            className="min-h-[38px] px-3.5 rounded-full bg-white text-black text-xs font-bold flex items-center gap-1 shrink-0 active:scale-95 transition"
-          >
-            <span>＋</span>
-            <span>新增卡片</span>
-          </button>
-        </div>
+            {/* Card Front or Back */}
+            {!flipped ? (
+              <div
+                className="rounded-[22px] p-5 border border-white/15 shadow-2xl relative overflow-hidden"
+                style={{ background: getThemeObj(focusedAcc.theme).bg }}
+              >
+                <div className="flex items-start justify-between gap-2 mb-4">
+                  <div className="min-w-0">
+                    <div className="text-[17px] font-bold text-white truncate">{focusedAcc.name}</div>
+                    <div className="text-[12px] text-white/60 mt-0.5">{focusedAcc.subtitle}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      Store.setDefaultPaymentBalance(focusedAcc.id, activeBalance.id);
+                      showToast('已設為預設找數來源');
+                    }}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-medium flex items-center gap-1 border shrink-0 whitespace-nowrap ${
+                      activeBalance.isDefaultPayment
+                        ? 'bg-amber-400/20 border-amber-300/40 text-amber-200'
+                        : 'bg-black/25 border-white/15 text-white/70'
+                    }`}
+                  >
+                    <Icon name="star" size={12} /> {activeBalance.isDefaultPayment ? '預設找數' : '設為預設'}
+                  </button>
+                </div>
 
-        {!activeCard && (
-          <div className="pt-1 pb-6">
-            {filteredCards.length === 0 ? (
-              <div className="py-12 rounded-3xl bg-[#111113] border border-white/[0.06] text-center space-y-3">
-                <div className="text-xs text-[#8E8E93]">尚無銀包卡片</div>
+                {/* Multi-currency Switcher */}
+                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar mb-4" data-no-swipe="true">
+                  {focusedAcc.balances.map((b) => {
+                    const isSel = b.id === activeBalance.id;
+                    return (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => setSelectedBalMap((prev) => Object.assign({}, prev, { [focusedAcc.id]: b.id }))}
+                        className={`px-2.5 py-1 rounded-full text-[12px] font-semibold transition shrink-0 ${
+                          isSel ? 'bg-white text-black' : 'bg-black/30 text-white/75 border border-white/10'
+                        }`}
+                      >
+                        {b.currency}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const unused = Store.CURRENCIES.find((c) => !focusedAcc.balances.some((b) => b.currency === c.code));
+                      setAddCurDraft({ currency: unused ? unused.code : 'USD', amount: 0, poolId: 'pool_liquid' });
+                      setAddCurOpen(true);
+                    }}
+                    className="px-2.5 py-1 rounded-full text-[12px] bg-black/25 text-white/70 border border-dashed border-white/25 shrink-0"
+                  >
+                    + 幣種
+                  </button>
+                </div>
+
+                {/* Balance Tap to Calibrate */}
                 <button
                   type="button"
-                  onClick={() => setModalType('NEW_CARD')}
-                  className="px-4 py-2 rounded-full bg-white text-black text-xs font-bold"
+                  onClick={() => {
+                    setCalibDraft({ amount: activeBalance.amount, poolId: activeBalance.poolId || 'pool_liquid' });
+                    setCalibOpen(true);
+                  }}
+                  className="text-left group block w-full"
                 >
-                  新增首張銀包卡
+                  <div className="text-[11px] text-white/60 mb-1">點擊餘額可校準平帳</div>
+                  <div className="text-[30px] font-bold text-white tabular-nums tracking-tight leading-tight">
+                    {Store.formatMoney(activeBalance.amount, activeBalance.currency)}
+                  </div>
                 </button>
+
+                {/* Bottom Actions on Card */}
+                <div className="mt-4 pt-3.5 border-t border-white/10 flex items-center justify-between gap-2">
+                  <span className="px-2.5 py-1 rounded-lg bg-black/30 text-[11px] text-white/80">
+                    資金池：{poolName(activeBalance.poolId)}
+                  </span>
+                  {focusedAcc.type === 'EWALLET' && (
+                    <button
+                      type="button"
+                      onClick={openTopUpSheet}
+                      className="px-3.5 py-1.5 rounded-full bg-white text-black text-[12px] font-semibold active:scale-95 transition"
+                    >
+                      由銀行增值
+                    </button>
+                  )}
+                </div>
               </div>
             ) : (
-              filteredCards.map((card, index) => {
-                const theme = CARD_THEMES.find(t => t.id === card.themeId) || CARD_THEMES[0];
-                const primaryAcc = card.accounts[activeCurrencyIdx[card.id] || 0] || card.accounts[0];
-                const bucket = buckets.find(b => b.id === primaryAcc.purpose) || buckets[0];
-
-                return (
-                  <div
-                    key={card.id}
-                    onClick={() => selectCardSmooth(card.id)}
-                    style={{ marginTop: index === 0 ? '0px' : '-114px', zIndex: index + 1 }}
-                    className={`wallet-card-transition relative h-[188px] rounded-[28px] p-5 bg-gradient-to-br ${theme.gradient} border border-white/20 shadow-[0_-12px_28px_rgba(0,0,0,0.85)] cursor-pointer hover:-translate-y-2`}
-                  >
-                    <div className="wallet-card-shine absolute inset-0 rounded-[28px] pointer-events-none" />
-                    <div className="relative z-10 flex items-start justify-between">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-base text-white">{card.institution}</span>
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-black/30 text-white/80 font-medium">
-                            {TYPE_LABELS[card.type]}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 mt-1.5">
-                          {card.accounts.map(a => (
-                            <span key={a.id} className="text-[10px] font-mono-num px-2 py-0.5 rounded bg-black/40 text-white/90 font-semibold">
-                              {a.currency}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-lg font-bold font-mono-num text-white">
-                          {Store.formatMoney(primaryAcc.balance, primaryAcc.currency, hideMoney)}
-                        </div>
-                        {bucket && (
-                          <span className="inline-flex items-center gap-1 mt-1 text-[10px] px-2 py-0.5 rounded-full bg-black/40 text-white/90 font-medium">
-                            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: bucket.color }} />
-                            <span>{bucket.name}</span>
-                            {primaryAcc.isPrimary && <span>★</span>}
-                          </span>
-                        )}
-                      </div>
-                    </div>
+              /* Card Back: Edit Settings */
+              <div className="rounded-[22px] p-5 bg-[#141417] border border-white/15 space-y-3.5">
+                <div className="text-[14px] font-semibold text-white">編輯帳戶卡片</div>
+                <div>
+                  <label className="text-[11px] text-zinc-400 block mb-1">帳戶名稱</label>
+                  <input
+                    type="text"
+                    value={editCardDraft.name}
+                    onChange={(e) => setEditCardDraft((p) => Object.assign({}, p, { name: e.target.value }))}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-[11px] text-zinc-400 block mb-1">帳戶備註</label>
+                    <input
+                      type="text"
+                      value={editCardDraft.subtitle}
+                      onChange={(e) => setEditCardDraft((p) => Object.assign({}, p, { subtitle: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
+                    />
                   </div>
-                );
-              })
+                  <div>
+                    <label className="text-[11px] text-zinc-400 block mb-1">載體類型</label>
+                    <select
+                      value={editCardDraft.type}
+                      onChange={(e) => setEditCardDraft((p) => Object.assign({}, p, { type: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
+                    >
+                      {ACCOUNT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[11px] text-zinc-400 block mb-1.5">卡面質感</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {Store.CARD_THEMES.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setEditCardDraft((p) => Object.assign({}, p, { theme: t.id }))}
+                        className={`py-2 rounded-xl text-[11px] font-medium border transition ${
+                          editCardDraft.theme === t.id ? 'border-white text-white' : 'border-white/10 text-zinc-300'
+                        }`}
+                        style={{ background: t.bg }}
+                      >
+                        {t.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      Store.updateAccount(focusedAcc.id, editCardDraft);
+                      setFlipped(false);
+                      showToast('卡片設定已儲存');
+                    }}
+                    className="flex-1 py-2.5 rounded-xl bg-white text-black text-[13px] font-semibold"
+                  >
+                    儲存修改
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`確定刪除帳戶「${focusedAcc.name}」？`)) {
+                        Store.deleteAccount(focusedAcc.id);
+                        setFocusedAccId(null);
+                        showToast('已刪除帳戶');
+                      }
+                    }}
+                    className="px-4 py-2.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[13px] font-medium"
+                  >
+                    刪除
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Sub-Allocations Slicing Panel */}
+            <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[14px] font-semibold text-white">戶口內部份額切分 ({activeBalance.currency})</div>
+                  <div className="text-[12px] text-zinc-400 mt-0.5 tabular-nums">
+                    未分配自由額：{Store.formatMoney(freeAmount, activeBalance.currency)}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAllocDraft({ name: '', amount: Math.min(5000, freeAmount || 5000), locked: true, poolId: 'pool_reserve' });
+                    setAddAllocOpen(true);
+                  }}
+                  className="px-3 py-1.5 rounded-full bg-white/[0.08] text-[12px] font-medium text-white active:bg-white/15"
+                >
+                  + 份額
+                </button>
+              </div>
+
+              {activeAllocations.length === 0 ? (
+                <div className="py-4 text-center text-[12px] text-zinc-500">
+                  此幣種目前全額為自由活期，可新增份額來劃分凍結底倉或專項目標。
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {activeAllocations.map((al) => {
+                    const maxForThis = Math.max(al.amount, Store.round2(al.amount + freeAmount));
+                    return (
+                      <div key={al.id} className="p-3 rounded-xl bg-black/40 border border-white/[0.06] space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <button
+                              type="button"
+                              onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { locked: !al.locked })}
+                              className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                al.locked ? 'bg-amber-400/20 text-amber-300' : 'bg-white/[0.06] text-zinc-400'
+                              }`}
+                              title={al.locked ? '已凍結底倉' : '非凍結'}
+                            >
+                              <Icon name={al.locked ? 'lock' : 'unlock'} size={14} />
+                            </button>
+                            <div className="min-w-0">
+                              <div className="text-[13px] font-semibold text-white truncate">{al.name}</div>
+                              <div className="text-[11px] text-zinc-500">{al.locked ? '凍結底倉' : '目標份額'}</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <NumericInput
+                              size="sm"
+                              value={al.amount}
+                              currency={activeBalance.currency}
+                              label={`調整「${al.name}」份額`}
+                              quickAdds={[1000, 5000, 10000]}
+                              onChange={(val) => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.min(val, maxForThis) })}
+                              className="!w-auto min-w-[110px]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => Store.deleteAllocation(focusedAcc.id, al.id)}
+                              className="w-7 h-7 rounded-lg bg-white/[0.05] text-zinc-400 flex items-center justify-center"
+                            >
+                              <Icon name="trash" size={14} />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div data-no-swipe="true">
+                          <input
+                            type="range"
+                            min={0}
+                            max={Math.max(100, Math.round(maxForThis))}
+                            step={100}
+                            value={Math.min(al.amount, Math.max(100, Math.round(maxForThis)))}
+                            onChange={(e) => Store.updateAllocation(focusedAcc.id, al.id, { amount: Number(e.target.value) })}
+                            className="w-full accent-white h-1.5 bg-white/10 rounded-lg cursor-pointer"
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 text-[11px]">
+                          <div className="flex gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.max(0, al.amount - 1000) })}
+                              className="px-2.5 py-1 rounded-lg bg-white/[0.06] text-zinc-300 active:bg-white/15"
+                            >
+                              -1K
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.min(maxForThis, al.amount + 1000) })}
+                              className="px-2.5 py-1 rounded-lg bg-white/[0.06] text-zinc-300 active:bg-white/15"
+                            >
+                              +1K
+                            </button>
+                          </div>
+                          {freeAmount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                Store.absorbFreeAmount(focusedAcc.id, activeBalance.currency, al.id);
+                                showToast('已吸納剩餘自由額');
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/25"
+                            >
+                              吸納自由額
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Bottom Stacked Card Dock for Quick Switching */}
+            {state.accounts.length > 1 && (
+              <div className="space-y-1.5">
+                <div className="text-[11px] text-zinc-500 px-1">快速切換其他卡片</div>
+                <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1" data-no-swipe="true">
+                  {state.accounts.filter((a) => a.id !== focusedAcc.id).map((a) => {
+                    const th = getThemeObj(a.theme);
+                    const b0 = a.balances[0];
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        onClick={() => { setFocusedAccId(a.id); setFlipped(false); }}
+                        className="shrink-0 min-w-[140px] p-3 rounded-2xl border border-white/10 text-left active:scale-95 transition"
+                        style={{ background: th.bg }}
+                      >
+                        <div className="text-[12px] font-semibold text-white truncate">{a.name}</div>
+                        <div className="text-[11px] text-white/65 tabular-nums mt-1">
+                          {b0 ? Store.formatMoney(b0.amount, b0.currency) : '-'}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </div>
         )}
 
-        {activeCard && activeAccount && (() => {
-          const allocatedSum = (activeAccount.subBuckets || []).reduce((s, b) => s + Number(b.amount || 0), 0);
-          const frozenSum = (activeAccount.subBuckets || []).filter(b => b.isFrozen).reduce((s, b) => s + Number(b.amount || 0), 0);
-          const unallocatedFree = Math.max(0, Number(activeAccount.balance) - allocatedSum);
-          const realSpendable = Math.max(0, Number(activeAccount.balance) - frozenSum);
-          const currentBucket = buckets.find(b => b.id === activeAccount.purpose) || buckets[0];
-          const otherCards = filteredCards.filter(c => c.id !== activeCard.id);
-
-          return (
-            <div className="space-y-4">
-              <div
-                key={activeCard.id}
-                data-no-swipe="true"
-                {...cardSwipeHandlers}
-                className={`animate-card-spring wallet-card-transition relative rounded-[28px] p-5 bg-gradient-to-br ${cardTheme.gradient} border border-white/20 shadow-[0_18px_45px_rgba(0,0,0,0.85)] overflow-hidden`}
-              >
-                <div className="wallet-card-shine absolute inset-0 pointer-events-none" />
-
-                {!isCardFlipped ? (
-                  <div className="relative z-10 space-y-4">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h2 className="text-lg font-bold tracking-tight text-white">{activeCard.institution}</h2>
-                          <button
-                            type="button"
-                            onClick={() => setIsCardFlipped(true)}
-                            className="px-2 py-0.5 rounded-full bg-black/35 border border-white/15 text-[10px] text-white/80 hover:text-white"
-                          >
-                            設定
-                          </button>
-                          {activeCard.type === 'EWALLET' && (
-                            <button
-                              type="button"
-                              onClick={() => setModalType('TOPUP_EWALLET')}
-                              className="px-2.5 py-0.5 rounded-full bg-white text-black text-[10px] font-bold"
-                            >
-                              增值
-                            </button>
-                          )}
-                        </div>
-                        <div className="text-xs text-white/75 mt-0.5">{activeAccount.name}</div>
-                      </div>
-
-                      {currentBucket && (
-                        <button
-                          type="button"
-                          onClick={() => setModalType('BUCKET_PICKER')}
-                          className="px-2.5 py-1 rounded-full bg-black/40 border border-white/15 text-xs font-semibold text-white flex items-center gap-1.5 shrink-0"
-                        >
-                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: currentBucket.color }} />
-                          <span>{currentBucket.name}</span>
-                          {activeAccount.isPrimary && <span className="text-amber-300">★</span>}
-                        </button>
-                      )}
-                    </div>
-
-                    <div data-no-swipe="true" className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-                      {activeCard.accounts.map((acc, idx) => {
-                        const isSel = idx === currentAccIdx;
-                        return (
-                          <button
-                            key={acc.id}
-                            type="button"
-                            onClick={() => {
-                              setActiveCurrencyIdx(prev => ({ ...prev, [activeCard.id]: idx }));
-                              setExpandedSbId(acc.subBuckets?.[0]?.id || null);
-                            }}
-                            className={`px-3 py-1 rounded-xl text-xs font-mono-num font-bold shrink-0 transition flex items-center gap-1.5 ${
-                              isSel ? 'bg-white text-black shadow' : 'bg-black/35 text-white/80 border border-white/15'
-                            }`}
-                          >
-                            <span>{acc.currency}</span>
-                            <span className={`text-[10px] ${isSel ? 'text-zinc-600' : 'text-white/60'}`}>
-                              {hideMoney ? '•••' : Number(acc.balance).toLocaleString()}
-                            </span>
-                          </button>
-                        );
-                      })}
-                      <button
-                        type="button"
-                        onClick={() => setModalType('ADD_CURRENCY')}
-                        className="px-2.5 py-1 rounded-xl bg-white/10 border border-dashed border-white/30 text-[11px] font-semibold text-white/90 shrink-0"
-                      >
-                        + 幣種
-                      </button>
-                    </div>
-
-                    <div className="pt-1 flex items-end justify-between">
-                      <div
-                        onClick={() => setModalType('BALANCE_EDIT')}
-                        className="cursor-pointer rounded-2xl -ml-2 px-2 py-1 hover:bg-white/10 transition"
-                      >
-                        <div className="flex items-center gap-1.5 text-[11px] text-white/75">
-                          <span>{activeCard.type === 'INVEST' ? '交割現金餘額' : '帳戶餘額'}</span>
-                          <span className="opacity-70"><Icons.Sliders /></span>
-                        </div>
-                        <div className="text-3xl font-bold font-mono-num tracking-tight text-white mt-0.5">
-                          {Store.formatMoney(activeAccount.balance, activeAccount.currency, hideMoney)}
-                        </div>
-                      </div>
-
-                      <div className="text-right pb-1">
-                        <div className="text-[11px] text-emerald-300 font-medium">扣除凍結可用</div>
-                        <div className="text-base font-bold font-mono-num text-emerald-200">
-                          {Store.formatMoney(realSpendable, activeAccount.currency, hideMoney)}
-                        </div>
-                        {activeAccount.lockedBalance > 0 && (
-                          <div className="text-[10px] font-mono-num text-amber-300 mt-0.5">
-                            定存鎖定 {Store.formatMoney(activeAccount.lockedBalance, activeAccount.currency, hideMoney)}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="space-y-1.5 pt-1">
-                      <div className="h-2.5 w-full rounded-full bg-black/45 p-0.5 flex gap-0.5 overflow-hidden border border-white/10">
-                        {(activeAccount.subBuckets || []).map(sb => {
-                          const pct = activeAccount.balance > 0 ? Math.min(100, (sb.amount / activeAccount.balance) * 100) : 0;
-                          if (pct <= 0) return null;
-                          return (
-                            <div
-                              key={sb.id}
-                              onClick={() => setExpandedSbId(sb.id)}
-                              style={{ width: `${pct}%`, backgroundColor: sb.color }}
-                              className="h-full first:rounded-l-full last:rounded-r-full cursor-pointer"
-                            />
-                          );
-                        })}
-                        {unallocatedFree > 0 && (
-                          <div
-                            style={{ width: `${(unallocatedFree / (activeAccount.balance || 1)) * 100}%` }}
-                            className="h-full bg-white/25 rounded-r-full"
-                          />
-                        )}
-                      </div>
-
-                      <div className="flex items-center justify-between text-[10px] text-white/75 font-mono-num px-0.5">
-                        <span>凍結底倉 {Store.formatMoney(frozenSum, activeAccount.currency, hideMoney)}</span>
-                        <span>未分配 {Store.formatMoney(unallocatedFree, activeAccount.currency, hideMoney)}</span>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="relative z-10 space-y-3 animate-fade">
-                    <div className="flex items-center justify-between border-b border-white/15 pb-2">
-                      <span className="text-xs font-bold text-white">卡片設定</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsCardFlipped(false);
-                          setConfirmDeleteCard(false);
-                        }}
-                        className="px-3 py-1 rounded-full bg-white text-black text-xs font-bold"
-                      >
-                        完成
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[10px] text-white/70 mb-1">機構名稱</label>
-                        <input
-                          type="text"
-                          value={activeCard.institution}
-                          onChange={e => updateActiveCard(c => ({ ...c, institution: e.target.value }))}
-                          className="w-full px-3 py-1.5 rounded-xl bg-black/50 border border-white/20 text-white font-semibold"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] text-white/70 mb-1">子戶口名稱</label>
-                        <input
-                          type="text"
-                          value={activeAccount.name}
-                          onChange={e => updateActiveAccount(a => ({ ...a, name: e.target.value }))}
-                          className="w-full px-3 py-1.5 rounded-xl bg-black/50 border border-white/20 text-white font-semibold"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-white/70">載體類型</span>
-                      <div className="flex gap-1">
-                        {['BANK', 'EWALLET', 'INVEST'].map(tKey => (
-                          <button
-                            key={tKey}
-                            type="button"
-                            onClick={() => updateActiveCard(c => ({ ...c, type: tKey }))}
-                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border ${
-                              activeCard.type === tKey ? 'bg-white text-black border-white' : 'bg-black/40 text-white/75 border-white/15'
-                            }`}
-                          >
-                            {TYPE_LABELS[tKey]}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-4 gap-1.5">
-                      {CARD_THEMES.map(theme => (
-                        <button
-                          key={theme.id}
-                          type="button"
-                          onClick={() => updateActiveCard(c => ({ ...c, themeId: theme.id }))}
-                          className={`py-1.5 px-1 rounded-xl bg-gradient-to-br ${theme.gradient} border text-[10px] font-semibold text-white ${
-                            activeCard.themeId === theme.id ? 'border-white ring-2 ring-white/50' : 'border-white/20 opacity-80'
-                          }`}
-                        >
-                          {theme.name}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="pt-1 border-t border-white/15 flex items-center justify-between">
-                      {!confirmDeleteCard ? (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteCard(true)}
-                          className="ml-auto text-[11px] text-rose-300 font-semibold"
-                        >
-                          封存此卡片
-                        </button>
-                      ) : (
-                        <div className="ml-auto flex items-center gap-1.5">
-                          <span className="text-[10px] text-rose-200">確定封存？</span>
-                          <button type="button" onClick={deleteCurrentCard} className="px-2.5 py-1 rounded bg-rose-600 text-white text-[10px] font-bold">
-                            確認
-                          </button>
-                          <button type="button" onClick={() => setConfirmDeleteCard(false)} className="px-2 py-1 rounded bg-black/50 text-white/70 text-[10px]">
-                            取消
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between px-1">
-                  <span className="text-xs font-semibold text-[#8E8E93]">
-                    戶口份額 ({(activeAccount.subBuckets || []).length})
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setModalType('ADD_SUBBUCKET')}
-                    className="px-3 py-1 rounded-full bg-[#161618] border border-white/10 text-xs font-semibold text-white"
-                  >
-                    + 新增份額
-                  </button>
-                </div>
-
-                <div className="space-y-2">
-                  {(activeAccount.subBuckets || []).map(sb => {
-                    const isExpanded = expandedSbId === sb.id;
-                    const pct = activeAccount.balance > 0 ? Math.round((sb.amount / activeAccount.balance) * 100) : 0;
-                    const otherAllocated = (activeAccount.subBuckets || []).filter(it => it.id !== sb.id).reduce((s, it) => s + Number(it.amount || 0), 0);
-                    const maxForThis = Math.max(0, Number(activeAccount.balance) - otherAllocated);
-
-                    return (
-                      <div key={sb.id} className="rounded-2xl bg-[#111113] border border-white/[0.06] overflow-hidden">
-                        <div
-                          onClick={() => setExpandedSbId(isExpanded ? null : sb.id)}
-                          className="p-3.5 flex items-center justify-between cursor-pointer"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: sb.color }} />
-                            <span className="text-xs font-bold text-white truncate">{sb.name}</span>
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold flex items-center gap-1 shrink-0 ${
-                              sb.isFrozen ? 'bg-rose-500/15 text-rose-300' : 'bg-emerald-500/15 text-emerald-300'
-                            }`}>
-                              {sb.isFrozen ? <Icons.Lock /> : <Icons.Unlock />}
-                              <span>{sb.isFrozen ? '凍結' : '可用'}</span>
-                            </span>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <div className="text-sm font-bold font-mono-num text-white">
-                              {Store.formatMoney(sb.amount, activeAccount.currency, hideMoney)}
-                            </div>
-                            <div className="text-[10px] font-mono-num text-[#8E8E93]">{pct}%</div>
-                          </div>
-                        </div>
-
-                        {isExpanded && (
-                          <div className="px-3.5 pb-3.5 pt-2.5 border-t border-white/[0.06] bg-black/35 space-y-3">
-                            <input
-                              type="range"
-                              min="0"
-                              max={Math.max(activeAccount.balance, sb.amount)}
-                              step="500"
-                              value={sb.amount}
-                              onChange={e => updateSubBucket(sb.id, { amount: Number(e.target.value) })}
-                              className="w-full"
-                            />
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => updateSubBucket(sb.id, { amount: Math.max(0, sb.amount - 1000) })}
-                                className="min-h-[38px] px-2.5 rounded-xl bg-[#161618] border border-white/[0.08] text-xs font-mono-num font-bold text-zinc-300"
-                              >
-                                -1K
-                              </button>
-                              <NumericInput
-                                value={sb.amount}
-                                label={sb.name}
-                                subtitle="設定份額金額"
-                                currency={activeAccount.currency}
-                                onChange={val => updateSubBucket(sb.id, { amount: Math.max(0, val) })}
-                                className="flex-1 min-w-0 min-h-[38px] px-2 rounded-xl bg-[#161618] border border-white/15 text-center text-sm"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => updateSubBucket(sb.id, { amount: sb.amount + 1000 })}
-                                className="min-h-[38px] px-2.5 rounded-xl bg-[#161618] border border-white/[0.08] text-xs font-mono-num font-bold text-emerald-400"
-                              >
-                                +1K
-                              </button>
-                            </div>
-                            <div className="flex items-center justify-between pt-1">
-                              <div className="flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => updateSubBucket(sb.id, { isFrozen: !sb.isFrozen })}
-                                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border ${
-                                    sb.isFrozen ? 'bg-rose-500/20 text-rose-300 border-rose-500/40' : 'bg-[#161618] text-zinc-300 border-white/[0.08]'
-                                  }`}
-                                >
-                                  {sb.isFrozen ? '解除凍結' : '設為凍結底倉'}
-                                </button>
-                                {unallocatedFree > 0 && (
-                                  <button
-                                    type="button"
-                                    onClick={() => updateSubBucket(sb.id, { amount: maxForThis })}
-                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 text-[11px] font-semibold text-emerald-300"
-                                  >
-                                    吸納自由額
-                                  </button>
-                                )}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => deleteSubBucket(sb.id)}
-                                className="text-[11px] text-[#8E8E93] hover:text-rose-400 px-2 py-1"
-                              >
-                                刪除
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  <div className="p-3.5 rounded-2xl bg-[#0B0B0D] border border-dashed border-white/[0.1] flex items-center justify-between text-xs">
-                    <span className="text-[#8E8E93]">未分配自由餘額</span>
-                    <span className="font-mono-num font-bold text-emerald-400">
-                      {Store.formatMoney(unallocatedFree, activeAccount.currency, hideMoney)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {otherCards.length > 0 && (
-                <div className="pt-3">
-                  <div className="flex items-center justify-between px-1 mb-2">
-                    <span className="text-[11px] font-semibold text-[#8E8E93]">其他銀包卡片</span>
-                    <div className="flex items-center gap-1">
-                      <button type="button" onClick={() => stepCard(-1)} className="w-7 h-7 rounded-full bg-[#161618] border border-white/[0.08] text-zinc-400 flex items-center justify-center">
-                        <Icons.ChevronLeft />
-                      </button>
-                      <span className="text-[10px] font-mono-num text-[#8E8E93] px-1">
-                        {activeCardIndex + 1} / {filteredCards.length}
-                      </span>
-                      <button type="button" onClick={() => stepCard(1)} className="w-7 h-7 rounded-full bg-[#161618] border border-white/[0.08] text-zinc-400 flex items-center justify-center">
-                        <Icons.ChevronRight />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="pt-1">
-                    {otherCards.map((c, idx) => {
-                      const t = CARD_THEMES.find(theme => theme.id === c.themeId) || CARD_THEMES[0];
-                      const pAcc = c.accounts[activeCurrencyIdx[c.id] || 0] || c.accounts[0];
-                      const isLast = idx === otherCards.length - 1;
-                      return (
-                        <div
-                          key={c.id}
-                          onClick={() => selectCardSmooth(c.id)}
-                          style={{ marginTop: idx === 0 ? '0px' : '-20px', zIndex: idx + 1 }}
-                          className={`wallet-card-transition relative bg-gradient-to-br ${t.gradient} border-t border-x border-white/20 ${
-                            isLast ? 'rounded-[24px] border-b pb-3.5' : 'rounded-t-[24px] pb-7'
-                          } px-4 pt-3 shadow-[0_-10px_24px_rgba(0,0,0,0.85)] cursor-pointer hover:-translate-y-1.5`}
-                        >
-                          <div className="relative z-10 flex items-center justify-between">
-                            <span className="font-bold text-sm text-white truncate">{c.institution}</span>
-                            <span className="text-xs font-bold font-mono-num text-white shrink-0">
-                              {Store.formatMoney(pAcc.balance, pAcc.currency, hideMoney)}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+        {/* Sheet: Add Account */}
+        <BottomSheet
+          open={addAccOpen}
+          title="新增銀包 / 銀行帳戶"
+          onClose={() => setAddAccOpen(false)}
+          footer={
+            <button
+              type="button"
+              onClick={handleCreateAccount}
+              className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold active:scale-[0.99] transition"
+            >
+              建立帳戶
+            </button>
+          }
+        >
+          <div className="space-y-3.5">
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">帳戶名稱</label>
+              <input
+                type="text"
+                placeholder="例如：日常銀行、電子錢包"
+                value={newAcc.name}
+                onChange={(e) => setNewAcc((p) => Object.assign({}, p, { name: e.target.value }))}
+                className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              />
             </div>
-          );
-        })()}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">載體類型</label>
+                <select
+                  value={newAcc.type}
+                  onChange={(e) => setNewAcc((p) => Object.assign({}, p, { type: e.target.value }))}
+                  className="w-full px-3 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                >
+                  {ACCOUNT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">初始幣種</label>
+                <select
+                  value={newAcc.currency}
+                  onChange={(e) => setNewAcc((p) => Object.assign({}, p, { currency: e.target.value }))}
+                  className="w-full px-3 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                >
+                  {Store.CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.code} · {c.name}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">初始餘額</label>
+              <NumericInput
+                value={newAcc.initialAmount}
+                currency={newAcc.currency}
+                label="輸入初始餘額"
+                quickAdds={[1000, 5000, 10000]}
+                onChange={(val) => setNewAcc((p) => Object.assign({}, p, { initialAmount: val }))}
+              />
+            </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">歸屬資金池</label>
+              <select
+                value={newAcc.poolId}
+                onChange={(e) => setNewAcc((p) => Object.assign({}, p, { poolId: e.target.value }))}
+                className="w-full px-3 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              >
+                {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+          </div>
+        </BottomSheet>
 
-        {modalType === 'BALANCE_EDIT' && activeAccount && (
-          <BalanceAdjustSheet
-            account={activeAccount}
-            onClose={() => setModalType(null)}
-            onSave={(newBal, newLocked) => {
-              updateActiveAccount(a => ({ ...a, balance: newBal, lockedBalance: newLocked }));
-              setModalType(null);
-              onNotify('已更新帳戶餘額');
-            }}
-          />
-        )}
+        {/* Sheet: Calibrate Balance */}
+        <BottomSheet
+          open={calibOpen && Boolean(focusedAcc && activeBalance)}
+          title={focusedAcc ? `${focusedAcc.name} · 餘額校準` : '餘額校準'}
+          subtitle={activeBalance ? `幣種 ${activeBalance.currency}` : ''}
+          onClose={() => setCalibOpen(false)}
+          footer={
+            <button
+              type="button"
+              onClick={() => {
+                Store.calibrateBalance(focusedAcc.id, activeBalance.id, calibDraft.amount, calibDraft.poolId);
+                setCalibOpen(false);
+                showToast('餘額已校準');
+              }}
+              className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold"
+            >
+              儲存校準餘額
+            </button>
+          }
+        >
+          <div className="space-y-4">
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">最新實際餘額</label>
+              <NumericInput
+                size="lg"
+                value={calibDraft.amount}
+                currency={activeBalance ? activeBalance.currency : state.meta.baseCurrency}
+                label="校準實際餘額"
+                onChange={(val) => setCalibDraft((p) => Object.assign({}, p, { amount: val }))}
+              />
+            </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">歸屬資金池</label>
+              <select
+                value={calibDraft.poolId}
+                onChange={(e) => setCalibDraft((p) => Object.assign({}, p, { poolId: e.target.value }))}
+                className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              >
+                {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+          </div>
+        </BottomSheet>
 
-        {modalType === 'BUCKET_PICKER' && activeAccount && (
-          <BucketPickerSheet
-            buckets={buckets}
-            currentPurpose={activeAccount.purpose}
-            isPrimary={activeAccount.isPrimary}
-            onSelect={(purposeId, primaryFlag) => {
-              updateActiveAccount(a => ({ ...a, purpose: purposeId, isPrimary: primaryFlag }));
-              setModalType(null);
-              onNotify('已更新歸屬資金池');
-            }}
-            onAddBucket={(newB) => {
-              Store.setState(prev => ({
-                ...prev,
-                settings: { ...prev.settings, buckets: [...prev.settings.buckets, newB] }
-              }));
-              updateActiveAccount(a => ({ ...a, purpose: newB.id }));
-              setModalType(null);
-              onNotify(`已建立「${newB.name}」`);
-            }}
-            onClose={() => setModalType(null)}
-          />
-        )}
+        {/* Sheet: Add Currency */}
+        <BottomSheet
+          open={addCurOpen && Boolean(focusedAcc)}
+          title="新增多幣種子戶口"
+          onClose={() => setAddCurOpen(false)}
+          footer={
+            <button
+              type="button"
+              onClick={() => {
+                const ok = Store.addAccountCurrency(focusedAcc.id, addCurDraft.currency, addCurDraft.amount, addCurDraft.poolId);
+                if (!ok) {
+                  showToast('該幣種已存在於此帳戶');
+                  return;
+                }
+                setAddCurOpen(false);
+                showToast(`已新增 ${addCurDraft.currency} 戶口`);
+              }}
+              className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold"
+            >
+              確認新增幣種
+            </button>
+          }
+        >
+          <div className="space-y-4">
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">選擇幣種</label>
+              <select
+                value={addCurDraft.currency}
+                onChange={(e) => setAddCurDraft((p) => Object.assign({}, p, { currency: e.target.value }))}
+                className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              >
+                {Store.CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.code} · {c.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">初始餘額</label>
+              <NumericInput
+                value={addCurDraft.amount}
+                currency={addCurDraft.currency}
+                label="輸入子戶口初始餘額"
+                onChange={(val) => setAddCurDraft((p) => Object.assign({}, p, { amount: val }))}
+              />
+            </div>
+          </div>
+        </BottomSheet>
 
-        {modalType === 'ADD_SUBBUCKET' && activeAccount && (
-          <AddSubBucketSheet
-            account={activeAccount}
-            onClose={() => setModalType(null)}
-            onAdd={(newSb) => {
-              updateActiveAccount(a => ({ ...a, subBuckets: [...(a.subBuckets || []), newSb] }));
-              setExpandedSbId(newSb.id);
-              setModalType(null);
-              onNotify(`已新增份額「${newSb.name}」`);
-            }}
-          />
-        )}
+        {/* Sheet: E-Wallet Top-Up (Sticky Footer Guaranteed Visible) */}
+        <BottomSheet
+          open={topUpOpen && Boolean(focusedAcc && activeBalance)}
+          title={focusedAcc ? `${focusedAcc.name} · 增值` : '增值'}
+          onClose={() => setTopUpOpen(false)}
+          footer={
+            <button
+              type="button"
+              onClick={handleConfirmTopUp}
+              className="w-full py-3.5 rounded-2xl bg-emerald-400 text-black text-[15px] font-bold active:scale-[0.99] transition"
+            >
+              確認扣款並增值
+            </button>
+          }
+        >
+          <div className="space-y-4">
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">扣款銀行戶口</label>
+              <select
+                value={topUpDraft.fromKey}
+                onChange={(e) => setTopUpDraft((p) => Object.assign({}, p, { fromKey: e.target.value }))}
+                className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              >
+                {bankSources.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">
+                增值金額 ({activeBalance ? activeBalance.currency : ''})
+              </label>
+              <NumericInput
+                size="lg"
+                value={topUpDraft.amount}
+                currency={activeBalance ? activeBalance.currency : state.meta.baseCurrency}
+                label="輸入增值金額"
+                quickAdds={[200, 500, 1000, 2000]}
+                onChange={(val) => setTopUpDraft((p) => Object.assign({}, p, { amount: val }))}
+                className="!text-emerald-400"
+              />
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {[200, 500, 1000, 2000].map((inc) => (
+                <button
+                  key={inc}
+                  type="button"
+                  onClick={() => setTopUpDraft((p) => Object.assign({}, p, { amount: Store.round2(Number(p.amount || 0) + inc) }))}
+                  className="py-2.5 rounded-xl bg-white/[0.06] border border-white/10 text-[13px] font-medium text-zinc-200 active:bg-white/15 tabular-nums"
+                >
+                  +{inc}
+                </button>
+              ))}
+            </div>
+          </div>
+        </BottomSheet>
 
-        {modalType === 'ADD_CURRENCY' && activeCard && (
-          <AddCurrencySheet
-            card={activeCard}
-            fxRates={state.settings?.fxRates || []}
-            onClose={() => setModalType(null)}
-            onAdd={(newAcc) => {
-              const nextIdx = activeCard.accounts.length;
-              updateActiveCard(c => ({ ...c, accounts: [...c.accounts, newAcc] }));
-              setActiveCurrencyIdx(prev => ({ ...prev, [activeCard.id]: nextIdx }));
-              setModalType(null);
-              onNotify(`已新增 ${newAcc.currency} 子戶口`);
-            }}
-          />
-        )}
-
-        {modalType === 'NEW_CARD' && (
-          <NewCardModal
-            buckets={buckets}
-            baseCurrency={baseCurrency}
-            fxRates={state.settings?.fxRates || []}
-            onClose={() => setModalType(null)}
-            onCreate={(newCard) => {
-              Store.setState(prev => ({ ...prev, walletCards: [newCard, ...prev.walletCards] }));
-              setCategoryFilter('ALL');
-              setActiveCardId(newCard.id);
-              setModalType(null);
-              onNotify(`已新增「${newCard.institution}」`);
-            }}
-          />
-        )}
-
-        {modalType === 'TOPUP_EWALLET' && activeCard && activeAccount && (
-          <TopupEwalletSheet
-            targetCard={activeCard}
-            targetAccount={activeAccount}
-            allCards={cards}
-            onClose={() => setModalType(null)}
-            onConfirmTopup={(sourceAccId, amount) => {
-              const now = new Date();
-              Store.saveTransaction({
-                id: 'tx_topup_' + Date.now(),
-                date: Store.todayISO(),
-                time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-                type: 'TRANSFER',
-                mainCatId: 'TRANSFER',
-                subCatId: 'TRANSFER',
-                title: `${activeCard.institution} 增值`,
-                merchant: '',
-                bucketId: activeAccount.purpose || 'PERSONAL',
-                accountId: sourceAccId,
-                toAccountId: activeAccount.id,
-                currency: activeAccount.currency,
-                amount,
-                accountAmount: amount,
-                creditCycle: null,
-                counterparty: '',
-                receivableMode: 'NEW',
-                isLoanSettled: false,
-                isLockedSettled: false,
-                note: '電子錢包增值'
-              });
-              setModalType(null);
-              onNotify(`已完成增值 ${Store.formatMoney(amount, activeAccount.currency)}`);
-            }}
-          />
-        )}
+        {/* Sheet: Add Sub-Allocation */}
+        <BottomSheet
+          open={addAllocOpen && Boolean(focusedAcc && activeBalance)}
+          title="新增戶口內部份額"
+          subtitle={activeBalance ? `可用未分配餘額：${Store.formatMoney(freeAmount, activeBalance.currency)}` : ''}
+          onClose={() => setAddAllocOpen(false)}
+          footer={
+            <button
+              type="button"
+              onClick={() => {
+                if (!allocDraft.name.trim()) {
+                  showToast('請輸入份額名稱');
+                  return;
+                }
+                Store.addAllocation(focusedAcc.id, activeBalance.currency, allocDraft);
+                setAddAllocOpen(false);
+                showToast('已新增份額');
+              }}
+              className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold"
+            >
+              建立份額
+            </button>
+          }
+        >
+          <div className="space-y-4">
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">份額名稱</label>
+              <input
+                type="text"
+                placeholder="例如：應急底倉、旅行基金"
+                value={allocDraft.name}
+                onChange={(e) => setAllocDraft((p) => Object.assign({}, p, { name: e.target.value }))}
+                className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">分配金額</label>
+              <NumericInput
+                value={allocDraft.amount}
+                currency={activeBalance ? activeBalance.currency : state.meta.baseCurrency}
+                label="份額分配金額"
+                quickAdds={[1000, 5000, 10000]}
+                onChange={(val) => setAllocDraft((p) => Object.assign({}, p, { amount: val }))}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => setAllocDraft((p) => Object.assign({}, p, { locked: !p.locked }))}
+              className="w-full px-4 py-3 rounded-xl bg-black/50 border border-white/[0.12] flex items-center justify-between"
+            >
+              <span className="text-[13px] text-zinc-200">鎖定為「凍結底倉」（不計入日常可動用現金）</span>
+              <span className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${allocDraft.locked ? 'bg-amber-400 text-black' : 'bg-white/10 text-zinc-400'}`}>
+                {allocDraft.locked ? '已鎖定' : '未鎖定'}
+              </span>
+            </button>
+          </div>
+        </BottomSheet>
       </div>
     );
   }
 
-  function BalanceAdjustSheet({ account, onClose, onSave }) {
-    const [mode, setMode] = useState('SET');
-    const [inputVal, setInputVal] = useState(Number(account.balance) || 0);
-    const [deltaVal, setDeltaVal] = useState(0);
-    const [lockedVal, setLockedVal] = useState(Number(account.lockedBalance) || 0);
-
-    const previewBalance = mode === 'SET'
-      ? (Number(inputVal) || 0)
-      : Math.max(0, Math.round((Number(account.balance) + (Number(deltaVal) || 0)) * 100) / 100);
-
-    return (
-      <BottomSheet title="餘額平帳校準" subtitle={`${account.name} (${account.currency})`} onClose={onClose}>
-        <div className="grid grid-cols-2 p-1 rounded-2xl bg-black border border-white/[0.08] text-xs font-semibold">
-          <button type="button" onClick={() => setMode('SET')} className={`py-2 rounded-xl ${mode === 'SET' ? 'bg-[#2C2C2E] text-white' : 'text-[#8E8E93]'}`}>
-            直接輸入總餘額
-          </button>
-          <button type="button" onClick={() => setMode('DELTA')} className={`py-2 rounded-xl ${mode === 'DELTA' ? 'bg-[#2C2C2E] text-white' : 'text-[#8E8E93]'}`}>
-            存入 / 扣減差額
-          </button>
-        </div>
-
-        {mode === 'SET' ? (
-          <div>
-            <label className="block text-xs text-[#8E8E93] mb-1.5">實際帳戶餘額 ({account.currency})</label>
-            <NumericInput
-              value={inputVal}
-              label="實際帳戶餘額"
-              subtitle={account.name}
-              currency={account.currency}
-              onChange={setInputVal}
-              className="w-full px-4 py-3 rounded-2xl bg-black border border-white/15 text-left text-xl"
-            />
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <label className="block text-xs text-[#8E8E93]">變動差額 (正數存入 / 負數扣減)</label>
-            <NumericInput
-              value={deltaVal}
-              label="變動差額"
-              subtitle="正數存入 · 負數扣減"
-              currency={account.currency}
-              allowNegative={true}
-              onChange={setDeltaVal}
-              textClassName={deltaVal < 0 ? 'text-rose-400' : 'text-emerald-400'}
-              className="w-full px-4 py-3 rounded-2xl bg-black border border-white/15 text-left text-xl"
-            />
-            <div className="grid grid-cols-4 gap-1.5">
-              {[-1000, -500, +1000, +5000].map(d => (
-                <button
-                  key={d}
-                  type="button"
-                  onClick={() => setDeltaVal((Number(deltaVal) || 0) + d)}
-                  className="min-h-[38px] rounded-xl bg-black border border-white/[0.08] text-xs font-mono-num font-bold text-zinc-300"
-                >
-                  {d > 0 ? `+${d}` : d}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div>
-          <label className="block text-xs text-[#8E8E93] mb-1.5">定存鎖定金額 ({account.currency})</label>
-          <NumericInput
-            value={lockedVal}
-            label="定存鎖定金額"
-            currency={account.currency}
-            onChange={setLockedVal}
-            textClassName="text-zinc-200"
-            className="w-full px-3.5 py-2.5 rounded-2xl bg-black border border-white/10 text-left text-base"
-          />
-        </div>
-
-        <button
-          type="button"
-          onClick={() => onSave(previewBalance, Number(lockedVal) || 0)}
-          className="w-full min-h-[48px] rounded-2xl bg-white text-black font-bold text-sm"
-        >
-          確認更新為 {Store.formatMoney(previewBalance, account.currency)}
-        </button>
-      </BottomSheet>
-    );
-  }
-
-  function BucketPickerSheet({ buckets, currentPurpose, isPrimary, onSelect, onAddBucket, onClose }) {
-    const [selected, setSelected] = useState(currentPurpose);
-    const [primaryFlag, setPrimaryFlag] = useState(Boolean(isPrimary));
-    const [showNew, setShowNew] = useState(false);
-    const [newName, setNewName] = useState('');
-
-    return (
-      <BottomSheet title="歸屬資金池" onClose={onClose}>
-        <div className="space-y-2">
-          {buckets.map(b => (
-            <div
-              key={b.id}
-              onClick={() => setSelected(b.id)}
-              className={`p-3.5 rounded-2xl border cursor-pointer flex items-center justify-between ${
-                selected === b.id ? 'bg-white text-black border-white font-bold' : 'bg-black text-white border-white/[0.08]'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: b.color }} />
-                <span className="text-xs">{b.name}</span>
-              </div>
-              {selected === b.id && <Icons.Check />}
-            </div>
-          ))}
-        </div>
-
-        {!showNew ? (
-          <button
-            type="button"
-            onClick={() => setShowNew(true)}
-            className="w-full min-h-[42px] rounded-2xl border border-dashed border-white/15 text-xs font-semibold text-zinc-300"
-          >
-            + 新增自訂資金池
-          </button>
-        ) : (
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="輸入資金池名稱"
-              value={newName}
-              onChange={e => setNewName(e.target.value)}
-              className="flex-1 px-3 py-2 rounded-xl bg-black border border-white/15 text-white"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                if (!newName.trim()) return;
-                onAddBucket({
-                  id: 'CUSTOM_' + Date.now(),
-                  name: newName.trim(),
-                  color: SUB_BUCKET_COLORS[buckets.length % SUB_BUCKET_COLORS.length],
-                  monthlyBudget: 3000,
-                  primaryAccountId: '',
-                  archived: false
-                });
-              }}
-              className="px-4 rounded-xl bg-white text-black text-xs font-bold"
-            >
-              建立
-            </button>
-          </div>
-        )}
-
-        <label className="p-3.5 rounded-2xl bg-black border border-white/[0.08] flex items-center justify-between cursor-pointer">
-          <span className="text-xs font-semibold text-amber-300">★ 設為預設找數來源</span>
-          <input
-            type="checkbox"
-            checked={primaryFlag}
-            onChange={e => setPrimaryFlag(e.target.checked)}
-            className="w-4 h-4 accent-amber-400"
-          />
-        </label>
-
-        <button
-          type="button"
-          onClick={() => onSelect(selected, primaryFlag)}
-          className="w-full min-h-[48px] rounded-2xl bg-white text-black font-bold text-sm"
-        >
-          儲存設定
-        </button>
-      </BottomSheet>
-    );
-  }
-
-  function AddSubBucketSheet({ account, onClose, onAdd }) {
-    const allocatedSum = (account.subBuckets || []).reduce((s, b) => s + Number(b.amount || 0), 0);
-    const unallocated = Math.max(0, Number(account.balance) - allocatedSum);
-
-    const [name, setName] = useState('');
-    const [amount, setAmount] = useState(unallocated > 0 ? unallocated : 0);
-    const [isFrozen, setIsFrozen] = useState(false);
-    const [color, setColor] = useState(SUB_BUCKET_COLORS[(account.subBuckets?.length || 0) % SUB_BUCKET_COLORS.length]);
-
-    const PRESETS = ['緊急備用底倉', '年度保費預留', '進修教育預留', '旅行儲備', '稅款預留'];
-
-    return (
-      <BottomSheet title="新增戶口內部份額" onClose={onClose}>
-        <div className="space-y-2">
-          <div className="flex flex-wrap gap-1.5">
-            {PRESETS.map(p => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => setName(p)}
-                className={`px-2.5 py-1 rounded-full border text-xs font-semibold ${
-                  name === p ? 'bg-white text-black border-white' : 'bg-black border-white/[0.1] text-zinc-300'
-                }`}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-          <input
-            type="text"
-            placeholder="輸入份額名稱"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            className="w-full p-3 rounded-2xl bg-black border border-white/15 text-white font-semibold"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between text-xs text-[#8E8E93] mb-1.5">
-            <span>金額 ({account.currency})</span>
-            {unallocated > 0 && (
-              <button type="button" onClick={() => setAmount(unallocated)} className="text-emerald-400 font-semibold">
-                填入自由額 ({unallocated.toLocaleString()})
-              </button>
-            )}
-          </div>
-          <NumericInput
-            value={amount}
-            label="份額金額"
-            currency={account.currency}
-            onChange={setAmount}
-            className="w-full p-3 rounded-2xl bg-black border border-white/15 text-left text-lg"
-          />
-        </div>
-
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            {SUB_BUCKET_COLORS.map(c => (
-              <button
-                key={c}
-                type="button"
-                onClick={() => setColor(c)}
-                style={{ backgroundColor: c }}
-                className={`w-6 h-6 rounded-full ${color === c ? 'ring-2 ring-white scale-110' : 'opacity-60'}`}
-              />
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => setIsFrozen(!isFrozen)}
-            className={`px-3 py-1.5 rounded-xl border text-xs font-semibold ${
-              isFrozen ? 'bg-rose-500/20 text-rose-300 border-rose-500/40' : 'bg-black text-zinc-400 border-white/10'
-            }`}
-          >
-            {isFrozen ? '凍結底倉' : '可用份額'}
-          </button>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => {
-            if (!name.trim()) return;
-            onAdd({ id: 'sb_' + Date.now(), name: name.trim(), amount: Number(amount) || 0, isFrozen, color });
-          }}
-          className="w-full min-h-[48px] rounded-2xl bg-white text-black font-bold text-sm"
-        >
-          加入份額
-        </button>
-      </BottomSheet>
-    );
-  }
-
-  function AddCurrencySheet({ card, fxRates, onClose, onAdd }) {
-    const codes = (fxRates || []).map(f => f.code);
-    const [currency, setCurrency] = useState(codes[0] || 'HKD');
-    const [name, setName] = useState('外幣活期');
-    const [balance, setBalance] = useState(0);
-
-    return (
-      <BottomSheet title={`${card.institution} · 新增幣種`} onClose={onClose}>
-        <div className="grid grid-cols-4 gap-1.5">
-          {codes.slice(0, 8).map(c => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => {
-                setCurrency(c);
-                setName(`${c} 活期`);
-              }}
-              className={`py-2.5 rounded-xl font-mono-num text-xs font-bold border ${
-                currency === c ? 'bg-white text-black border-white' : 'bg-black text-zinc-400 border-white/[0.08]'
-              }`}
-            >
-              {c}
-            </button>
-          ))}
-        </div>
-
-        <div>
-          <label className="block text-xs text-[#8E8E93] mb-1">子戶口名稱</label>
-          <input
-            type="text"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            className="w-full p-3 rounded-2xl bg-black border border-white/15 text-white font-semibold"
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs text-[#8E8E93] mb-1">初始餘額 ({currency})</label>
-          <NumericInput
-            value={balance}
-            label="初始餘額"
-            currency={currency}
-            onChange={setBalance}
-            className="w-full p-3 rounded-2xl bg-black border border-white/15 text-left text-lg"
-          />
-        </div>
-
-        <button
-          type="button"
-          onClick={() => {
-            onAdd({
-              id: 'acc_' + Date.now(),
-              currency,
-              name: name.trim() || `${currency} 戶口`,
-              balance: Number(balance) || 0,
-              lockedBalance: 0,
-              purpose: card.accounts[0]?.purpose || 'PUBLIC',
-              isPrimary: false,
-              subBuckets: []
-            });
-          }}
-          className="w-full min-h-[48px] rounded-2xl bg-white text-black font-bold text-sm"
-        >
-          確認加入
-        </button>
-      </BottomSheet>
-    );
-  }
-
-  function NewCardModal({ buckets, baseCurrency, fxRates, onClose, onCreate }) {
-    const [institution, setInstitution] = useState('');
-    const [type, setType] = useState('BANK');
-    const [themeId, setThemeId] = useState('ocean');
-    const [currency, setCurrency] = useState(baseCurrency);
-    const [accName, setAccName] = useState('綜合活期');
-    const [balance, setBalance] = useState(0);
-    const [purpose, setPurpose] = useState(buckets[0]?.id || 'PUBLIC');
-
-    return (
-      <BottomSheet title="新增銀包卡片" onClose={onClose}>
-        <div>
-          <label className="block text-xs text-[#8E8E93] mb-1">銀行 / 錢包 / 券商名稱</label>
-          <input
-            type="text"
-            placeholder="輸入機構名稱"
-            value={institution}
-            onChange={e => setInstitution(e.target.value)}
-            className="w-full p-3 rounded-2xl bg-black border border-white/15 text-white font-semibold"
-          />
-        </div>
-
-        <div className="grid grid-cols-3 gap-1.5">
-          {['BANK', 'EWALLET', 'INVEST'].map(k => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setType(k)}
-              className={`py-2.5 rounded-xl text-xs font-bold border ${
-                type === k ? 'bg-white text-black border-white' : 'bg-black text-zinc-400 border-white/[0.08]'
-              }`}
-            >
-              {TYPE_LABELS[k]}
-            </button>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-4 gap-1.5">
-          {CARD_THEMES.map(t => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setThemeId(t.id)}
-              className={`py-2 rounded-xl bg-gradient-to-br ${t.gradient} border text-[11px] font-semibold text-white ${
-                themeId === t.id ? 'border-white ring-2 ring-white/40' : 'border-white/15 opacity-75'
-              }`}
-            >
-              {t.name}
-            </button>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-3 gap-2">
-          <div>
-            <label className="block text-xs text-[#8E8E93] mb-1">幣種</label>
-            <select
-              value={currency}
-              onChange={e => setCurrency(e.target.value)}
-              className="w-full p-3 rounded-2xl bg-black border border-white/15 text-white font-mono-num font-bold"
-            >
-              {(fxRates || []).map(f => (
-                <option key={f.code} value={f.code} className="bg-zinc-900">{f.code}</option>
-              ))}
-            </select>
-          </div>
-          <div className="col-span-2">
-            <label className="block text-xs text-[#8E8E93] mb-1">初始餘額</label>
-            <NumericInput
-              value={balance}
-              label="初始餘額"
-              currency={currency}
-              onChange={setBalance}
-              className="w-full p-3 rounded-2xl bg-black border border-white/15 text-left text-base"
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-xs text-[#8E8E93] mb-1">歸屬資金池</label>
-          <select
-            value={purpose}
-            onChange={e => setPurpose(e.target.value)}
-            className="w-full p-3 rounded-2xl bg-black border border-white/15 text-white font-semibold"
-          >
-            {buckets.map(b => (
-              <option key={b.id} value={b.id} className="bg-zinc-900">{b.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => {
-            if (!institution.trim()) return;
-            onCreate({
-              id: 'card_' + Date.now(),
-              institution: institution.trim(),
-              type,
-              themeId,
-              archived: false,
-              accounts: [
-                {
-                  id: 'acc_' + Date.now(),
-                  currency,
-                  name: accName.trim() || `${currency} 活期`,
-                  balance: Number(balance) || 0,
-                  lockedBalance: 0,
-                  purpose,
-                  isPrimary: false,
-                  subBuckets: []
-                }
-              ]
-            });
-          }}
-          className="w-full min-h-[48px] rounded-2xl bg-white text-black font-bold text-sm"
-        >
-          建立卡片
-        </button>
-      </BottomSheet>
-    );
-  }
-
-  function TopupEwalletSheet({ targetCard, targetAccount, allCards, onClose, onConfirmTopup }) {
-    const bankAccounts = [];
-    allCards.forEach(c => {
-      if (c.type === 'BANK') {
-        c.accounts.forEach(a => {
-          if (a.currency === targetAccount.currency) {
-            bankAccounts.push({ accId: a.id, label: `${c.institution} · ${a.name}`, balance: a.balance, currency: a.currency });
-          }
-        });
-      }
-    });
-
-    const [selectedSource, setSelectedSource] = useState(bankAccounts[0]?.accId || '');
-    const [amount, setAmount] = useState(500);
-
-    return (
-      <BottomSheet title={`${targetCard.institution} · 增值`} onClose={onClose}>
-        {bankAccounts.length === 0 ? (
-          <div className="p-4 rounded-2xl bg-black border border-white/10 text-xs text-[#8E8E93] text-center">
-            尚無同幣種 ({targetAccount.currency}) 之銀行活期戶口可供扣款增值
-          </div>
-        ) : (
-          <>
-            <div>
-              <label className="block text-xs text-[#8E8E93] mb-1">扣款銀行戶口</label>
-              <select
-                value={selectedSource}
-                onChange={e => setSelectedSource(e.target.value)}
-                className="w-full p-3 rounded-2xl bg-black border border-white/15 text-white font-semibold"
-              >
-                {bankAccounts.map(b => (
-                  <option key={b.accId} value={b.accId} className="bg-zinc-900">
-                    {b.label} ({Store.formatMoney(b.balance, b.currency)})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs text-[#8E8E93] mb-1">增值金額 ({targetAccount.currency})</label>
-              <NumericInput
-                value={amount}
-                label="電子錢包增值金額"
-                currency={targetAccount.currency}
-                onChange={setAmount}
-                textClassName="text-emerald-400"
-                className="w-full p-3 rounded-2xl bg-black border border-white/15 text-left text-xl"
-              />
-              <div className="grid grid-cols-4 gap-1.5 mt-2">
-                {[200, 500, 1000, 2000].map(v => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => setAmount(v)}
-                    className="min-h-[38px] rounded-xl bg-black border border-white/[0.08] font-mono-num text-xs font-bold text-zinc-300"
-                  >
-                    +{v}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                if (!selectedSource || !Number(amount)) return;
-                onConfirmTopup(selectedSource, Number(amount));
-              }}
-              className="w-full min-h-[48px] rounded-2xl bg-white text-black font-bold text-sm"
-            >
-              確認增值 {Store.formatMoney(amount, targetAccount.currency)}
-            </button>
-          </>
-        )}
-      </BottomSheet>
-    );
-  }
-
-  window.WealthMod1 = { WalletView };
+  window.WealthWallet = { WalletView };
 })();
