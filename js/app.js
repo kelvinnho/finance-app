@@ -57,7 +57,7 @@
                   className="w-full p-5 rounded-2xl bg-white text-black text-left active:scale-[0.99] transition"
                 >
                   <div className="text-[16px] font-bold">載入通用範例體驗</div>
-                  <div className="text-[12px] text-zinc-600 mt-1">含多幣種銀行卡、電子錢包、信用卡、代墊與分流規則範例</div>
+                  <div className="text-[12px] text-zinc-600 mt-1">含多幣種銀行卡、電子錢包、信用卡、分類小類與資金池設定</div>
                 </button>
                 <button
                   type="button"
@@ -95,7 +95,7 @@
     );
   }
 
-  // ---- Assets Sub-Tab 2: Credit Cards (Dynamic Cycle & Pay Hook) ----
+  // ---- Assets Sub-Tab 2: Credit Cards (Stage 1 Preview Shell — Full CRUD & Cross-Pool Settlement in Stage 2) ----
   function CreditCardsTab({ state, onPayCard }) {
     const Store = window.WealthStore;
     const totalDebt = state.cards.reduce((s, c) => s + Store.convertToBase((c.unbilled || 0) + (c.billed || 0), c.currency, state), 0);
@@ -109,12 +109,12 @@
               {Store.formatMoney(totalDebt, state.meta.baseCurrency)}
             </div>
           </div>
-          <div className="text-[11px] text-zinc-500">共 {state.cards.length} 張卡片</div>
+          <div className="text-[11px] text-zinc-500">共 {state.cards.length} 張 · 完整卡務將於階段 2 接入</div>
         </div>
 
         {state.cards.length === 0 ? (
           <div className="rounded-2xl bg-[#111114] border border-white/[0.08] py-10 text-center text-[13px] text-zinc-500">
-            尚未設定信用卡（完整卡務與找數管理將於階段 2 接入）。
+            尚未設定信用卡（多卡新增／編輯、截數與一鍵跨池找數將於階段 2 完成）。
           </div>
         ) : (
           state.cards.map((card) => {
@@ -228,7 +228,7 @@
     );
   }
 
-  // ---- Reports View (Live Store KPIs) ----
+  // ---- Reports View ----
   function ReportsView({ state }) {
     const Store = window.WealthStore;
     const metrics = useMemo(() => Store.getSummaryMetrics(state), [state]);
@@ -239,7 +239,6 @@
       let exp = 0;
       state.transactions.forEach((tx) => {
         if (!tx.date || !tx.date.startsWith(thisMonth)) return;
-        // 嚴格隔離：LOAN_SETTLEMENT、TRANSFER、RECEIVABLE/PAYABLE 不計入純收支
         if (tx.type === 'INCOME') inc += Store.convertToBase(tx.amount, tx.currency, state);
         if (tx.type === 'EXPENSE') exp += Store.convertToBase(tx.amount, tx.currency, state);
       });
@@ -254,7 +253,7 @@
       state.accounts.forEach((a) => {
         (a.balances || []).forEach((b) => {
           const val = Store.convertToBase(b.amount, b.currency, state);
-          const pid = b.poolId || 'pool_liquid';
+          const pid = b.poolId || (state.pools[0] && state.pools[0].id) || 'pool_liquid';
           totals[pid] = Store.round2((totals[pid] || 0) + val);
         });
       });
@@ -307,7 +306,6 @@
           </div>
         </div>
 
-        {/* Monthly Cashflow */}
         <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-[14px] font-semibold text-white">本月純收支 ({thisMonth})</span>
@@ -329,7 +327,6 @@
           </div>
         </div>
 
-        {/* Pool Distribution */}
         <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
           <div className="text-[14px] font-semibold text-white">銀包資金池分佈</div>
           <div className="space-y-3">
@@ -352,17 +349,481 @@
     );
   }
 
+  // ---- Settings Sub-Sheet A: Categories & Sub-Categories Full Manager ----
+  function CategoryManagerSheet({ open, state, onClose, showToast }) {
+    const { Icon, BottomSheet, SegmentedControl } = window.WealthUI;
+    const Store = window.WealthStore;
+
+    const [catType, setCatType] = useState('EXPENSE');
+    const [selectedCatId, setSelectedCatId] = useState(null);
+    const [addingCat, setAddingCat] = useState(false);
+
+    const [catDraft, setCatDraft] = useState({ name: '', icon: 'tag', color: '#38BDF8', defaultPoolId: 'pool_liquid' });
+    const [newSubName, setNewSubName] = useState('');
+    const [newSubPool, setNewSubPool] = useState('');
+
+    const list = useMemo(() => state.categories.filter((c) => c.type === catType), [state.categories, catType]);
+    const activeCat = useMemo(() => list.find((c) => c.id === selectedCatId) || null, [list, selectedCatId]);
+
+    const poolName = (pid) => {
+      const p = state.pools.find((x) => x.id === pid);
+      return p ? p.name : '未指定';
+    };
+
+    const startNewCat = () => {
+      setSelectedCatId(null);
+      setAddingCat(true);
+      setCatDraft({
+        name: '',
+        icon: catType === 'INCOME' ? 'coins' : 'tag',
+        color: Store.POOL_COLORS[list.length % Store.POOL_COLORS.length],
+        defaultPoolId: (state.pools[0] && state.pools[0].id) || 'pool_liquid'
+      });
+    };
+
+    const handleAddCat = () => {
+      if (!catDraft.name.trim()) {
+        showToast('請輸入大類別名稱');
+        return;
+      }
+      const created = Store.addCategory(Object.assign({}, catDraft, { type: catType }));
+      setAddingCat(false);
+      setSelectedCatId(created.id);
+      showToast(`已新增分類「${created.name}」`);
+    };
+
+    const footerContent = addingCat ? (
+      <div className="flex gap-2">
+        <button type="button" onClick={() => setAddingCat(false)} className="px-5 py-3 rounded-2xl bg-white/10 text-zinc-200 text-[14px]">返回</button>
+        <button type="button" onClick={handleAddCat} className="flex-1 py-3 rounded-2xl bg-emerald-400 text-black text-[15px] font-bold">確認建立分類</button>
+      </div>
+    ) : activeCat ? (
+      <button type="button" onClick={() => setSelectedCatId(null)} className="w-full py-3 rounded-2xl bg-white text-black text-[14px] font-bold">完成並返回分類列表</button>
+    ) : (
+      <button type="button" onClick={startNewCat} className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold flex items-center justify-center gap-1.5">
+        <Icon name="plus" size={16} /> 新增{catType === 'INCOME' ? '收入' : '支出'}大類別
+      </button>
+    );
+
+    return (
+      <BottomSheet
+        open={open}
+        title="分類、小類別與資金池關聯"
+        subtitle="點選任一大類設定預設小類與自動關聯的資金池"
+        onClose={() => { setSelectedCatId(null); setAddingCat(false); onClose(); }}
+        footer={footerContent}
+      >
+        <div className="space-y-4">
+          {!activeCat && !addingCat && (
+            <>
+              <SegmentedControl
+                value={catType}
+                onChange={(v) => { setCatType(v); setSelectedCatId(null); }}
+                options={[
+                  { value: 'EXPENSE', label: '支出分類' },
+                  { value: 'INCOME', label: '收入分類' }
+                ]}
+              />
+              <div className="space-y-2">
+                {list.map((cat) => {
+                  const pObj = state.pools.find((p) => p.id === cat.defaultPoolId);
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => { setSelectedCatId(cat.id); setNewSubName(''); setNewSubPool(''); }}
+                      className="w-full p-3.5 rounded-2xl bg-black/45 border border-white/[0.08] flex items-center justify-between gap-3 text-left active:bg-white/[0.06]"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-9 h-9 rounded-xl bg-white/[0.06] flex items-center justify-center shrink-0" style={{ color: cat.color }}>
+                          <Icon name={cat.icon} size={17} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-[14px] font-semibold text-white truncate">{cat.name}</div>
+                          <div className="text-[11px] text-zinc-400 mt-0.5 flex items-center gap-1.5 truncate">
+                            <span>{(cat.subcategories || []).length} 個小類</span>
+                            <span>·</span>
+                            <span className="inline-flex items-center gap-1">
+                              {pObj && <span className="w-1.5 h-1.5 rounded-full" style={{ background: pObj.color }} />}
+                              預設池：{poolName(cat.defaultPoolId)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <Icon name="chevronRight" size={16} className="text-zinc-500 shrink-0" />
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {addingCat && (
+            <div className="space-y-3.5">
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">大類別名稱</label>
+                <input
+                  type="text"
+                  placeholder="例如：日常飲食、子女教育"
+                  value={catDraft.name}
+                  onChange={(e) => setCatDraft((p) => Object.assign({}, p, { name: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">預設自動關聯資金池</label>
+                <select
+                  value={catDraft.defaultPoolId}
+                  onChange={(e) => setCatDraft((p) => Object.assign({}, p, { defaultPoolId: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                >
+                  {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">圖示</label>
+                <div className="grid grid-cols-6 gap-2">
+                  {Store.CATEGORY_ICONS.map((ic) => (
+                    <button
+                      key={ic.id}
+                      type="button"
+                      onClick={() => setCatDraft((p) => Object.assign({}, p, { icon: ic.id }))}
+                      className={`py-2.5 rounded-xl border flex flex-col items-center gap-1 ${
+                        catDraft.icon === ic.id ? 'bg-white text-black border-white' : 'bg-black/50 text-zinc-300 border-white/10'
+                      }`}
+                    >
+                      <Icon name={ic.id} size={16} />
+                      <span className="text-[10px]">{ic.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">識別顏色</label>
+                <div className="flex gap-2.5 flex-wrap">
+                  {Store.POOL_COLORS.map((col) => (
+                    <button
+                      key={col}
+                      type="button"
+                      onClick={() => setCatDraft((p) => Object.assign({}, p, { color: col }))}
+                      className={`w-8 h-8 rounded-full border-2 ${catDraft.color === col ? 'border-white scale-110' : 'border-transparent'}`}
+                      style={{ background: col }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeCat && (
+            <div className="space-y-4">
+              <div className="p-3.5 rounded-2xl bg-black/45 border border-white/[0.08] space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] font-semibold text-zinc-300">大類別基本設定</span>
+                  {list.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`確定刪除大類別「${activeCat.name}」？`)) {
+                          Store.deleteCategory(activeCat.id);
+                          setSelectedCatId(null);
+                          showToast('已刪除分類');
+                        }
+                      }}
+                      className="text-[11px] text-rose-400"
+                    >
+                      刪除大類
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={activeCat.name}
+                  onChange={(e) => Store.updateCategory(activeCat.id, { name: e.target.value })}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                />
+                <div>
+                  <label className="text-[11px] text-zinc-400 block mb-1">此大類預設歸屬資金池</label>
+                  <select
+                    value={activeCat.defaultPoolId || ''}
+                    onChange={(e) => {
+                      Store.updateCategory(activeCat.id, { defaultPoolId: e.target.value });
+                      showToast('已更新預設資金池');
+                    }}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
+                  >
+                    {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Sub-categories list + per-sub pool override */}
+              <div className="space-y-2.5">
+                <div className="text-[12px] font-semibold text-zinc-300">
+                  預設小類別 ({(activeCat.subcategories || []).length})
+                </div>
+                {(activeCat.subcategories || []).map((sub) => (
+                  <div key={sub.id} className="p-3 rounded-xl bg-black/45 border border-white/[0.08] space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[14px] font-medium text-white truncate">{sub.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => Store.deleteSubcategory(activeCat.id, sub.id)}
+                        className="p-1 text-zinc-500 active:text-rose-400"
+                      >
+                        <Icon name="trash" size={14} />
+                      </button>
+                    </div>
+                    <select
+                      value={sub.defaultPoolId || ''}
+                      onChange={(e) => {
+                        Store.updateSubcategory(activeCat.id, sub.id, { defaultPoolId: e.target.value || null });
+                        showToast(`已更新「${sub.name}」資金池關聯`);
+                      }}
+                      className="w-full px-3 py-1.5 rounded-lg bg-black/60 border border-white/10 text-[12px] text-zinc-200 outline-none"
+                    >
+                      <option value="">繼承大類預設（{poolName(activeCat.defaultPoolId)}）</option>
+                      {state.pools.map((p) => <option key={p.id} value={p.id}>獨立指定：{p.name}</option>)}
+                    </select>
+                  </div>
+                ))}
+
+                {/* Add new sub-category inline box */}
+                <div className="p-3 rounded-xl bg-white/[0.04] border border-dashed border-white/15 space-y-2.5">
+                  <div className="text-[11px] text-zinc-400">新增小類別快選項</div>
+                  <input
+                    type="text"
+                    placeholder="輸入小類別名稱（如：午餐、泊車）"
+                    value={newSubName}
+                    onChange={(e) => setNewSubName(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
+                  />
+                  <div className="flex gap-2">
+                    <select
+                      value={newSubPool}
+                      onChange={(e) => setNewSubPool(e.target.value)}
+                      className="flex-1 px-3 py-2 rounded-xl bg-black/60 border border-white/[0.12] text-[12px] text-zinc-200 outline-none"
+                    >
+                      <option value="">繼承大類資金池</option>
+                      {state.pools.map((p) => <option key={p.id} value={p.id}>指定：{p.name}</option>)}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!newSubName.trim()) return;
+                        Store.addSubcategory(activeCat.id, { name: newSubName, defaultPoolId: newSubPool || null });
+                        setNewSubName('');
+                        setNewSubPool('');
+                        showToast('已新增小類別');
+                      }}
+                      className="px-4 py-2 rounded-xl bg-emerald-400 text-black text-[12px] font-bold shrink-0"
+                    >
+                      新增
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </BottomSheet>
+    );
+  }
+
+  // ---- Settings Sub-Sheet B: Funding Pools & Settlement Accounts Manager ----
+  function PoolManagerSheet({ open, state, onClose, showToast }) {
+    const { Icon, BottomSheet } = window.WealthUI;
+    const Store = window.WealthStore;
+
+    const [editingId, setEditingId] = useState(null);
+    const [draft, setDraft] = useState({ name: '', color: '#34D399', settlementKey: '', note: '' });
+
+    const bankBalances = useMemo(() => {
+      const list = [];
+      state.accounts.forEach((a) => {
+        (a.balances || []).forEach((b) => {
+          list.push({
+            key: `${a.id}::${b.id}`,
+            accId: a.id,
+            balId: b.id,
+            label: `${a.name} · ${b.currency} (${Store.formatMoney(b.amount, b.currency)})`
+          });
+        });
+      });
+      return list;
+    }, [state.accounts]);
+
+    const startNew = () => {
+      setEditingId('NEW');
+      setDraft({
+        name: '',
+        color: Store.POOL_COLORS[state.pools.length % Store.POOL_COLORS.length],
+        settlementKey: '',
+        note: ''
+      });
+    };
+
+    const startEdit = (p) => {
+      setEditingId(p.id);
+      setDraft({
+        name: p.name,
+        color: p.color || '#34D399',
+        settlementKey: p.settlementAccountId ? `${p.settlementAccountId}::${p.settlementBalanceId || ''}` : '',
+        note: p.note || ''
+      });
+    };
+
+    const handleSave = () => {
+      if (!draft.name.trim()) {
+        showToast('請輸入資金池名稱');
+        return;
+      }
+      const [accId, balId] = draft.settlementKey ? draft.settlementKey.split('::') : [null, null];
+      const payload = {
+        name: draft.name.trim(),
+        color: draft.color,
+        note: draft.note.trim(),
+        settlementAccountId: accId || null,
+        settlementBalanceId: balId || null
+      };
+      if (editingId === 'NEW') {
+        Store.addPool(payload);
+        showToast('已新增資金池');
+      } else if (editingId) {
+        Store.updatePool(editingId, payload);
+        showToast('已更新資金池與找數綁定');
+      }
+      setEditingId(null);
+    };
+
+    const footerContent = editingId ? (
+      <div className="flex gap-2">
+        <button type="button" onClick={() => setEditingId(null)} className="px-5 py-3 rounded-2xl bg-white/10 text-zinc-200 text-[14px]">返回</button>
+        <button type="button" onClick={handleSave} className="flex-1 py-3 rounded-2xl bg-emerald-400 text-black text-[15px] font-bold">儲存資金池設定</button>
+      </div>
+    ) : (
+      <button type="button" onClick={startNew} className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold flex items-center justify-center gap-1.5">
+        <Icon name="plus" size={16} /> 新增歸屬資金池
+      </button>
+    );
+
+    return (
+      <BottomSheet
+        open={open}
+        title="歸屬資金池與找數帳戶"
+        subtitle="綁定各資金池對應的銀行找數戶口，支援信用卡交叉結算"
+        onClose={() => { setEditingId(null); onClose(); }}
+        footer={footerContent}
+      >
+        {!editingId ? (
+          <div className="space-y-2.5">
+            {state.pools.map((p) => {
+              const settleLabel = Store.getPoolSettlementLabel(p.id, state);
+              return (
+                <div key={p.id} className="p-3.5 rounded-2xl bg-black/45 border border-white/[0.08] flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: p.color }} />
+                      <span className="text-[14px] font-semibold text-white truncate">{p.name}</span>
+                    </div>
+                    <div className="text-[11px] text-zinc-400 mt-1 truncate">
+                      找數戶口：<span className={settleLabel ? 'text-emerald-300 font-medium' : 'text-zinc-500'}>{settleLabel || '未綁定'}</span>
+                    </div>
+                    {p.note && <div className="text-[11px] text-zinc-500 mt-0.5 truncate">{p.note}</div>}
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button type="button" onClick={() => startEdit(p)} className="p-2 rounded-xl bg-white/[0.06] text-zinc-200">
+                      <Icon name="edit" size={15} />
+                    </button>
+                    {state.pools.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`確定刪除資金池「${p.name}」？`)) {
+                            Store.deletePool(p.id);
+                            showToast('已刪除資金池');
+                          }
+                        }}
+                        className="p-2 rounded-xl bg-rose-500/15 text-rose-400"
+                      >
+                        <Icon name="trash" size={15} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">資金池名稱</label>
+              <input
+                type="text"
+                placeholder="例如：日常開支、家庭共同、旅遊專項"
+                value={draft.name}
+                onChange={(e) => setDraft((p) => Object.assign({}, p, { name: e.target.value }))}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">綁定預設找數銀行戶口</label>
+              <select
+                value={draft.settlementKey}
+                onChange={(e) => setDraft((p) => Object.assign({}, p, { settlementKey: e.target.value }))}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              >
+                <option value="">不指定（手動結算）</option>
+                {bankBalances.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+              </select>
+              <p className="text-[11px] text-zinc-500 mt-1.5">
+                刷信用卡消費並歸屬至此池時，系統即可自動彙總此戶口應撥付的找數金額。
+              </p>
+            </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">識別色</label>
+              <div className="flex gap-2.5 flex-wrap">
+                {Store.POOL_COLORS.map((col) => (
+                  <button
+                    key={col}
+                    type="button"
+                    onClick={() => setDraft((p) => Object.assign({}, p, { color: col }))}
+                    className={`w-8 h-8 rounded-full border-2 ${draft.color === col ? 'border-white scale-110' : 'border-transparent'}`}
+                    style={{ background: col }}
+                  />
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">用途說明（選填）</label>
+              <input
+                type="text"
+                placeholder="例如：管理費、水電與超市買菜"
+                value={draft.note}
+                onChange={(e) => setDraft((p) => Object.assign({}, p, { note: e.target.value }))}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
+              />
+            </div>
+          </div>
+        )}
+      </BottomSheet>
+    );
+  }
+
   // ---- Settings View ----
   function SettingsView({ state, showToast }) {
     const { Icon, BottomSheet, NumericInput } = window.WealthUI;
     const Store = window.WealthStore;
 
+    const [catMgrOpen, setCatMgrOpen] = useState(false);
+    const [poolMgrOpen, setPoolMgrOpen] = useState(false);
     const [diagOpen, setDiagOpen] = useState(false);
     const [fxOpen, setFxOpen] = useState(false);
     const fileInputRef = useRef(null);
 
     const diagnostics = useMemo(() => (diagOpen ? Store.runDiagnostics() : []), [diagOpen, state]);
     const vpDiag = typeof window !== 'undefined' ? (window.__VIEWPORT_DIAG__ || {}) : {};
+    const totalSubCount = useMemo(() => state.categories.reduce((s, c) => s + ((c.subcategories || []).length), 0), [state.categories]);
 
     const handleExportJSON = () => {
       const raw = Store.exportJSON();
@@ -394,6 +855,38 @@
 
     return (
       <div className="space-y-4 pb-6">
+        {/* Group 1: Ledger Categories & Attribution Pools (Core Cross-Account Rules) */}
+        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setCatMgrOpen(true)}
+            className="w-full px-4 py-3.5 flex items-center justify-between text-left active:bg-white/[0.04]"
+          >
+            <div>
+              <div className="text-[14px] font-medium text-white">分類與預設小類別管理</div>
+              <div className="text-[11px] text-zinc-500">
+                共 {state.categories.length} 個大類 · {totalSubCount} 個小類快選項（支援自動關聯資金池）
+              </div>
+            </div>
+            <Icon name="chevronRight" size={16} className="text-zinc-500 shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setPoolMgrOpen(true)}
+            className="w-full px-4 py-3.5 flex items-center justify-between text-left active:bg-white/[0.04]"
+          >
+            <div>
+              <div className="text-[14px] font-medium text-white">歸屬資金池與自動找數戶口</div>
+              <div className="text-[11px] text-zinc-500">
+                管理 {state.pools.length} 個資金池及對應的跨帳戶／信用卡結算銀行戶口
+              </div>
+            </div>
+            <Icon name="chevronRight" size={16} className="text-zinc-500 shrink-0" />
+          </button>
+        </div>
+
+        {/* Group 2: Currency & Privacy */}
         <div className="rounded-2xl bg-[#111114] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
           <div className="px-4 py-3.5 flex items-center justify-between">
             <div>
@@ -436,6 +929,7 @@
           </button>
         </div>
 
+        {/* Group 3: Diagnostics & Backup */}
         <div className="rounded-2xl bg-[#111114] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
           <button
             type="button"
@@ -488,7 +982,9 @@
           Wealth PWA · Schema v{Store.SCHEMA_VERSION} · {Store.APP_VERSION}
         </div>
 
-        {/* FX Rate Editor Sheet */}
+        <CategoryManagerSheet open={catMgrOpen} state={state} onClose={() => setCatMgrOpen(false)} showToast={showToast} />
+        <PoolManagerSheet open={poolMgrOpen} state={state} onClose={() => setPoolMgrOpen(false)} showToast={showToast} />
+
         <BottomSheet open={fxOpen} title={`外幣對 ${state.meta.baseCurrency} 匯率`} onClose={() => setFxOpen(false)}>
           <div className="space-y-3">
             {Store.CURRENCIES.filter((c) => c.code !== state.meta.baseCurrency).map((c) => (
@@ -515,7 +1011,6 @@
           </div>
         </BottomSheet>
 
-        {/* Diagnostics Sheet */}
         <BottomSheet open={diagOpen} title="帳務一致性與視區診斷" onClose={() => setDiagOpen(false)}>
           <div className="space-y-3">
             {diagnostics.map((item, i) => (
@@ -541,7 +1036,7 @@
     );
   }
 
-  // ---- Main App Shell (ALL Hooks Strictly Unconditional at Top — Fixes React #310) ----
+  // ---- Main App Shell ----
   function AppShell() {
     const {
       Icon,
@@ -556,10 +1051,9 @@
     const { WalletView } = window.WealthWallet;
     const { LedgerView, TransactionEditorSheet } = window.WealthLedger;
 
-    // ALL hooks unconditionally declared before any early return
     const state = useWealthStore();
-    const [activeTab, setActiveTab] = useState('LEDGER'); // LEDGER | ASSETS | REPORTS | SETTINGS
-    const [assetSubTab, setAssetSubTab] = useState('WALLET'); // WALLET | CARDS | WEALTH
+    const [activeTab, setActiveTab] = useState('LEDGER');
+    const [assetSubTab, setAssetSubTab] = useState('WALLET');
     const [toastMsg, setToastMsg] = useState('');
     const toastTimerRef = useRef(null);
 
@@ -570,7 +1064,7 @@
       prefillToCardId: null
     });
 
-    const [quickMenu, setQuickMenu] = useState(null); // { type: 'ASSETS' | 'ADD', anchorX: number }
+    const [quickMenu, setQuickMenu] = useState(null);
     const [highlightedQuickKey, setHighlightedQuickKey] = useState(null);
 
     const showToast = useCallback((msg) => {
@@ -642,7 +1136,6 @@
       onDragRelease: (k) => handleQuickSelect(k)
     });
 
-    // Safe early return AFTER all hooks
     if (!state.meta.onboardingDone) {
       return (
         <OnboardingFlow
@@ -664,7 +1157,6 @@
 
     return (
       <div className="fixed inset-0 flex flex-col bg-black text-white overflow-hidden" style={{ height: 'var(--app-height, 100dvh)' }}>
-        {/* Main Scroll Area */}
         <main
           {...(activeTab === 'ASSETS' ? swipeHandlers : {})}
           className="app-scroll-main flex-1 overflow-y-auto px-4 safe-top max-w-[480px] w-full mx-auto"
@@ -718,7 +1210,6 @@
           {activeTab === 'SETTINGS' && <SettingsView state={state} showToast={showToast} />}
         </main>
 
-        {/* Bottom Navigation Bar (Plan A: Centered +, Flush to Physical Screen Bottom) */}
         <nav className="shrink-0 z-40 bg-[#0B0B0D]/95 backdrop-blur-md border-t border-white/[0.08] safe-bottom-nav">
           <div className="max-w-[480px] mx-auto px-2 pt-2 grid grid-cols-5 items-center">
             <button
@@ -778,7 +1269,6 @@
           </div>
         </nav>
 
-        {/* Viewport-Clamped Long-Press Quick Popover Menus */}
         <QuickPopoverMenu
           open={Boolean(quickMenu && quickMenu.type === 'ASSETS')}
           title="快速切換資產視角"
@@ -808,7 +1298,6 @@
           ]}
         />
 
-        {/* Full-Screen Transaction Editor */}
         <TransactionEditorSheet
           open={editorState.open}
           initialType={editorState.initialType}
@@ -819,7 +1308,6 @@
           onClose={() => setEditorState({ open: false, initialType: 'EXPENSE', editingTx: null, prefillToCardId: null })}
         />
 
-        {/* Global Toast */}
         <Toast message={toastMsg} />
       </div>
     );

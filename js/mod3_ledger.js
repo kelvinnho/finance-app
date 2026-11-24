@@ -27,19 +27,22 @@
     return `${d.getMonth() + 1}月${d.getDate()}日 · 星期${WEEKDAYS[d.getDay()]}`;
   }
 
-  // ---- Helper: Build unified account/balance + credit card selector options ----
   function buildAccountOptions(state, includeCards) {
+    const Store = window.WealthStore;
     const list = [];
     (state.accounts || []).forEach((acc) => {
+      const th = Store.CARD_THEMES.find((t) => t.id === acc.theme) || Store.CARD_THEMES[0];
       (acc.balances || []).forEach((bal) => {
         list.push({
           key: `ACCOUNT::${acc.id}::${bal.id}`,
           kind: 'ACCOUNT',
+          accountType: acc.type || 'BANK',
           accountId: acc.id,
           balanceId: bal.id,
           currency: bal.currency,
           amount: bal.amount,
           poolId: bal.poolId,
+          accent: th.accent,
           label: acc.balances.length > 1 ? `${acc.name} (${bal.currency})` : acc.name,
           sublabel: acc.subtitle || bal.currency
         });
@@ -47,23 +50,131 @@
     });
     if (includeCards) {
       (state.cards || []).forEach((c) => {
+        const th = Store.CARD_THEMES.find((t) => t.id === c.theme) || Store.CARD_THEMES[1];
         list.push({
           key: `CARD::${c.id}::`,
           kind: 'CARD',
+          accountType: 'CARD',
           accountId: c.id,
           balanceId: null,
           currency: c.currency,
           amount: -(c.unbilled || 0),
-          poolId: 'pool_liquid',
+          poolId: null,
+          accent: th.accent,
           label: c.name,
-          sublabel: `信用卡 · 尾號 ${c.last4 || '****'}`
+          sublabel: `尾號 ${c.last4 || '****'}`
         });
       });
     }
     return list;
   }
 
-  // ---- Full-Screen Transaction Editor (Portal z-[60], Clean 2-Row Header) ----
+  // ---- Separated Payment Picker: Credit Cards vs Bank/E-Wallet (2-Col Multi-Card Grid) ----
+  function PaymentSourcePicker({ label, allowCards, options, selectedKey, onSelect, accentTone = 'white', rightAction }) {
+    const Store = window.WealthStore;
+    const cards = useMemo(() => options.filter((o) => o.kind === 'CARD'), [options]);
+    const banks = useMemo(() => options.filter((o) => o.kind === 'ACCOUNT'), [options]);
+
+    const selectedOpt = options.find((o) => o.key === selectedKey) || null;
+    const [tab, setTab] = useState(() => (selectedOpt && selectedOpt.kind === 'CARD' && allowCards ? 'CARD' : 'ACCOUNT'));
+    const [showAll, setShowAll] = useState(false);
+
+    useEffect(() => {
+      if (!allowCards) {
+        setTab('ACCOUNT');
+      } else if (selectedOpt) {
+        setTab(selectedOpt.kind === 'CARD' ? 'CARD' : 'ACCOUNT');
+      }
+    }, [selectedKey, allowCards]);
+
+    const list = tab === 'CARD' && allowCards ? cards : banks;
+    const visibleList = showAll || list.length <= 6 ? list : list.slice(0, 6);
+
+    return (
+      <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-3.5 space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[12px] font-medium text-zinc-400">{label}</span>
+          <div className="flex items-center gap-2">
+            {rightAction}
+            {allowCards && (
+              <div className="p-0.5 rounded-xl bg-black/60 border border-white/[0.08] flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => { setTab('CARD'); setShowAll(false); }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition whitespace-nowrap ${
+                    tab === 'CARD' ? 'bg-white text-black' : 'text-zinc-400'
+                  }`}
+                >
+                  信用卡 ({cards.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setTab('ACCOUNT'); setShowAll(false); }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition whitespace-nowrap ${
+                    tab === 'ACCOUNT' ? 'bg-white text-black' : 'text-zinc-400'
+                  }`}
+                >
+                  銀行・錢包 ({banks.length})
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {list.length === 0 ? (
+          <div className="py-4 text-center text-[12px] text-zinc-500">
+            {tab === 'CARD' ? '尚未新增信用卡，可切換至「銀行・錢包」或於資產頁設定' : '尚無銀行／錢包帳戶'}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              {visibleList.map((opt) => {
+                const sel = opt.key === selectedKey;
+                const activeClass = accentTone === 'emerald'
+                  ? 'bg-emerald-400 text-black border-emerald-300'
+                  : 'bg-white text-black border-white';
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => onSelect(opt)}
+                    className={`px-3 py-2.5 rounded-xl border text-left transition relative overflow-hidden ${
+                      sel ? activeClass : 'bg-black/45 text-zinc-100 border-white/[0.08] active:bg-white/10'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ background: sel ? '#000000' : opt.accent }}
+                      />
+                      <span className="text-[13px] font-semibold truncate">{opt.label}</span>
+                    </div>
+                    <div className={`text-[11px] tabular-nums truncate mt-1 ${sel ? 'text-black/70' : 'text-zinc-400'}`}>
+                      {opt.kind === 'CARD'
+                        ? `${opt.sublabel} · 待繳 ${Store.formatMoney(-opt.amount, opt.currency)}`
+                        : Store.formatMoney(opt.amount, opt.currency)}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {list.length > 6 && (
+              <button
+                type="button"
+                onClick={() => setShowAll(!showAll)}
+                className="w-full py-1.5 rounded-xl bg-white/[0.05] text-[11px] text-zinc-300 font-medium"
+              >
+                {showAll ? '收合列表' : `顯示全部 ${list.length} 個選項`}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ---- Full-Screen Transaction Editor (Portal z-[60], 3 Major Upgrades) ----
   function TransactionEditorSheet({ open, initialType, editingTx, prefillToCardId, state, onClose, showToast }) {
     const { Icon, NumericInput, BottomSheet } = window.WealthUI;
     const Store = window.WealthStore;
@@ -86,28 +197,32 @@
     const [settledAmount, setSettledAmount] = useState(0);
     const [title, setTitle] = useState('');
     const [categoryId, setCategoryId] = useState('');
+    const [subCategoryId, setSubCategoryId] = useState('');
     const [fromKey, setFromKey] = useState('');
     const [toKey, setToKey] = useState('');
-    const [poolId, setPoolId] = useState('pool_liquid');
+    const [poolId, setPoolId] = useState((state.pools[0] && state.pools[0].id) || 'pool_liquid');
+    const [poolAutoLinked, setPoolAutoLinked] = useState(true);
     const [counterparty, setCounterparty] = useState('');
     const [date, setDate] = useState(Store.todayISO());
     const [time, setTime] = useState(Store.nowTimeHM());
     const [note, setNote] = useState('');
 
-    // Category manager sub-sheet
-    const [catMgrOpen, setCatMgrOpen] = useState(false);
-    const [newCatName, setNewCatName] = useState('');
-    const [newCatPool, setNewCatPool] = useState('pool_liquid');
+    // Quick add sub-category mini-sheet
+    const [quickSubOpen, setQuickSubOpen] = useState(false);
+    const [quickSubName, setQuickSubName] = useState('');
+    const [quickSubPool, setQuickSubPool] = useState('');
 
     useEffect(() => {
       if (!open) return;
       if (editingTx) {
-        setTxType(editingTx.type === 'LOAN_SETTLEMENT' ? 'INCOME' : editingTx.type);
+        const nextType = editingTx.type === 'LOAN_SETTLEMENT' ? 'INCOME' : editingTx.type;
+        setTxType(nextType);
         setAmount(editingTx.amount || 0);
         setCurrency(editingTx.currency || state.meta.baseCurrency);
         setSettledAmount(editingTx.settledAmount != null ? editingTx.settledAmount : (editingTx.amount || 0));
         setTitle(editingTx.title || '');
         setCategoryId(editingTx.categoryId || '');
+        setSubCategoryId(editingTx.subCategoryId || '');
         setFromKey(
           editingTx.accountKind === 'CARD'
             ? `CARD::${editingTx.accountId}::`
@@ -120,7 +235,9 @@
                 : `ACCOUNT::${editingTx.toAccountId}::${editingTx.toBalanceId || ''}`)
             : ''
         );
-        setPoolId(editingTx.poolId || 'pool_liquid');
+        const effPool = Store.resolveEffectivePoolId(editingTx.categoryId, editingTx.subCategoryId, state);
+        setPoolId(editingTx.poolId || effPool);
+        setPoolAutoLinked(!editingTx.poolId || editingTx.poolId === effPool);
         setCounterparty(editingTx.counterparty || '');
         setDate(editingTx.date || Store.todayISO());
         setTime(editingTx.time || Store.nowTimeHM());
@@ -133,7 +250,15 @@
         setSettledAmount(0);
         setTitle(prefillToCardId ? '信用卡找數還款' : '');
         const cats = state.categories.filter((c) => c.type === (nextType === 'INCOME' ? 'INCOME' : 'EXPENSE'));
-        setCategoryId(cats[0] ? cats[0].id : '');
+        const firstCat = cats[0] || null;
+        const firstSub = firstCat && Array.isArray(firstCat.subcategories) && firstCat.subcategories[0] ? firstCat.subcategories[0] : null;
+        setCategoryId(firstCat ? firstCat.id : '');
+        setSubCategoryId(firstSub ? firstSub.id : '');
+        const effPool = firstCat
+          ? Store.resolveEffectivePoolId(firstCat.id, firstSub ? firstSub.id : null, state)
+          : ((state.pools[0] && state.pools[0].id) || 'pool_liquid');
+        setPoolId(effPool);
+        setPoolAutoLinked(true);
         setFromKey(defaultSource);
         if (prefillToCardId) {
           setToKey(`CARD::${prefillToCardId}::`);
@@ -141,7 +266,6 @@
           const alt = allSources.find((s) => s.key !== defaultSource);
           setToKey(alt ? alt.key : defaultSource);
         }
-        setPoolId('pool_liquid');
         setCounterparty('');
         setDate(Store.todayISO());
         setTime(Store.nowTimeHM());
@@ -153,6 +277,10 @@
       const targetType = txType === 'INCOME' ? 'INCOME' : 'EXPENSE';
       return state.categories.filter((c) => c.type === targetType);
     }, [state.categories, txType]);
+
+    const selectedCat = useMemo(() => filteredCats.find((c) => c.id === categoryId) || filteredCats[0] || null, [filteredCats, categoryId]);
+    const activeSubs = useMemo(() => (selectedCat && Array.isArray(selectedCat.subcategories) ? selectedCat.subcategories : []), [selectedCat]);
+    const selectedSub = useMemo(() => activeSubs.find((s) => s.id === subCategoryId) || null, [activeSubs, subCategoryId]);
 
     const fromOpt = useMemo(() => allSources.find((s) => s.key === fromKey) || allSources[0] || null, [allSources, fromKey]);
     const toOpt = useMemo(() => allSources.find((s) => s.key === toKey) || allSources[1] || allSources[0] || null, [allSources, toKey]);
@@ -174,17 +302,48 @@
       }
     }, [amount, currency, targetSettlementCurrency, isCrossCurrency]);
 
+    const selectedPoolObj = useMemo(() => state.pools.find((p) => p.id === poolId) || state.pools[0] || null, [state.pools, poolId]);
+    const settlementAccLabel = useMemo(() => Store.getPoolSettlementLabel(poolId, state), [poolId, state]);
+
     if (!open) return null;
 
     const handleTypeSwitch = (nextType) => {
       setTxType(nextType);
       if (nextType !== 'TRANSFER') {
         const cats = state.categories.filter((c) => c.type === (nextType === 'INCOME' ? 'INCOME' : 'EXPENSE'));
-        if (cats.length && !cats.some((c) => c.id === categoryId)) {
-          setCategoryId(cats[0].id);
-          if (cats[0].defaultPoolId) setPoolId(cats[0].defaultPoolId);
+        const nextCat = cats.find((c) => c.id === categoryId) || cats[0] || null;
+        if (nextCat) {
+          setCategoryId(nextCat.id);
+          const firstSub = (nextCat.subcategories || [])[0] || null;
+          setSubCategoryId(firstSub ? firstSub.id : '');
+          const effPool = Store.resolveEffectivePoolId(nextCat.id, firstSub ? firstSub.id : null, state);
+          setPoolId(effPool);
+          setPoolAutoLinked(true);
         }
       }
+    };
+
+    const handleSelectCategory = (cat) => {
+      setCategoryId(cat.id);
+      const firstSub = (cat.subcategories || [])[0] || null;
+      setSubCategoryId(firstSub ? firstSub.id : '');
+      const effPool = Store.resolveEffectivePoolId(cat.id, firstSub ? firstSub.id : null, state);
+      setPoolId(effPool);
+      setPoolAutoLinked(true);
+    };
+
+    const handleSelectSubcategory = (sub) => {
+      setSubCategoryId(sub.id);
+      setTitle(sub.name);
+      const effPool = Store.resolveEffectivePoolId(selectedCat ? selectedCat.id : categoryId, sub.id, state);
+      setPoolId(effPool);
+      setPoolAutoLinked(true);
+    };
+
+    const handleManualPoolSelect = (pid) => {
+      setPoolId(pid);
+      const effPool = Store.resolveEffectivePoolId(selectedCat ? selectedCat.id : categoryId, subCategoryId, state);
+      setPoolAutoLinked(pid === effPool);
     };
 
     const handleSave = () => {
@@ -202,15 +361,14 @@
         return;
       }
 
-      const catObj = state.categories.find((c) => c.id === categoryId);
       const finalTitle = title.trim() || (
         txType === 'TRANSFER'
           ? `${fromOpt.label} ➔ ${toOpt ? toOpt.label : ''}`
           : txType === 'RECEIVABLE'
-          ? `代墊 · ${counterparty.trim() || (catObj ? catObj.name : '應收款項')}`
+          ? `代墊 · ${counterparty.trim() || (selectedSub ? selectedSub.name : (selectedCat ? selectedCat.name : '應收款項'))}`
           : txType === 'PAYABLE'
           ? `借款 · ${counterparty.trim() || '應付款項'}`
-          : (catObj ? catObj.name : '日常紀錄')
+          : (selectedSub ? selectedSub.name : (selectedCat ? selectedCat.name : '日常紀錄'))
       );
 
       const payload = {
@@ -226,7 +384,9 @@
         toAccountKind: txType === 'TRANSFER' && toOpt ? toOpt.kind : null,
         toAccountId: txType === 'TRANSFER' && toOpt ? toOpt.accountId : null,
         toBalanceId: txType === 'TRANSFER' && toOpt ? toOpt.balanceId : null,
-        categoryId: txType === 'TRANSFER' ? null : (categoryId || (filteredCats[0] && filteredCats[0].id) || null),
+        categoryId: txType === 'TRANSFER' ? null : (selectedCat ? selectedCat.id : null),
+        subCategoryId: txType === 'TRANSFER' ? null : (selectedSub ? selectedSub.id : null),
+        subCategoryName: txType === 'TRANSFER' ? '' : (selectedSub ? selectedSub.name : ''),
         poolId,
         counterparty: (txType === 'RECEIVABLE' || txType === 'PAYABLE') ? counterparty.trim() : '',
         date,
@@ -244,11 +404,13 @@
       onClose();
     };
 
+    const isCrossSettlementCard = fromOpt && fromOpt.kind === 'CARD' && txType !== 'TRANSFER';
+    const isCrossAccountBank = fromOpt && fromOpt.kind === 'ACCOUNT' && selectedPoolObj && selectedPoolObj.settlementAccountId && selectedPoolObj.settlementAccountId !== fromOpt.accountId && txType !== 'TRANSFER';
+
     return createPortal(
       <div className="fixed inset-0 z-[60] bg-[#0B0B0D] flex flex-col anim-sheet-up">
-        {/* Clean 2-Row Top Header (Zero Clutter) */}
+        {/* Clean 2-Row Top Header */}
         <div className="shrink-0 safe-top bg-[#0B0B0D] border-b border-white/[0.08]">
-          {/* Row 1: Action Bar */}
           <div className="px-4 h-11 flex items-center justify-between">
             <button
               type="button"
@@ -269,7 +431,6 @@
             </button>
           </div>
 
-          {/* Row 2: Clean 5-Type Full-Width Selector */}
           <div className="px-4 pb-3 pt-1">
             <div className="p-1 rounded-2xl bg-[#16161A] border border-white/[0.08] grid grid-cols-5 gap-1">
               {TX_TYPES.map((t) => {
@@ -292,9 +453,9 @@
         </div>
 
         {/* Scrollable Form Body */}
-        <div className="flex-1 overflow-y-auto overscroll-contain px-4 py-4 space-y-4">
-          {/* Amount & Currency Card */}
-          <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-4 space-y-3">
+        <div className="flex-1 overflow-y-auto overscroll-contain px-4 py-3.5 space-y-3.5">
+          {/* 1. Amount & Currency */}
+          <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-3.5 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[12px] text-zinc-400">交易金額</span>
               <select
@@ -329,91 +490,117 @@
             )}
           </div>
 
-          {/* Category Horizontal Track (Non-Transfer) */}
+          {/* 2. Major Category -> Preset Sub-Categories (Instant Tap, Auto-links Pool) */}
           {txType !== 'TRANSFER' && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between px-0.5">
-                <span className="text-[12px] text-zinc-400">分類</span>
-                <button
-                  type="button"
-                  onClick={() => setCatMgrOpen(true)}
-                  className="text-[12px] text-zinc-400 active:text-white"
-                >
-                  + 管理分類
-                </button>
+            <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-3.5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] font-medium text-zinc-400">大類別 ➔ 小類別快選</span>
+                <span className="text-[11px] text-zinc-500">可於「設定」自訂</span>
               </div>
-              <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1" data-no-swipe="true">
+
+              {/* Major Categories Horizontal Track */}
+              <div className="flex gap-2 overflow-x-auto no-scrollbar pb-0.5" data-no-swipe="true">
                 {filteredCats.map((cat) => {
-                  const sel = cat.id === categoryId;
+                  const sel = selectedCat && cat.id === selectedCat.id;
                   return (
                     <button
                       key={cat.id}
                       type="button"
-                      onClick={() => {
-                        setCategoryId(cat.id);
-                        if (cat.defaultPoolId) setPoolId(cat.defaultPoolId);
-                      }}
-                      className={`shrink-0 px-3.5 py-2.5 rounded-2xl border flex items-center gap-2 transition ${
+                      onClick={() => handleSelectCategory(cat)}
+                      className={`shrink-0 px-3 py-2 rounded-xl border flex items-center gap-1.5 transition ${
                         sel
                           ? 'bg-white text-black border-white font-semibold'
-                          : 'bg-[#141417] text-zinc-200 border-white/[0.08]'
+                          : 'bg-black/45 text-zinc-200 border-white/[0.08]'
                       }`}
                     >
                       <span style={{ color: sel ? '#000000' : cat.color }}>
-                        <Icon name={cat.icon} size={16} />
+                        <Icon name={cat.icon} size={15} />
                       </span>
                       <span className="text-[13px] whitespace-nowrap">{cat.name}</span>
                     </button>
                   );
                 })}
               </div>
+
+              {/* Preset Sub-Categories Chips for Selected Major Category */}
+              <div className="pt-2.5 border-t border-white/[0.06] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-zinc-400">
+                    {selectedCat ? `${selectedCat.name} · 點選小類別自動帶入` : '小類別'}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {activeSubs.map((sub) => {
+                    const sel = sub.id === subCategoryId;
+                    const overridePool = sub.defaultPoolId ? state.pools.find((p) => p.id === sub.defaultPoolId) : null;
+                    return (
+                      <button
+                        key={sub.id}
+                        type="button"
+                        onClick={() => handleSelectSubcategory(sub)}
+                        className={`px-3 py-1.5 rounded-full text-[12px] font-medium border flex items-center gap-1.5 transition ${
+                          sel
+                            ? 'bg-emerald-400 text-black border-emerald-300 font-semibold'
+                            : 'bg-black/45 text-zinc-200 border-white/[0.08] active:bg-white/10'
+                        }`}
+                      >
+                        <span>{sub.name}</span>
+                        {overridePool && (
+                          <span
+                            className="w-1.5 h-1.5 rounded-full"
+                            style={{ background: sel ? '#000000' : overridePool.color }}
+                            title={`自動歸屬：${overridePool.name}`}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuickSubName('');
+                      setQuickSubPool('');
+                      setQuickSubOpen(true);
+                    }}
+                    className="px-2.5 py-1.5 rounded-full text-[12px] text-zinc-400 border border-dashed border-white/20 active:bg-white/10"
+                  >
+                    + 自訂小類
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
-          {/* Account / Card Horizontal Track */}
-          <div className="space-y-2">
-            <div className="text-[12px] text-zinc-400 px-0.5">
-              {txType === 'TRANSFER'
+          {/* 3. Separated Payment Source Picker (Credit Cards vs Bank/E-Wallet) */}
+          <PaymentSourcePicker
+            label={
+              txType === 'TRANSFER'
                 ? '轉出帳戶'
                 : txType === 'INCOME'
                 ? '入帳帳戶'
                 : txType === 'PAYABLE'
                 ? '收款帳戶（借款入帳）'
-                : '付款帳戶 / 信用卡'}
-            </div>
-            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1" data-no-swipe="true">
-              {(txType === 'PAYABLE' ? bankSources : allSources).map((opt) => {
-                const sel = fromOpt && opt.key === fromOpt.key;
-                return (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    onClick={() => {
-                      setFromKey(opt.key);
-                      setCurrency(opt.currency);
-                      if (opt.poolId) setPoolId(opt.poolId);
-                    }}
-                    className={`shrink-0 px-3.5 py-2.5 rounded-2xl border text-left transition ${
-                      sel
-                        ? 'bg-white text-black border-white'
-                        : 'bg-[#141417] text-zinc-200 border-white/[0.08]'
-                    }`}
-                  >
-                    <div className="text-[13px] font-semibold whitespace-nowrap">{opt.label}</div>
-                    <div className={`text-[11px] tabular-nums mt-0.5 whitespace-nowrap ${sel ? 'text-zinc-600' : 'text-zinc-400'}`}>
-                      {opt.kind === 'CARD' ? '信用卡' : Store.formatMoney(opt.amount, opt.currency)}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+                : '付款方式（信用卡 / 帳戶分流）'
+            }
+            allowCards={txType !== 'PAYABLE'}
+            options={txType === 'PAYABLE' ? bankSources : allSources}
+            selectedKey={fromOpt ? fromOpt.key : ''}
+            onSelect={(opt) => {
+              setFromKey(opt.key);
+              setCurrency(opt.currency);
+            }}
+          />
 
-          {/* Transfer Destination Track + Swap */}
+          {/* Transfer Destination Picker + Swap */}
           {txType === 'TRANSFER' && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between px-0.5">
-                <span className="text-[12px] text-zinc-400">轉入帳戶 / 找數信用卡</span>
+            <PaymentSourcePicker
+              label="轉入帳戶 / 找數信用卡"
+              allowCards={true}
+              options={allSources}
+              selectedKey={toOpt ? toOpt.key : ''}
+              accentTone="emerald"
+              onSelect={(opt) => setToKey(opt.key)}
+              rightAction={
                 <button
                   type="button"
                   onClick={() => {
@@ -421,35 +608,80 @@
                     setFromKey(toKey);
                     setToKey(oldFrom);
                   }}
-                  className="inline-flex items-center gap-1 text-[12px] text-emerald-400 active:opacity-70"
+                  className="inline-flex items-center gap-1 text-[11px] text-emerald-400 active:opacity-70"
                 >
-                  <Icon name="swap" size={14} /> 對調方向
+                  <Icon name="swap" size={13} /> 對調
                 </button>
-              </div>
-              <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1" data-no-swipe="true">
-                {allSources.map((opt) => {
-                  const sel = toOpt && opt.key === toOpt.key;
-                  return (
-                    <button
-                      key={opt.key}
-                      type="button"
-                      onClick={() => setToKey(opt.key)}
-                      className={`shrink-0 px-3.5 py-2.5 rounded-2xl border text-left transition ${
-                        sel
-                          ? 'bg-emerald-400 text-black border-emerald-300'
-                          : 'bg-[#141417] text-zinc-200 border-white/[0.08]'
-                      }`}
-                    >
-                      <div className="text-[13px] font-semibold whitespace-nowrap">{opt.label}</div>
-                      <div className={`text-[11px] tabular-nums mt-0.5 whitespace-nowrap ${sel ? 'text-black/70' : 'text-zinc-400'}`}>
-                        {opt.kind === 'CARD' ? `欠款 ${Store.formatMoney(-opt.amount, opt.currency)}` : Store.formatMoney(opt.amount, opt.currency)}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+              }
+            />
           )}
+
+          {/* 4. Upgraded Attribution Pool Card (Critical for Cross-Account / Credit Card Settlement) */}
+          <div className="rounded-2xl bg-[#141417] border border-white/[0.12] p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-[12px] font-semibold text-white whitespace-nowrap">歸屬資金池</span>
+                <span className="text-[10px] text-zinc-500 truncate">交叉流水與找數依據</span>
+              </div>
+              {txType !== 'TRANSFER' && (
+                poolAutoLinked ? (
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/25 text-[10px] font-medium text-emerald-300 whitespace-nowrap shrink-0">
+                    已依分類自動關聯
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const eff = Store.resolveEffectivePoolId(selectedCat ? selectedCat.id : categoryId, subCategoryId, state);
+                      setPoolId(eff);
+                      setPoolAutoLinked(true);
+                    }}
+                    className="px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-400/30 text-[10px] font-medium text-amber-300 whitespace-nowrap shrink-0"
+                  >
+                    已手動指定 · 還原自動
+                  </button>
+                )
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {state.pools.map((p) => {
+                const sel = p.id === poolId;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => handleManualPoolSelect(p.id)}
+                    className={`px-3 py-2 rounded-xl text-[12px] font-semibold border flex items-center gap-1.5 transition ${
+                      sel
+                        ? 'bg-white text-black border-white shadow-sm'
+                        : 'bg-black/45 text-zinc-200 border-white/[0.08] active:bg-white/10'
+                    }`}
+                  >
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ background: p.color }}
+                    />
+                    <span className="whitespace-nowrap">{p.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Live Cross-Account Settlement Preview */}
+            <div className="px-3 py-2 rounded-xl bg-black/50 border border-white/[0.06] text-[11px] flex items-center justify-between gap-2">
+              <span className="text-zinc-400">
+                {isCrossSettlementCard
+                  ? `刷卡交叉記帳 ➔ 結算找數來源：`
+                  : isCrossAccountBank
+                  ? `跨池墊付記錄 ➔ 歸屬應付戶口：`
+                  : `此資金池綁定找數戶口：`}
+              </span>
+              <span className={`font-semibold whitespace-nowrap ${settlementAccLabel ? 'text-emerald-300' : 'text-zinc-500'}`}>
+                {settlementAccLabel || '尚未綁定（可於設定配置）'}
+              </span>
+            </div>
+          </div>
 
           {/* Receivable / Payable Counterparty */}
           {(txType === 'RECEIVABLE' || txType === 'PAYABLE') && (
@@ -467,17 +699,31 @@
             </div>
           )}
 
-          {/* Title, Date/Time, Pool & Note */}
-          <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-4 space-y-3">
-            <div>
-              <label className="text-[11px] text-zinc-400 block mb-1">項目標題（留空自動帶入分類）</label>
-              <input
-                type="text"
-                placeholder="例如：午餐外食、咖啡"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[14px] text-white outline-none"
-              />
+          {/* 5. Optional Custom Title, Date/Time & Note */}
+          <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-3.5 space-y-3">
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="text-[11px] text-zinc-400 block mb-1">
+                  自訂項目標題（選填）
+                </label>
+                <input
+                  type="text"
+                  placeholder={selectedSub ? `預設：${selectedSub.name}` : '留空帶入類別名'}
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] text-zinc-400 block mb-1">備註</label>
+                <input
+                  type="text"
+                  placeholder="選填補充"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
+                />
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <div>
@@ -499,28 +745,6 @@
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <div>
-                <label className="text-[11px] text-zinc-400 block mb-1">歸屬資金池</label>
-                <select
-                  value={poolId}
-                  onChange={(e) => setPoolId(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
-                >
-                  {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="text-[11px] text-zinc-400 block mb-1">備註</label>
-                <input
-                  type="text"
-                  placeholder="選填"
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
-                />
-              </div>
-            </div>
           </div>
         </div>
 
@@ -538,58 +762,59 @@
           </button>
         </div>
 
-        {/* Sub-Sheet: Manage Categories */}
+        {/* Quick Add Sub-category Sheet */}
         <BottomSheet
-          open={catMgrOpen}
-          title={`管理${txType === 'INCOME' ? '收入' : '支出'}分類`}
-          onClose={() => setCatMgrOpen(false)}
+          open={quickSubOpen && Boolean(selectedCat)}
+          title={selectedCat ? `新增「${selectedCat.name}」小類別` : '新增小類別'}
+          onClose={() => setQuickSubOpen(false)}
           footer={
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="輸入新分類名稱"
-                value={newCatName}
-                onChange={(e) => setNewCatName(e.target.value)}
-                className="flex-1 px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  if (!newCatName.trim()) return;
-                  const created = Store.addCategory({
-                    type: txType === 'INCOME' ? 'INCOME' : 'EXPENSE',
-                    name: newCatName,
-                    defaultPoolId: newCatPool
-                  });
-                  setCategoryId(created.id);
-                  setNewCatName('');
-                  showToast(`已新增分類「${created.name}」`);
-                }}
-                className="px-4 py-2.5 rounded-xl bg-white text-black text-[13px] font-bold shrink-0"
-              >
-                新增
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (!quickSubName.trim() || !selectedCat) return;
+                const created = Store.addSubcategory(selectedCat.id, {
+                  name: quickSubName,
+                  defaultPoolId: quickSubPool || null
+                });
+                if (created) {
+                  setSubCategoryId(created.id);
+                  setTitle(created.name);
+                  const eff = Store.resolveEffectivePoolId(selectedCat.id, created.id, Store.getState());
+                  setPoolId(eff);
+                  setPoolAutoLinked(true);
+                  showToast(`已新增小類別「${created.name}」`);
+                }
+                setQuickSubOpen(false);
+              }}
+              className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold"
+            >
+              確認新增並套用
+            </button>
           }
         >
-          <div className="space-y-2">
-            {filteredCats.map((cat) => (
-              <div key={cat.id} className="px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/[0.06] flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <span style={{ color: cat.color }}><Icon name={cat.icon} size={16} /></span>
-                  <span className="text-[14px] text-white">{cat.name}</span>
-                </div>
-                {filteredCats.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => Store.deleteCategory(cat.id)}
-                    className="p-1.5 text-zinc-500 active:text-rose-400"
-                  >
-                    <Icon name="trash" size={15} />
-                  </button>
-                )}
-              </div>
-            ))}
+          <div className="space-y-4">
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">小類別名稱</label>
+              <input
+                type="text"
+                placeholder="例如：下午茶、外賣午餐"
+                value={quickSubName}
+                onChange={(e) => setQuickSubName(e.target.value)}
+                className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">獨立歸屬資金池（選填）</label>
+              <select
+                value={quickSubPool}
+                onChange={(e) => setQuickSubPool(e.target.value)}
+                className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              >
+                <option value="">繼承大類別預設資金池</option>
+                {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
           </div>
         </BottomSheet>
       </div>,
@@ -607,7 +832,6 @@
     const [checkedMap, setCheckedMap] = useState({});
     const [amountMap, setAmountMap] = useState({});
 
-    // Edit/Add rule form
     const [editingId, setEditingId] = useState(null);
     const [draft, setDraft] = useState({
       name: '',
@@ -982,7 +1206,7 @@
 
     const now = new Date();
     const [viewYear, setViewYear] = useState(now.getFullYear());
-    const [viewMonth, setViewMonth] = useState(now.getMonth()); // 0-11
+    const [viewMonth, setViewMonth] = useState(now.getMonth());
     const [selectedDate, setSelectedDate] = useState(null);
     const [monthExpanded, setMonthExpanded] = useState(false);
     const [filterPendingLoans, setFilterPendingLoans] = useState(false);
@@ -991,7 +1215,6 @@
     const [expandedTxId, setExpandedTxId] = useState(null);
     const [splitOpen, setSplitOpen] = useState(false);
 
-    // Loan settle picker sheet
     const [settlingTx, setSettlingTx] = useState(null);
     const [settleTargetKey, setSettleTargetKey] = useState('');
 
@@ -1005,7 +1228,6 @@
 
     const monthPrefix = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`;
 
-    // Dots map for calendar
     const dayMarkers = useMemo(() => {
       const map = {};
       state.transactions.forEach((tx) => {
@@ -1020,7 +1242,6 @@
       return map;
     }, [state.transactions, monthPrefix]);
 
-    // Calendar days (week strip or full month grid)
     const calendarCells = useMemo(() => {
       if (monthExpanded) {
         const firstDay = new Date(viewYear, viewMonth, 1);
@@ -1033,7 +1254,6 @@
         }
         return cells;
       }
-      // Week around selectedDate or today (if same month) or 1st of month
       const anchor = selectedDate && selectedDate.startsWith(monthPrefix)
         ? parseYMD(selectedDate)
         : (viewYear === now.getFullYear() && viewMonth === now.getMonth()
@@ -1061,7 +1281,7 @@
           if (!tx.date || !tx.date.startsWith(monthPrefix)) return false;
         }
         if (q) {
-          const hay = `${tx.title || ''} ${tx.note || ''} ${tx.counterparty || ''}`.toLowerCase();
+          const hay = `${tx.title || ''} ${tx.subCategoryName || ''} ${tx.note || ''} ${tx.counterparty || ''}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
         return true;
@@ -1095,6 +1315,7 @@
     };
 
     const getCategoryObj = (catId) => state.categories.find((c) => c.id === catId);
+    const getPoolObj = (pid) => state.pools.find((p) => p.id === pid);
 
     const openSettleSheet = (tx) => {
       setSettlingTx(tx);
@@ -1127,7 +1348,7 @@
 
     return (
       <div className="space-y-3 pb-6">
-        {/* Row 1: Clean Un-Truncated Month Navigation & Actions */}
+        {/* Row 1: Un-Truncated Month Nav & Actions */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1 shrink-0">
             <button
@@ -1181,7 +1402,7 @@
           </div>
         </div>
 
-        {/* Row 2: Slim Pending Loans Banner (Zero Wrapping) */}
+        {/* Row 2: Slim Pending Loans Banner */}
         {pendingLoans.length > 0 && (
           <button
             type="button"
@@ -1205,7 +1426,7 @@
           <div className="relative">
             <input
               type="text"
-              placeholder="搜尋標題、對象或備註…"
+              placeholder="搜尋標題、小類別、對象或備註…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full px-3.5 py-2.5 rounded-2xl bg-[#141417] border border-white/[0.12] text-[14px] text-white outline-none"
@@ -1214,7 +1435,7 @@
           </div>
         )}
 
-        {/* Week / Full Month Calendar Strip */}
+        {/* Calendar Strip */}
         <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-3">
           <div className="grid grid-cols-7 gap-1 mb-1.5 text-center text-[11px] text-zinc-500">
             {WEEKDAYS.map((w) => <div key={w}>{w}</div>)}
@@ -1271,6 +1492,7 @@
                   {list.map((tx) => {
                     const isExpanded = expandedTxId === tx.id;
                     const cat = getCategoryObj(tx.categoryId);
+                    const pool = getPoolObj(tx.poolId);
                     const isLoan = tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE';
                     const isSettlement = tx.type === 'LOAN_SETTLEMENT';
                     const isPositive = tx.type === 'INCOME' || (isSettlement && tx.settlementDirection === 'IN');
@@ -1324,8 +1546,16 @@
                                   </span>
                                 )}
                               </div>
-                              <div className="text-[11px] text-zinc-400 truncate mt-0.5">
-                                {getAccountLabel(tx)} · {tx.time || ''}
+                              <div className="text-[11px] text-zinc-400 truncate mt-0.5 flex items-center gap-1.5">
+                                <span className="truncate">{getAccountLabel(tx)}</span>
+                                {pool && !isTransfer && (
+                                  <span className="inline-flex items-center gap-1 shrink-0 text-zinc-500">
+                                    ·
+                                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: pool.color }} />
+                                    {pool.name}
+                                  </span>
+                                )}
+                                <span className="shrink-0 text-zinc-500">· {tx.time || ''}</span>
                               </div>
                             </div>
                           </div>
@@ -1347,12 +1577,24 @@
                           </div>
                         </button>
 
-                        {/* Expanded Detail & Actions */}
                         {isExpanded && (
-                          <div className="px-3.5 pb-3.5 pt-1 bg-white/[0.03] border-t border-white/[0.05] space-y-2.5">
+                          <div className="px-3.5 pb-3.5 pt-1.5 bg-white/[0.03] border-t border-white/[0.05] space-y-2.5">
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-400">
+                              {cat && (
+                                <span>
+                                  類別：{cat.name}{tx.subCategoryName ? ` ▸ ${tx.subCategoryName}` : ''}
+                                </span>
+                              )}
+                              {pool && (
+                                <span className="inline-flex items-center gap-1">
+                                  歸屬池：
+                                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: pool.color }} />
+                                  {pool.name}
+                                </span>
+                              )}
+                            </div>
                             {tx.note && <div className="text-[12px] text-zinc-400">備註：{tx.note}</div>}
 
-                            {/* Pending Loan: Confirm Settle */}
                             {isLoan && !tx.isLoanSettled && (
                               <button
                                 type="button"
@@ -1363,7 +1605,6 @@
                               </button>
                             )}
 
-                            {/* Settled Loan: One-tap Undo Settlement */}
                             {isLoan && tx.isLoanSettled && (
                               <button
                                 type="button"
@@ -1378,7 +1619,6 @@
                               </button>
                             )}
 
-                            {/* Standard Edit & Paired Delete Controls */}
                             <div className="flex gap-2">
                               {!isSettlement && (
                                 <button
@@ -1413,7 +1653,6 @@
           </div>
         )}
 
-        {/* Salary Split Drawer */}
         <SplitRulesSheet
           open={splitOpen}
           state={state}
@@ -1421,7 +1660,6 @@
           showToast={showToast}
         />
 
-        {/* Loan Settlement Account Picker Sheet */}
         <BottomSheet
           open={Boolean(settlingTx)}
           title={settlingTx && settlingTx.type === 'RECEIVABLE' ? '選擇收款入帳帳戶' : '選擇還款扣款帳戶'}

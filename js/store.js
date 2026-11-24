@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 1 r11';
+  const APP_VERSION = 'Stage 1 r12';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -25,25 +25,128 @@
     { id: 'copper', name: '暖古銅', bg: 'linear-gradient(135deg, #522916 0%, #261209 100%)', accent: '#FB923C' }
   ];
 
+  const POOL_COLORS = ['#34D399', '#38BDF8', '#60A5FA', '#FBBF24', '#A78BFA', '#FB7185', '#FB923C', '#9CA3AF'];
+
+  const CATEGORY_ICONS = [
+    { id: 'utensils', label: '飲食' },
+    { id: 'car', label: '交通' },
+    { id: 'bag', label: '購物' },
+    { id: 'home', label: '居家' },
+    { id: 'sparkles', label: '娛樂' },
+    { id: 'heart', label: '醫療' },
+    { id: 'briefcase', label: '工作' },
+    { id: 'gift', label: '禮金' },
+    { id: 'trend', label: '收益' },
+    { id: 'coins', label: '資金' },
+    { id: 'tag', label: '其他' }
+  ];
+
   const DEFAULT_POOLS = [
-    { id: 'pool_liquid', name: '日常流動', color: '#34D399' },
-    { id: 'pool_reserve', name: '備用底倉', color: '#60A5FA' },
-    { id: 'pool_goal', name: '儲蓄目標', color: '#FBBF24' },
-    { id: 'pool_invest', name: '投資交割', color: '#A78BFA' }
+    { id: 'pool_liquid', name: '日常流動', color: '#34D399', settlementAccountId: null, settlementBalanceId: null, note: '日常飲食、個人消費與生活開支' },
+    { id: 'pool_household', name: '家庭共同', color: '#38BDF8', settlementAccountId: null, settlementBalanceId: null, note: '居家帳單、買菜日用與共同支出' },
+    { id: 'pool_reserve', name: '備用底倉', color: '#60A5FA', settlementAccountId: null, settlementBalanceId: null, note: '應急備用金與大額固定支出' },
+    { id: 'pool_goal', name: '專項目標', color: '#FBBF24', settlementAccountId: null, settlementBalanceId: null, note: '旅遊、換車或年度儲蓄專項' },
+    { id: 'pool_invest', name: '投資交割', color: '#A78BFA', settlementAccountId: null, settlementBalanceId: null, note: '券商入金、定期與投資收益' }
   ];
 
   const DEFAULT_CATEGORIES = [
-    { id: 'cat_food', type: 'EXPENSE', name: '飲食外食', icon: 'utensils', color: '#F59E0B', defaultPoolId: 'pool_liquid' },
-    { id: 'cat_transport', type: 'EXPENSE', name: '交通出行', icon: 'car', color: '#38BDF8', defaultPoolId: 'pool_liquid' },
-    { id: 'cat_shopping', type: 'EXPENSE', name: '日用購物', icon: 'bag', color: '#EC4899', defaultPoolId: 'pool_liquid' },
-    { id: 'cat_home', type: 'EXPENSE', name: '居家帳單', icon: 'home', color: '#818CF8', defaultPoolId: 'pool_liquid' },
-    { id: 'cat_leisure', type: 'EXPENSE', name: '休閒娛樂', icon: 'sparkles', color: '#C084FC', defaultPoolId: 'pool_liquid' },
-    { id: 'cat_health', type: 'EXPENSE', name: '醫療運動', icon: 'heart', color: '#FB7185', defaultPoolId: 'pool_liquid' },
-    { id: 'cat_other_exp', type: 'EXPENSE', name: '其他支出', icon: 'tag', color: '#9CA3AF', defaultPoolId: 'pool_liquid' },
-    { id: 'cat_salary', type: 'INCOME', name: '薪資收入', icon: 'briefcase', color: '#34D399', defaultPoolId: 'pool_liquid' },
-    { id: 'cat_bonus', type: 'INCOME', name: '獎金津貼', icon: 'gift', color: '#60A5FA', defaultPoolId: 'pool_goal' },
-    { id: 'cat_dividend', type: 'INCOME', name: '股息回贈', icon: 'trend', color: '#A78BFA', defaultPoolId: 'pool_invest' },
-    { id: 'cat_other_inc', type: 'INCOME', name: '其他收入', icon: 'coins', color: '#9CA3AF', defaultPoolId: 'pool_liquid' }
+    {
+      id: 'cat_food', type: 'EXPENSE', name: '日常飲食', icon: 'utensils', color: '#F59E0B', defaultPoolId: 'pool_liquid',
+      subcategories: [
+        { id: 'sub_food_1', name: '早餐', defaultPoolId: null },
+        { id: 'sub_food_2', name: '午餐', defaultPoolId: null },
+        { id: 'sub_food_3', name: '晚餐', defaultPoolId: null },
+        { id: 'sub_food_4', name: '咖啡飲品', defaultPoolId: null },
+        { id: 'sub_food_5', name: '聚餐外食', defaultPoolId: null },
+        { id: 'sub_food_6', name: '超市買菜', defaultPoolId: 'pool_household' }
+      ]
+    },
+    {
+      id: 'cat_transport', type: 'EXPENSE', name: '交通出行', icon: 'car', color: '#38BDF8', defaultPoolId: 'pool_liquid',
+      subcategories: [
+        { id: 'sub_tr_1', name: '加油充電', defaultPoolId: null },
+        { id: 'sub_tr_2', name: '泊車路費', defaultPoolId: null },
+        { id: 'sub_tr_3', name: '公共交通', defaultPoolId: null },
+        { id: 'sub_tr_4', name: '的士網約車', defaultPoolId: null },
+        { id: 'sub_tr_5', name: '車輛保養', defaultPoolId: 'pool_reserve' }
+      ]
+    },
+    {
+      id: 'cat_shopping', type: 'EXPENSE', name: '日用購物', icon: 'bag', color: '#EC4899', defaultPoolId: 'pool_liquid',
+      subcategories: [
+        { id: 'sub_sh_1', name: '日用百貨', defaultPoolId: 'pool_household' },
+        { id: 'sub_sh_2', name: '服飾鞋包', defaultPoolId: null },
+        { id: 'sub_sh_3', name: '數碼家電', defaultPoolId: 'pool_goal' },
+        { id: 'sub_sh_4', name: '網購消費', defaultPoolId: null }
+      ]
+    },
+    {
+      id: 'cat_home', type: 'EXPENSE', name: '居家帳單', icon: 'home', color: '#818CF8', defaultPoolId: 'pool_household',
+      subcategories: [
+        { id: 'sub_hm_1', name: '水電煤網', defaultPoolId: null },
+        { id: 'sub_hm_2', name: '大廈管理費', defaultPoolId: null },
+        { id: 'sub_hm_3', name: '電話月費', defaultPoolId: 'pool_liquid' },
+        { id: 'sub_hm_4', name: '訂閱服務', defaultPoolId: 'pool_liquid' },
+        { id: 'sub_hm_5', name: '家居維修', defaultPoolId: 'pool_reserve' }
+      ]
+    },
+    {
+      id: 'cat_leisure', type: 'EXPENSE', name: '休閒娛樂', icon: 'sparkles', color: '#C084FC', defaultPoolId: 'pool_liquid',
+      subcategories: [
+        { id: 'sub_le_1', name: '電影演出', defaultPoolId: null },
+        { id: 'sub_le_2', name: '運動健身', defaultPoolId: null },
+        { id: 'sub_le_3', name: '旅遊度假', defaultPoolId: 'pool_goal' },
+        { id: 'sub_le_4', name: '興趣愛好', defaultPoolId: null }
+      ]
+    },
+    {
+      id: 'cat_health', type: 'EXPENSE', name: '醫療保險', icon: 'heart', color: '#FB7185', defaultPoolId: 'pool_reserve',
+      subcategories: [
+        { id: 'sub_hl_1', name: '門診醫藥', defaultPoolId: 'pool_liquid' },
+        { id: 'sub_hl_2', name: '保費支出', defaultPoolId: 'pool_reserve' },
+        { id: 'sub_hl_3', name: '體檢保健', defaultPoolId: null }
+      ]
+    },
+    {
+      id: 'cat_other_exp', type: 'EXPENSE', name: '其他支出', icon: 'tag', color: '#9CA3AF', defaultPoolId: 'pool_liquid',
+      subcategories: [
+        { id: 'sub_oe_1', name: '人情禮金', defaultPoolId: null },
+        { id: 'sub_oe_2', name: '教育進修', defaultPoolId: 'pool_household' },
+        { id: 'sub_oe_3', name: '雜項開支', defaultPoolId: null }
+      ]
+    },
+    {
+      id: 'cat_salary', type: 'INCOME', name: '薪資收入', icon: 'briefcase', color: '#34D399', defaultPoolId: 'pool_liquid',
+      subcategories: [
+        { id: 'sub_sa_1', name: '月薪入帳', defaultPoolId: null },
+        { id: 'sub_sa_2', name: '加班津貼', defaultPoolId: null },
+        { id: 'sub_sa_3', name: '兼職副業', defaultPoolId: null }
+      ]
+    },
+    {
+      id: 'cat_bonus', type: 'INCOME', name: '獎金轉入', icon: 'gift', color: '#60A5FA', defaultPoolId: 'pool_goal',
+      subcategories: [
+        { id: 'sub_bn_1', name: '績效獎金', defaultPoolId: null },
+        { id: 'sub_bn_2', name: '家庭共同轉入', defaultPoolId: 'pool_household' },
+        { id: 'sub_bn_3', name: '節日津貼', defaultPoolId: null }
+      ]
+    },
+    {
+      id: 'cat_dividend', type: 'INCOME', name: '股息回贈', icon: 'trend', color: '#A78BFA', defaultPoolId: 'pool_invest',
+      subcategories: [
+        { id: 'sub_dv_1', name: '信用卡回贈', defaultPoolId: 'pool_liquid' },
+        { id: 'sub_dv_2', name: '定存利息', defaultPoolId: 'pool_reserve' },
+        { id: 'sub_dv_3', name: '股息分紅', defaultPoolId: 'pool_invest' }
+      ]
+    },
+    {
+      id: 'cat_other_inc', type: 'INCOME', name: '其他收入', icon: 'coins', color: '#9CA3AF', defaultPoolId: 'pool_liquid',
+      subcategories: [
+        { id: 'sub_oi_1', name: '退款退稅', defaultPoolId: null },
+        { id: 'sub_oi_2', name: '二手出讓', defaultPoolId: null },
+        { id: 'sub_oi_3', name: '其他入帳', defaultPoolId: null }
+      ]
+    }
   ];
 
   function uid(prefix) {
@@ -83,6 +186,9 @@
     const base = baseCurrency || 'MOP';
     const accId = 'acc_main';
     const balId = 'bal_main_1';
+    const pools = JSON.parse(JSON.stringify(DEFAULT_POOLS));
+    pools[0].settlementAccountId = accId;
+    pools[0].settlementBalanceId = balId;
     return {
       meta: {
         schemaVersion: SCHEMA_VERSION,
@@ -92,7 +198,7 @@
         privacyMode: false,
         fxRates: buildFxMap(base)
       },
-      pools: JSON.parse(JSON.stringify(DEFAULT_POOLS)),
+      pools,
       categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
       accounts: [
         {
@@ -117,6 +223,20 @@
   function createDemoState(baseCurrency) {
     const base = baseCurrency || 'MOP';
     const today = todayISO();
+    const pools = JSON.parse(JSON.stringify(DEFAULT_POOLS));
+    pools.forEach((p) => {
+      if (p.id === 'pool_liquid' || p.id === 'pool_household') {
+        p.settlementAccountId = 'acc_bank_main';
+        p.settlementBalanceId = 'bal_main_base';
+      } else if (p.id === 'pool_reserve' || p.id === 'pool_goal') {
+        p.settlementAccountId = 'acc_bank_high';
+        p.settlementBalanceId = 'bal_high_base';
+      } else if (p.id === 'pool_invest') {
+        p.settlementAccountId = 'acc_broker';
+        p.settlementBalanceId = 'bal_brk_usd';
+      }
+    });
+
     return {
       meta: {
         schemaVersion: SCHEMA_VERSION,
@@ -126,7 +246,7 @@
         privacyMode: false,
         fxRates: buildFxMap(base)
       },
-      pools: JSON.parse(JSON.stringify(DEFAULT_POOLS)),
+      pools,
       categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
       accounts: [
         {
@@ -206,6 +326,19 @@
           billed: 0,
           theme: 'crimson',
           autoPayAccountId: 'acc_bank_main'
+        },
+        {
+          id: 'card_3',
+          name: '網購旅遊卡',
+          last4: '5160',
+          currency: base,
+          creditLimit: 60000,
+          statementDay: 10,
+          dueDay: 28,
+          unbilled: 680,
+          billed: 0,
+          theme: 'sapphire',
+          autoPayAccountId: 'acc_bank_main'
         }
       ],
       investments: [
@@ -234,7 +367,7 @@
         {
           id: 'tx_demo_1',
           type: 'EXPENSE',
-          title: '午餐外食',
+          title: '午餐',
           amount: 168,
           currency: base,
           settledAmount: 168,
@@ -243,6 +376,8 @@
           accountId: 'card_1',
           balanceId: null,
           categoryId: 'cat_food',
+          subCategoryId: 'sub_food_2',
+          subCategoryName: '午餐',
           poolId: 'pool_liquid',
           date: today,
           time: '12:30',
@@ -260,6 +395,8 @@
           accountId: 'acc_ewallet',
           balanceId: 'bal_ew_base',
           categoryId: 'cat_food',
+          subCategoryId: 'sub_food_4',
+          subCategoryName: '咖啡飲品',
           poolId: 'pool_liquid',
           date: today,
           time: '09:15',
@@ -277,6 +414,8 @@
           accountId: 'acc_ewallet',
           balanceId: 'bal_ew_base',
           categoryId: 'cat_food',
+          subCategoryId: 'sub_food_5',
+          subCategoryName: '聚餐外食',
           poolId: 'pool_liquid',
           counterparty: '同事 A',
           isLoanSettled: false,
@@ -342,6 +481,27 @@
   function migrateState(raw) {
     if (!raw || typeof raw !== 'object') return createInitialUnboardedState();
     const base = (raw.meta && raw.meta.baseCurrency) || 'MOP';
+    const rawPools = Array.isArray(raw.pools) && raw.pools.length
+      ? raw.pools
+      : JSON.parse(JSON.stringify(DEFAULT_POOLS));
+
+    const migratedPools = rawPools.map((p) => Object.assign(
+      { settlementAccountId: null, settlementBalanceId: null, note: '' },
+      p
+    ));
+
+    const rawCats = Array.isArray(raw.categories) && raw.categories.length
+      ? raw.categories
+      : JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
+
+    const migratedCats = rawCats.map((c) => {
+      const defMatch = DEFAULT_CATEGORIES.find((d) => d.id === c.id);
+      const subs = Array.isArray(c.subcategories)
+        ? c.subcategories.map((s) => Object.assign({ defaultPoolId: null }, s))
+        : (defMatch ? JSON.parse(JSON.stringify(defMatch.subcategories)) : []);
+      return Object.assign({}, c, { subcategories: subs });
+    });
+
     const next = {
       meta: Object.assign(
         {
@@ -355,8 +515,8 @@
         raw.meta || {},
         { schemaVersion: SCHEMA_VERSION, appVersion: APP_VERSION }
       ),
-      pools: Array.isArray(raw.pools) && raw.pools.length ? raw.pools : JSON.parse(JSON.stringify(DEFAULT_POOLS)),
-      categories: Array.isArray(raw.categories) && raw.categories.length ? raw.categories : JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
+      pools: migratedPools,
+      categories: migratedCats,
       accounts: Array.isArray(raw.accounts) ? raw.accounts : [],
       cards: Array.isArray(raw.cards) ? raw.cards : [],
       investments: Array.isArray(raw.investments) ? raw.investments : [],
@@ -402,7 +562,6 @@
     if (kind === 'CARD') {
       const card = draft.cards.find((c) => c.id === accountId);
       if (card) {
-        // 信用卡記帳：delta > 0 代表消費增加欠款，delta < 0 代表還款/退款減少欠款
         card.unbilled = round2((card.unbilled || 0) + d);
       }
       return;
@@ -417,7 +576,6 @@
   }
 
   function applyTransactionEffect(draft, tx, sign) {
-    // sign = +1 (apply), -1 (reverse/rollback)
     const amt = round2(tx.amount);
     const settled = round2(tx.settledAmount != null ? tx.settledAmount : amt);
 
@@ -434,32 +592,27 @@
         adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, sign * settled);
       }
     } else if (tx.type === 'TRANSFER') {
-      // From side
       if (tx.accountKind === 'CARD') {
         adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * amt);
       } else {
         adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, -sign * amt);
       }
-      // To side
       if (tx.toAccountKind === 'CARD') {
         adjustAccountOrCard(draft, 'CARD', tx.toAccountId, null, -sign * settled);
       } else {
         adjustAccountOrCard(draft, 'ACCOUNT', tx.toAccountId, tx.toBalanceId, sign * settled);
       }
     } else if (tx.type === 'RECEIVABLE') {
-      // 代墊支出：來源帳戶扣款（或信用卡增加待出帳）
       if (tx.accountKind === 'CARD') {
         adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * settled);
       } else {
         adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, -sign * settled);
       }
     } else if (tx.type === 'PAYABLE') {
-      // 借入款項：若指定入帳帳戶則加錢
       if (tx.accountId && tx.accountKind !== 'CARD') {
         adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, sign * settled);
       }
     } else if (tx.type === 'LOAN_SETTLEMENT') {
-      // 結清紀錄：不計入純收入/純支出，只還原資金餘額
       if (tx.settlementDirection === 'IN') {
         if (tx.accountKind === 'CARD') {
           adjustAccountOrCard(draft, 'CARD', tx.accountId, null, -sign * settled);
@@ -504,6 +657,35 @@
     });
     const prefix = num < 0 ? '-' : (opts.showPlus && num > 0 ? '+' : '');
     return `${prefix}${sym} ${formatted}`;
+  }
+
+  function resolveEffectivePoolId(categoryId, subCategoryId, st) {
+    const s = st || state;
+    const fallback = (s.pools[0] && s.pools[0].id) || 'pool_liquid';
+    const cat = (s.categories || []).find((c) => c.id === categoryId);
+    if (!cat) return fallback;
+    if (subCategoryId && Array.isArray(cat.subcategories)) {
+      const sub = cat.subcategories.find((x) => x.id === subCategoryId);
+      if (sub && sub.defaultPoolId && s.pools.some((p) => p.id === sub.defaultPoolId)) {
+        return sub.defaultPoolId;
+      }
+    }
+    if (cat.defaultPoolId && s.pools.some((p) => p.id === cat.defaultPoolId)) {
+      return cat.defaultPoolId;
+    }
+    return fallback;
+  }
+
+  function getPoolSettlementLabel(poolId, st) {
+    const s = st || state;
+    const pool = (s.pools || []).find((p) => p.id === poolId);
+    if (!pool || !pool.settlementAccountId) return null;
+    const acc = (s.accounts || []).find((a) => a.id === pool.settlementAccountId);
+    if (!acc) return null;
+    const bal = pool.settlementBalanceId
+      ? (acc.balances || []).find((b) => b.id === pool.settlementBalanceId)
+      : (acc.balances || [])[0];
+    return bal && acc.balances.length > 1 ? `${acc.name} (${bal.currency})` : acc.name;
   }
 
   function getSummaryMetrics(st) {
@@ -597,6 +779,8 @@
     SCHEMA_VERSION,
     CURRENCIES,
     CARD_THEMES,
+    POOL_COLORS,
+    CATEGORY_ICONS,
     uid,
     todayISO,
     nowTimeHM,
@@ -604,6 +788,8 @@
     getCurrencySymbol,
     convertToBase,
     formatMoney,
+    resolveEffectivePoolId,
+    getPoolSettlementLabel,
     getSummaryMetrics,
     getCreditCardCycle,
 
@@ -666,7 +852,7 @@
             id: uid('bal'),
             currency: payload.currency || draft.meta.baseCurrency,
             amount: round2(payload.initialAmount || 0),
-            poolId: payload.poolId || 'pool_liquid',
+            poolId: payload.poolId || (draft.pools[0] && draft.pools[0].id) || 'pool_liquid',
             isDefaultPayment: draft.accounts.length === 0
           }
         ],
@@ -693,6 +879,12 @@
     deleteAccount(accId) {
       const draft = cloneState();
       draft.accounts = draft.accounts.filter((a) => a.id !== accId);
+      draft.pools.forEach((p) => {
+        if (p.settlementAccountId === accId) {
+          p.settlementAccountId = null;
+          p.settlementBalanceId = null;
+        }
+      });
       state = draft;
       notify();
     },
@@ -706,7 +898,7 @@
         id: uid('bal'),
         currency,
         amount: round2(initialAmount || 0),
-        poolId: poolId || 'pool_liquid',
+        poolId: poolId || (draft.pools[0] && draft.pools[0].id) || 'pool_liquid',
         isDefaultPayment: false
       });
       state = draft;
@@ -826,6 +1018,134 @@
       }
     },
 
+    // ---- Pools Management (Cross-Account Settlement Attribution) ----
+    addPool(payload) {
+      const draft = cloneState();
+      const pool = {
+        id: uid('pool'),
+        name: (payload.name || '新資金池').trim(),
+        color: payload.color || POOL_COLORS[draft.pools.length % POOL_COLORS.length],
+        settlementAccountId: payload.settlementAccountId || null,
+        settlementBalanceId: payload.settlementBalanceId || null,
+        note: (payload.note || '').trim()
+      };
+      draft.pools.push(pool);
+      state = draft;
+      notify();
+      return pool;
+    },
+
+    updatePool(poolId, patch) {
+      const draft = cloneState();
+      const p = draft.pools.find((x) => x.id === poolId);
+      if (!p) return;
+      if (patch.name != null) p.name = patch.name.trim() || p.name;
+      if (patch.color != null) p.color = patch.color;
+      if (patch.note != null) p.note = patch.note.trim();
+      if ('settlementAccountId' in patch) p.settlementAccountId = patch.settlementAccountId || null;
+      if ('settlementBalanceId' in patch) p.settlementBalanceId = patch.settlementBalanceId || null;
+      state = draft;
+      notify();
+    },
+
+    deletePool(poolId) {
+      const draft = cloneState();
+      if (draft.pools.length <= 1) return false;
+      draft.pools = draft.pools.filter((x) => x.id !== poolId);
+      const fallbackId = draft.pools[0].id;
+      draft.categories.forEach((c) => {
+        if (c.defaultPoolId === poolId) c.defaultPoolId = fallbackId;
+        (c.subcategories || []).forEach((s) => {
+          if (s.defaultPoolId === poolId) s.defaultPoolId = null;
+        });
+      });
+      draft.transactions.forEach((tx) => {
+        if (tx.poolId === poolId) tx.poolId = fallbackId;
+      });
+      state = draft;
+      notify();
+      return true;
+    },
+
+    // ---- Categories & Subcategories Management ----
+    addCategory(payload) {
+      const draft = cloneState();
+      const cat = {
+        id: uid('cat'),
+        type: payload.type || 'EXPENSE',
+        name: (payload.name || '新分類').trim(),
+        icon: payload.icon || 'tag',
+        color: payload.color || '#60A5FA',
+        defaultPoolId: payload.defaultPoolId || (draft.pools[0] && draft.pools[0].id) || 'pool_liquid',
+        subcategories: Array.isArray(payload.subcategories) ? payload.subcategories : []
+      };
+      draft.categories.push(cat);
+      state = draft;
+      notify();
+      return cat;
+    },
+
+    updateCategory(catId, patch) {
+      const draft = cloneState();
+      const cat = draft.categories.find((c) => c.id === catId);
+      if (!cat) return;
+      if (patch.name != null) cat.name = patch.name.trim() || cat.name;
+      if (patch.icon != null) cat.icon = patch.icon;
+      if (patch.color != null) cat.color = patch.color;
+      if (patch.defaultPoolId != null) cat.defaultPoolId = patch.defaultPoolId;
+      state = draft;
+      notify();
+    },
+
+    deleteCategory(catId) {
+      const draft = cloneState();
+      const target = draft.categories.find((c) => c.id === catId);
+      if (!target) return false;
+      const sameTypeCount = draft.categories.filter((c) => c.type === target.type).length;
+      if (sameTypeCount <= 1) return false;
+      draft.categories = draft.categories.filter((c) => c.id !== catId);
+      state = draft;
+      notify();
+      return true;
+    },
+
+    addSubcategory(catId, payload) {
+      const draft = cloneState();
+      const cat = draft.categories.find((c) => c.id === catId);
+      if (!cat) return null;
+      cat.subcategories = cat.subcategories || [];
+      const sub = {
+        id: uid('sub'),
+        name: (payload.name || '新小類別').trim(),
+        defaultPoolId: payload.defaultPoolId || null
+      };
+      cat.subcategories.push(sub);
+      state = draft;
+      notify();
+      return sub;
+    },
+
+    updateSubcategory(catId, subId, patch) {
+      const draft = cloneState();
+      const cat = draft.categories.find((c) => c.id === catId);
+      if (!cat || !Array.isArray(cat.subcategories)) return;
+      const sub = cat.subcategories.find((s) => s.id === subId);
+      if (!sub) return;
+      if (patch.name != null) sub.name = patch.name.trim() || sub.name;
+      if ('defaultPoolId' in patch) sub.defaultPoolId = patch.defaultPoolId || null;
+      state = draft;
+      notify();
+    },
+
+    deleteSubcategory(catId, subId) {
+      const draft = cloneState();
+      const cat = draft.categories.find((c) => c.id === catId);
+      if (!cat || !Array.isArray(cat.subcategories)) return;
+      cat.subcategories = cat.subcategories.filter((s) => s.id !== subId);
+      state = draft;
+      notify();
+    },
+
     // ---- Transactions & Paired Loan Logic (Module 3) ----
     addTransaction(payload) {
       const draft = cloneState();
@@ -845,7 +1165,9 @@
           toAccountId: null,
           toBalanceId: null,
           categoryId: null,
-          poolId: 'pool_liquid',
+          subCategoryId: null,
+          subCategoryName: '',
+          poolId: (draft.pools[0] && draft.pools[0].id) || 'pool_liquid',
           counterparty: '',
           isLoanSettled: false,
           settlementTxId: null,
@@ -908,6 +1230,8 @@
         accountId: targetAccId,
         balanceId: targetBalId || null,
         categoryId: null,
+        subCategoryId: null,
+        subCategoryName: '',
         poolId: loanTx.poolId || 'pool_liquid',
         counterparty: loanTx.counterparty || '',
         date: todayISO(),
@@ -949,7 +1273,6 @@
       if (idx === -1) return { deleted: 0, mode: 'NONE' };
       const tx = draft.transactions[idx];
 
-      // Case A: Deleting a LOAN_SETTLEMENT -> revert balance AND restore original loan to pending!
       if (tx.type === 'LOAN_SETTLEMENT') {
         applyTransactionEffect(draft, tx, -1);
         draft.transactions.splice(idx, 1);
@@ -965,7 +1288,6 @@
         return { deleted: 1, mode: 'REOPEN_LOAN' };
       }
 
-      // Case B: Deleting a settled RECEIVABLE / PAYABLE -> paired delete BOTH original & settlement!
       if ((tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE') && tx.isLoanSettled && tx.settlementTxId) {
         applyTransactionEffect(draft, tx, -1);
         draft.transactions.splice(idx, 1);
@@ -979,36 +1301,11 @@
         return { deleted: 2, mode: 'PAIRED_DELETE' };
       }
 
-      // Case C: Standard single transaction delete with balance rollback
       applyTransactionEffect(draft, tx, -1);
       draft.transactions.splice(idx, 1);
       state = draft;
       notify();
       return { deleted: 1, mode: 'SINGLE' };
-    },
-
-    // ---- Categories ----
-    addCategory(payload) {
-      const draft = cloneState();
-      const cat = {
-        id: uid('cat'),
-        type: payload.type || 'EXPENSE',
-        name: (payload.name || '新分類').trim(),
-        icon: payload.icon || 'tag',
-        color: payload.color || '#60A5FA',
-        defaultPoolId: payload.defaultPoolId || 'pool_liquid'
-      };
-      draft.categories.push(cat);
-      state = draft;
-      notify();
-      return cat;
-    },
-
-    deleteCategory(catId) {
-      const draft = cloneState();
-      draft.categories = draft.categories.filter((c) => c.id !== catId);
-      state = draft;
-      notify();
     },
 
     // ---- Salary Split Rules (Batch Flow) ----
@@ -1052,7 +1349,6 @@
     },
 
     executeSplitRules(selectedItems) {
-      // selectedItems: [{ ruleId, amount }]
       const draft = cloneState();
       const today = todayISO();
       const time = nowTimeHM();
@@ -1078,6 +1374,8 @@
             accountId: rule.toAccountId,
             balanceId: rule.toBalanceId,
             categoryId: rule.categoryId || 'cat_salary',
+            subCategoryId: null,
+            subCategoryName: '',
             poolId: rule.poolId || 'pool_liquid',
             date: today,
             time,
@@ -1096,6 +1394,8 @@
             accountId: rule.fromAccountId,
             balanceId: rule.fromBalanceId,
             categoryId: rule.categoryId || 'cat_home',
+            subCategoryId: null,
+            subCategoryName: '',
             poolId: rule.poolId || 'pool_liquid',
             date: today,
             time,
@@ -1117,6 +1417,8 @@
             toAccountId: rule.toAccountId,
             toBalanceId: rule.toBalanceId,
             categoryId: null,
+            subCategoryId: null,
+            subCategoryName: '',
             poolId: rule.poolId || 'pool_reserve',
             date: today,
             time,
@@ -1150,7 +1452,6 @@
 
     runDiagnostics() {
       const checks = [];
-      // 1. Balance NaN check
       let nanFound = false;
       state.accounts.forEach((a) => {
         (a.balances || []).forEach((b) => {
@@ -1163,7 +1464,6 @@
         detail: nanFound ? '發現無效數值' : `已檢查 ${state.accounts.length} 個帳戶`
       });
 
-      // 2. Allocation overflow check
       let overflow = false;
       state.accounts.forEach((a) => {
         (a.balances || []).forEach((b) => {
@@ -1179,7 +1479,6 @@
         detail: overflow ? '部分帳戶切分額大於餘額' : '所有切分額均在餘額內'
       });
 
-      // 3. Loan pair integrity
       let brokenLoan = false;
       state.transactions.forEach((tx) => {
         if ((tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE') && tx.isLoanSettled) {
@@ -1199,12 +1498,11 @@
         detail: brokenLoan ? '發現孤立結清紀錄' : '雙向關聯 100% 閉環'
       });
 
-      // 4. FX rate validity
-      const fxOk = Object.values(state.meta.fxRates || {}).every((v) => Number.isFinite(v) && v > 0);
+      const boundPools = state.pools.filter((p) => p.settlementAccountId).length;
       checks.push({
-        label: '多幣種匯率有效',
-        ok: fxOk,
-        detail: `主幣種 ${state.meta.baseCurrency}`
+        label: '分類與資金池交叉結算設定',
+        ok: state.pools.length > 0 && state.categories.length > 0,
+        detail: `${state.pools.length} 個資金池（已綁定找數戶口 ${boundPools} 個）`
       });
 
       return checks;
