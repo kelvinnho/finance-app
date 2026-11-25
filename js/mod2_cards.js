@@ -3,7 +3,7 @@
 
   const { useState, useMemo, useEffect } = React;
 
-  function CreditCardsView({ state, showToast }) {
+  function CreditCardsView({ state, showToast, onFocusChange, resetSignal }) {
     const { Icon, BottomSheet, NumericInput, SegmentedControl } = window.WealthUI;
     const Store = window.WealthStore;
 
@@ -114,31 +114,60 @@
       return (state.cards || []).find((c) => c.id === focusedCardId) || null;
     }, [state.cards, focusedCardId]);
 
+    const syncEditDraftFromCard = (card) => {
+      if (!card) return;
+      const autoKey = card.autoPayAccountId
+        ? (bankOptions.find((b) =>
+            b.accountId === card.autoPayAccountId &&
+            (!card.autoPayBalanceId || b.balanceId === card.autoPayBalanceId)
+          )?.key || defaultBankKey)
+        : defaultBankKey;
+      setEditDraft({
+        name: card.name || '',
+        last4: card.last4 || '',
+        currency: card.currency || state.meta.baseCurrency,
+        creditLimit: card.creditLimit || 50000,
+        statementDay: card.statementDay || 15,
+        dueDay: card.dueDay || 5,
+        billed: card.billed || 0,
+        unbilled: card.unbilled || 0,
+        theme: card.theme || 'titanium',
+        autoPayKey: autoKey,
+        note: card.note || ''
+      });
+    };
+
+    const toggleCardSettings = (forceState) => {
+      const next = typeof forceState === 'boolean' ? forceState : !flipped;
+      // Strictly discard any unsaved draft when entering OR leaving settings without saving
+      syncEditDraftFromCard(focusedCard);
+      setFlipped(next);
+    };
+
     useEffect(() => {
       if (focusedCard) {
-        const autoKey = focusedCard.autoPayAccountId
-          ? (bankOptions.find((b) =>
-              b.accountId === focusedCard.autoPayAccountId &&
-              (!focusedCard.autoPayBalanceId || b.balanceId === focusedCard.autoPayBalanceId)
-            )?.key || defaultBankKey)
-          : defaultBankKey;
-        setEditDraft({
-          name: focusedCard.name || '',
-          last4: focusedCard.last4 || '',
-          currency: focusedCard.currency || state.meta.baseCurrency,
-          creditLimit: focusedCard.creditLimit || 50000,
-          statementDay: focusedCard.statementDay || 15,
-          dueDay: focusedCard.dueDay || 5,
-          billed: focusedCard.billed || 0,
-          unbilled: focusedCard.unbilled || 0,
-          theme: focusedCard.theme || 'titanium',
-          autoPayKey: autoKey,
-          note: focusedCard.note || ''
-        });
+        syncEditDraftFromCard(focusedCard);
       } else {
         setFlipped(false);
       }
     }, [focusedCard, bankOptions, defaultBankKey]);
+
+    useEffect(() => {
+      if (onFocusChange) onFocusChange(Boolean(focusedCard));
+    }, [focusedCard, onFocusChange]);
+
+    useEffect(() => {
+      return () => {
+        if (onFocusChange) onFocusChange(false);
+      };
+    }, [onFocusChange]);
+
+    useEffect(() => {
+      if (resetSignal > 0) {
+        setFocusedCardId(null);
+        setFlipped(false);
+      }
+    }, [resetSignal]);
 
     const focusedPlan = useMemo(() => {
       if (!focusedCard) return null;
@@ -441,7 +470,8 @@
 
     return (
       <div className="space-y-4 pb-6">
-        {/* Top Summary Card (2-Tier Full-Width Hierarchy — Zero Truncation) */}
+        {/* Top Summary Card (Only in Overview Mode so Focused Card sits at Top of Screen) */}
+        {!focusedCard && (
         <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
           <div>
             <div className="flex items-center justify-between gap-2 mb-1">
@@ -470,6 +500,7 @@
             </div>
           </div>
         </div>
+        )}
 
         {/* Mode A: Apple Wallet Stacked Credit Card Deck + Prominent Cross-Bank Transfer Guide */}
         {!focusedCard && (
@@ -644,10 +675,10 @@
               </button>
               <button
                 type="button"
-                onClick={() => setFlipped(!flipped)}
-                className="px-3 py-1.5 rounded-full bg-white/[0.08] text-[12px] text-zinc-200 active:bg-white/15"
+                onClick={() => toggleCardSettings()}
+                className="px-3 py-1.5 rounded-full bg-[#1C1C22] border border-white/10 text-[12px] font-medium text-zinc-200 active:bg-white/15"
               >
-                {flipped ? '返回正面' : '卡片與主戶設定'}
+                {flipped ? '取消並返回正面' : '卡片與主戶設定'}
               </button>
             </div>
 
@@ -676,7 +707,7 @@
                   <span className="text-[11px] text-white/70 shrink-0">本卡主找數／扣款銀行</span>
                   <button
                     type="button"
-                    onClick={() => setFlipped(true)}
+                    onClick={() => toggleCardSettings(true)}
                     className="text-[12.5px] font-bold text-emerald-300 truncate active:opacity-75"
                   >
                     {focusedPlan.mainBank ? focusedPlan.mainBank.label : '尚未設定（點此指定）'} ▾
@@ -760,7 +791,7 @@
               </div>
             ) : (
               /* Card Back: Complete Settings & Balance Calibration */
-              <div className="rounded-[22px] p-4 bg-[#141417] border border-white/15 space-y-3.5">
+              <div className="rounded-[22px] p-4 bg-[#191920] border border-white/15 shadow-2xl space-y-3.5">
                 <div className="text-[15px] font-semibold text-white">編輯信用卡與主找數戶口</div>
 
                 <div className="grid grid-cols-12 gap-2.5">
@@ -930,8 +961,22 @@
               </div>
             )}
 
-            {/* FLAGSHIP SECTION: Actionable Step-by-Step Transfer-to-Main-Account Settlement Plan */}
-            <div className="rounded-2xl bg-[#111114] border border-white/[0.12] p-4 space-y-4">
+            {/* Elevated Connected Card Options Tray (Visually Tied to Selected Credit Card) */}
+            <div
+              className="rounded-[24px] bg-[#18181F] border border-white/[0.13] shadow-[0_10px_30px_rgba(0,0,0,0.45)] overflow-hidden"
+              style={{ borderTop: `2px solid ${getThemeObj(focusedCard.theme).accent}88` }}
+            >
+              <div className="px-4 py-2.5 bg-white/[0.04] border-b border-white/[0.08] flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: getThemeObj(focusedCard.theme).accent }} />
+                  <span className="text-[12px] font-semibold text-zinc-200 truncate">「{focusedCard.name}」卡片專屬操作</span>
+                </div>
+                <span className="text-[11px] text-zinc-400 shrink-0">找數與紀錄</span>
+              </div>
+
+              <div className="p-3.5 space-y-4">
+                {/* FLAGSHIP SECTION: Actionable Step-by-Step Transfer-to-Main-Account Settlement Plan */}
+                <div className="rounded-2xl bg-[#111116] border border-white/[0.09] p-4 space-y-4">
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <div className="text-[15.5px] font-bold text-white">找數轉帳指引（轉入主找數戶口）</div>
@@ -1122,8 +1167,8 @@
               )}
             </div>
 
-            {/* Card Recent Transactions */}
-            <div className="rounded-2xl bg-[#111114] border border-white/[0.08] overflow-hidden">
+                {/* Card Recent Transactions */}
+                <div className="rounded-2xl bg-[#111116] border border-white/[0.09] overflow-hidden">
               <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
                 <span className="text-[13.5px] font-semibold text-white">本卡相關簽帳與找數紀錄</span>
                 <span className="text-[11px] text-zinc-500 tabular-nums">{cardTransactions.length} 筆</span>
@@ -1180,6 +1225,8 @@
                   })}
                 </div>
               )}
+                </div>
+              </div>
             </div>
 
             {/* Bottom Quick Switcher Dock */}

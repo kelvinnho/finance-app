@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 2 r2';
+  const APP_VERSION = 'Stage 2 r3';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [

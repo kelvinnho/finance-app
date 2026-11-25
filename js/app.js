@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const { useState, useMemo, useCallback, useRef } = React;
+  const { useState, useMemo, useCallback, useRef, useEffect } = React;
 
   // ---- 2-Step Minimal Onboarding Flow ----
   function OnboardingFlow({ onFinish }) {
@@ -982,8 +982,11 @@
     const state = useWealthStore();
     const [activeTab, setActiveTab] = useState('LEDGER');
     const [assetSubTab, setAssetSubTab] = useState('WALLET');
+    const [isAssetDetailFocused, setIsAssetDetailFocused] = useState(false);
+    const [assetResetKey, setAssetResetKey] = useState(0);
     const [toastMsg, setToastMsg] = useState('');
     const toastTimerRef = useRef(null);
+    const mainScrollRef = useRef(null);
 
     const [editorState, setEditorState] = useState({
       open: false,
@@ -1003,21 +1006,37 @@
 
     const ASSET_ORDER = ['WALLET', 'CARDS', 'WEALTH'];
 
+    useEffect(() => {
+      if (activeTab !== 'ASSETS') {
+        setIsAssetDetailFocused(false);
+      }
+      if (mainScrollRef.current) {
+        mainScrollRef.current.scrollTop = 0;
+      }
+    }, [activeTab, assetSubTab]);
+
+    const handleAssetFocusChange = useCallback((focused) => {
+      setIsAssetDetailFocused(Boolean(focused));
+      if (mainScrollRef.current) {
+        mainScrollRef.current.scrollTop = 0;
+      }
+    }, []);
+
     const swipeHandlers = useHorizontalSwipe(
       useCallback(() => {
-        if (activeTab !== 'ASSETS') return;
+        if (activeTab !== 'ASSETS' || isAssetDetailFocused) return;
         setAssetSubTab((cur) => {
           const idx = ASSET_ORDER.indexOf(cur);
           return ASSET_ORDER[Math.min(ASSET_ORDER.length - 1, idx + 1)];
         });
-      }, [activeTab]),
+      }, [activeTab, isAssetDetailFocused]),
       useCallback(() => {
-        if (activeTab !== 'ASSETS') return;
+        if (activeTab !== 'ASSETS' || isAssetDetailFocused) return;
         setAssetSubTab((cur) => {
           const idx = ASSET_ORDER.indexOf(cur);
           return ASSET_ORDER[Math.max(0, idx - 1)];
         });
-      }, [activeTab])
+      }, [activeTab, isAssetDetailFocused])
     );
 
     const handleQuickSelect = useCallback((key) => {
@@ -1036,10 +1055,15 @@
     const assetsBtnPress = useLongPress({
       onShortTap: () => {
         if (activeTab === 'ASSETS') {
-          setAssetSubTab((cur) => {
-            const idx = ASSET_ORDER.indexOf(cur);
-            return ASSET_ORDER[(idx + 1) % ASSET_ORDER.length];
-          });
+          if (isAssetDetailFocused) {
+            setAssetResetKey((k) => k + 1);
+            setIsAssetDetailFocused(false);
+          } else {
+            setAssetSubTab((cur) => {
+              const idx = ASSET_ORDER.indexOf(cur);
+              return ASSET_ORDER[(idx + 1) % ASSET_ORDER.length];
+            });
+          }
         } else {
           setActiveTab('ASSETS');
         }
@@ -1075,7 +1099,10 @@
       );
     }
 
-    const pageTitle = activeTab === 'ASSETS'
+    const hideAssetsChrome = activeTab === 'ASSETS' && isAssetDetailFocused;
+    const pageTitle = hideAssetsChrome
+      ? null
+      : activeTab === 'ASSETS'
       ? '資產'
       : activeTab === 'REPORTS'
       ? '報表'
@@ -1085,12 +1112,16 @@
 
     return (
       <div className="fixed inset-0 flex flex-col bg-black text-white overflow-hidden" style={{ height: 'var(--app-height, 100dvh)' }}>
+        {/* Dedicated Non-Scrolling iOS Status Bar Safe Shield (Prevents Scroll Overlap) */}
+        <div className="shrink-0 w-full bg-black z-30" style={{ height: 'env(safe-area-inset-top)' }} />
+
         <main
-          {...(activeTab === 'ASSETS' ? swipeHandlers : {})}
-          className="app-scroll-main flex-1 overflow-y-auto px-4 safe-top max-w-[480px] w-full mx-auto"
+          ref={mainScrollRef}
+          {...(activeTab === 'ASSETS' && !isAssetDetailFocused ? swipeHandlers : {})}
+          className="app-scroll-main flex-1 overflow-y-auto px-4 pt-2.5 max-w-[480px] w-full mx-auto"
         >
           {pageTitle && (
-            <div className="pt-1 pb-3 flex items-center justify-between">
+            <div className="pt-0.5 pb-3 flex items-center justify-between">
               <h1 className="text-[24px] font-bold tracking-tight text-white">{pageTitle}</h1>
               <button
                 type="button"
@@ -1103,7 +1134,7 @@
           )}
 
           {activeTab === 'LEDGER' && (
-            <div className="pt-1">
+            <div className="pt-0.5">
               <LedgerView
                 state={state}
                 showToast={showToast}
@@ -1113,18 +1144,37 @@
           )}
 
           {activeTab === 'ASSETS' && (
-            <div className="space-y-4">
-              <SegmentedControl
-                value={assetSubTab}
-                onChange={setAssetSubTab}
-                options={[
-                  { value: 'WALLET', label: '銀包' },
-                  { value: 'CARDS', label: '信用卡' },
-                  { value: 'WEALTH', label: '定存投資' }
-                ]}
-              />
-              {assetSubTab === 'WALLET' && <WalletView state={state} showToast={showToast} />}
-              {assetSubTab === 'CARDS' && <CreditCardsView state={state} showToast={showToast} />}
+            <div className={hideAssetsChrome ? '' : 'space-y-4'}>
+              {!hideAssetsChrome && (
+                <SegmentedControl
+                  value={assetSubTab}
+                  onChange={(next) => {
+                    setIsAssetDetailFocused(false);
+                    setAssetSubTab(next);
+                  }}
+                  options={[
+                    { value: 'WALLET', label: '銀包' },
+                    { value: 'CARDS', label: '信用卡' },
+                    { value: 'WEALTH', label: '定存投資' }
+                  ]}
+                />
+              )}
+              {assetSubTab === 'WALLET' && (
+                <WalletView
+                  state={state}
+                  showToast={showToast}
+                  onFocusChange={handleAssetFocusChange}
+                  resetSignal={assetResetKey}
+                />
+              )}
+              {assetSubTab === 'CARDS' && (
+                <CreditCardsView
+                  state={state}
+                  showToast={showToast}
+                  onFocusChange={handleAssetFocusChange}
+                  resetSignal={assetResetKey}
+                />
+              )}
               {assetSubTab === 'WEALTH' && <InvestmentsTab state={state} />}
             </div>
           )}

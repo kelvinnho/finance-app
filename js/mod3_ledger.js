@@ -2106,7 +2106,38 @@
         return c ? c.name : '信用卡';
       }
       const a = state.accounts.find((x) => x.id === tx.accountId);
-      return a ? a.name : '帳戶';
+      if (!a) return '帳戶';
+      if (a.balances && a.balances.length > 1 && tx.balanceId) {
+        const b = a.balances.find((x) => x.id === tx.balanceId);
+        if (b) return `${a.name} (${b.currency})`;
+      }
+      return a.name;
+    };
+
+    const getToAccountLabel = (tx) => {
+      if (!tx.toAccountId) return null;
+      if (tx.toAccountKind === 'CARD') {
+        const c = state.cards.find((x) => x.id === tx.toAccountId);
+        return c ? c.name : '信用卡';
+      }
+      const a = state.accounts.find((x) => x.id === tx.toAccountId);
+      if (!a) return '目標帳戶';
+      if (a.balances && a.balances.length > 1 && tx.toBalanceId) {
+        const b = a.balances.find((x) => x.id === tx.toBalanceId);
+        if (b) return `${a.name} (${b.currency})`;
+      }
+      return a.name;
+    };
+
+    const getTxTypeMeta = (tx) => {
+      if (tx.cardReimbursement) return { label: '跨戶歸墊', cls: 'bg-amber-500/20 text-amber-300' };
+      if (tx.type === 'TRANSFER' && tx.toAccountKind === 'CARD') return { label: '主戶找數', cls: 'bg-emerald-500/15 text-emerald-300' };
+      if (tx.type === 'TRANSFER') return { label: '帳戶轉帳', cls: 'bg-sky-500/15 text-sky-300' };
+      if (tx.type === 'INCOME') return { label: '收入', cls: 'bg-emerald-500/15 text-emerald-300' };
+      if (tx.type === 'RECEIVABLE') return { label: '應收代墊', cls: 'bg-amber-500/20 text-amber-300' };
+      if (tx.type === 'PAYABLE') return { label: '借貸入帳', cls: 'bg-violet-500/20 text-violet-300' };
+      if (tx.type === 'LOAN_SETTLEMENT') return { label: '結清紀錄', cls: 'bg-emerald-500/15 text-emerald-300' };
+      return { label: '支出', cls: 'bg-white/10 text-zinc-300' };
     };
 
     const getCategoryObj = (catId) => state.categories.find((c) => c.id === catId);
@@ -2291,15 +2322,29 @@
                     const isSettlement = tx.type === 'LOAN_SETTLEMENT';
                     const isPositive = tx.type === 'INCOME' || tx.type === 'PAYABLE' || (isSettlement && tx.settlementDirection === 'IN');
                     const isTransfer = tx.type === 'TRANSFER';
+                    const isReimb = Boolean(tx.cardReimbursement);
+                    const isCardPay = isTransfer && tx.toAccountKind === 'CARD';
                     const showPoolTag = tx.type === 'EXPENSE' || tx.type === 'RECEIVABLE';
                     const pool = showPoolTag ? getPoolObj(tx.poolId) : null;
+                    const fromLabel = getAccountLabel(tx);
+                    const toLabel = isTransfer ? getToAccountLabel(tx) : null;
+                    const typeMeta = getTxTypeMeta(tx);
+                    const poolSettleBank = pool ? Store.getPoolSettlementLabel(pool.id, state) : null;
+                    const reimbCardObj = isReimb && tx.cardReimbursement.cardId
+                      ? state.cards.find((c) => c.id === tx.cardReimbursement.cardId)
+                      : null;
+                    const isCrossCurTx = Boolean(tx.settledCurrency && tx.currency && tx.settledCurrency !== tx.currency);
 
                     const iconName = isTransfer
                       ? 'swap'
                       : isLoan || isSettlement
                       ? 'users'
                       : (cat ? cat.icon : 'tag');
-                    const iconColor = isTransfer
+                    const iconColor = isReimb
+                      ? '#FBBF24'
+                      : isCardPay
+                      ? '#34D399'
+                      : isTransfer
                       ? '#38BDF8'
                       : isLoan
                       ? '#FBBF24'
@@ -2312,17 +2357,30 @@
                         <button
                           type="button"
                           onClick={() => setExpandedTxId(isExpanded ? null : tx.id)}
-                          className={`w-full px-3.5 py-3 flex items-center justify-between gap-3 text-left transition ${
-                            isExpanded ? 'bg-white/[0.04]' : 'active:bg-white/[0.03]'
+                          className={`w-full px-3.5 py-3 flex items-start justify-between gap-3 text-left transition ${
+                            isExpanded ? 'bg-[#1B1B23]' : 'active:bg-white/[0.03]'
                           }`}
                         >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-9 h-9 rounded-full bg-white/[0.06] flex items-center justify-center shrink-0" style={{ color: iconColor }}>
+                          <div className="flex items-start gap-3 min-w-0 flex-1">
+                            <div className="w-9 h-9 rounded-full bg-white/[0.06] flex items-center justify-center shrink-0 mt-0.5" style={{ color: iconColor }}>
                               <Icon name={iconName} size={17} />
                             </div>
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[14px] font-semibold text-white truncate">{tx.title}</span>
+                            <div className="min-w-0 flex-1">
+                              {/* Full Un-Truncated Title (Wraps cleanly up to 2 lines) */}
+                              <div className="flex items-start gap-1.5 flex-wrap">
+                                <span className="text-[14px] font-semibold text-white leading-snug break-words">
+                                  {tx.title}
+                                </span>
+                                {isReimb && (
+                                  <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/20 text-amber-300 whitespace-nowrap shrink-0">
+                                    {tx.cardReimbursement.cleared ? '已清帳' : '歸墊'}
+                                  </span>
+                                )}
+                                {isCardPay && (
+                                  <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 whitespace-nowrap shrink-0">
+                                    找數
+                                  </span>
+                                )}
                                 {isLoan && (
                                   <span
                                     className={`px-1.5 py-0.5 rounded-md text-[10px] font-semibold whitespace-nowrap shrink-0 ${
@@ -2341,26 +2399,53 @@
                                     結清
                                   </span>
                                 )}
-                              </div>
-                              <div className="text-[11px] text-zinc-400 truncate mt-0.5 flex items-center gap-1.5">
-                                <span className="truncate">{getAccountLabel(tx)}</span>
-                                {pool && (
-                                  <span className="inline-flex items-center gap-1 shrink-0 text-zinc-500">
-                                    ·
-                                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: pool.color }} />
-                                    {pool.name}
+                                {!isTransfer && tx.accountKind === 'CARD' && tx.billingBucket && (
+                                  <span className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-semibold whitespace-nowrap shrink-0 ${
+                                    tx.billingBucket === 'BILLED' ? 'bg-amber-500/15 text-amber-300' : 'bg-sky-500/15 text-sky-300'
+                                  }`}>
+                                    {tx.billingBucket === 'BILLED' ? '本期' : '下期'}
                                   </span>
                                 )}
-                                <span className="shrink-0 text-zinc-500">· {tx.time || ''}</span>
                               </div>
+
+                              {/* Line 2: Explicit Transfer Flow OR Account + Pool + Time */}
+                              {isTransfer && toLabel ? (
+                                <div className="text-[11.5px] text-zinc-300 mt-1 flex items-center flex-wrap gap-x-1 gap-y-0.5 leading-snug">
+                                  <span>{fromLabel}</span>
+                                  <span className={isReimb ? 'text-amber-400 font-bold' : 'text-sky-400 font-bold'}>➔</span>
+                                  <span className={isCardPay || isReimb ? 'text-emerald-300 font-medium' : 'text-zinc-200'}>{toLabel}</span>
+                                  <span className="text-zinc-500">· {tx.time || ''}</span>
+                                </div>
+                              ) : (
+                                <div className="text-[11.5px] text-zinc-400 mt-0.5 flex items-center flex-wrap gap-x-1.5 gap-y-0.5">
+                                  <span>{fromLabel}</span>
+                                  {pool && (
+                                    <span className="inline-flex items-center gap-1 text-zinc-400">
+                                      ·
+                                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: pool.color }} />
+                                      {pool.name}
+                                    </span>
+                                  )}
+                                  <span className="text-zinc-500">· {tx.time || ''}</span>
+                                </div>
+                              )}
+
+                              {/* Line 3: Compact Inline Note Preview (Collapsed View) */}
+                              {!isExpanded && tx.note && (
+                                <div className="text-[11px] text-zinc-500 mt-1 line-clamp-1 truncate">
+                                  {tx.note}
+                                </div>
+                              )}
                             </div>
                           </div>
 
-                          <div className="text-right shrink-0">
+                          <div className="text-right shrink-0 pt-0.5">
                             <div
-                              className={`text-[14px] font-semibold tabular-nums whitespace-nowrap ${
+                              className={`text-[14.5px] font-semibold tabular-nums whitespace-nowrap ${
                                 isPositive
                                   ? 'text-emerald-400'
+                                  : isReimb
+                                  ? 'text-amber-300'
                                   : isTransfer
                                   ? 'text-sky-300'
                                   : 'text-white'
@@ -2370,31 +2455,119 @@
                                 ? Store.formatMoney(tx.amount, tx.currency)
                                 : Store.formatMoney(isPositive ? tx.amount : -tx.amount, tx.currency, { showPlus: isPositive })}
                             </div>
+                            {isCrossCurTx && (
+                              <div className="text-[10px] text-amber-300/80 tabular-nums mt-0.5 whitespace-nowrap">
+                                ➔ {Store.formatMoney(tx.settledAmount, tx.settledCurrency)}
+                              </div>
+                            )}
                           </div>
                         </button>
 
+                        {/* Complete Elevated Detail Card on Single Tap (Zero Need to Open Edit) */}
                         {isExpanded && (
-                          <div className="px-3.5 pb-3.5 pt-1.5 bg-white/[0.03] border-t border-white/[0.05] space-y-2.5">
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-400">
+                          <div className="px-3.5 pb-3.5 pt-2.5 bg-[#1B1B23] border-t border-white/[0.08] space-y-3">
+                            <div className="rounded-xl bg-[#111116] border border-white/[0.08] p-3 space-y-2 text-[12px]">
+                              <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-white/[0.06]">
+                                <span className={`px-2 py-0.5 rounded-md text-[10.5px] font-semibold ${typeMeta.cls}`}>
+                                  {typeMeta.label}
+                                </span>
+                                <span className="text-[11.5px] text-zinc-400 tabular-nums">
+                                  {tx.date} · {tx.time || '--:--'}
+                                </span>
+                              </div>
+
+                              {/* Full Transfer Flow OR Account */}
+                              {isTransfer && toLabel ? (
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-zinc-500 shrink-0">資金流向</span>
+                                  <span className="text-zinc-100 font-medium text-right break-words">
+                                    {fromLabel} <span className="text-amber-400 font-bold">➔</span> {toLabel}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-zinc-500 shrink-0">{tx.accountKind === 'CARD' ? '刷卡卡片' : '關聯帳戶'}</span>
+                                  <span className="text-zinc-100 font-medium text-right break-words">{fromLabel}</span>
+                                </div>
+                              )}
+
+                              {/* Cross-Currency Exact Amounts */}
+                              {isCrossCurTx && (
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-zinc-500 shrink-0">跨幣種折算</span>
+                                  <span className="text-amber-300 font-medium tabular-nums text-right">
+                                    {Store.formatMoney(tx.amount, tx.currency)} ➔ {Store.formatMoney(tx.settledAmount, tx.settledCurrency)}
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* Category -> Sub-Category */}
                               {cat && (
-                                <span>
-                                  類別：{cat.name}{tx.subCategoryName ? ` ▸ ${tx.subCategoryName}` : ''}
-                                </span>
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-zinc-500 shrink-0">分類項目</span>
+                                  <span className="text-zinc-100 text-right">
+                                    {cat.name}{tx.subCategoryName ? ` ▸ ${tx.subCategoryName}` : ''}
+                                  </span>
+                                </div>
                               )}
+
+                              {/* Funding Pool + Bound Settlement Bank */}
                               {pool && (
-                                <span className="inline-flex items-center gap-1">
-                                  歸屬池：
-                                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: pool.color }} />
-                                  {pool.name}
-                                </span>
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-zinc-500 shrink-0">歸屬資金池</span>
+                                  <span className="text-zinc-100 text-right inline-flex items-center justify-end gap-1.5 flex-wrap">
+                                    <span className="inline-flex items-center gap-1 font-medium">
+                                      <span className="w-2 h-2 rounded-full" style={{ background: pool.color }} />
+                                      {pool.name}
+                                    </span>
+                                    {poolSettleBank && (
+                                      <span className="text-[11px] text-emerald-300">（{poolSettleBank}找數）</span>
+                                    )}
+                                  </span>
+                                </div>
                               )}
-                              {tx.accountKind === 'CARD' && tx.billingBucket && (
-                                <span className={tx.billingBucket === 'BILLED' ? 'text-amber-300' : 'text-sky-300'}>
-                                  帳期：{tx.billingBucket === 'BILLED' ? '本期應繳' : '未出帳下期'}
-                                </span>
+
+                              {/* Credit Card Billing Period */}
+                              {!isTransfer && tx.accountKind === 'CARD' && tx.billingBucket && (
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-zinc-500 shrink-0">入帳帳期</span>
+                                  <span className={`font-semibold ${tx.billingBucket === 'BILLED' ? 'text-amber-300' : 'text-sky-300'}`}>
+                                    {tx.billingBucket === 'BILLED' ? '本期已出帳應繳' : '未出帳下期累積'}
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* Reimbursement Target Card Info */}
+                              {isReimb && (
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-zinc-500 shrink-0">對應信用卡</span>
+                                  <span className="text-amber-300 font-medium text-right">
+                                    {reimbCardObj ? reimbCardObj.name : '信用卡'} · {tx.cardReimbursement.cleared ? '已隨主戶找數清帳' : '待主戶找數'}
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* Loan Counterparty & Status */}
+                              {(isLoan || isSettlement) && (
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-zinc-500 shrink-0">往來對象</span>
+                                  <span className="text-amber-300 font-medium text-right">
+                                    {tx.counterparty || '未指定對象'}
+                                    {isLoan && `（${tx.isLoanSettled ? '已結清' : (tx.type === 'RECEIVABLE' ? '待收回' : '待償還')}）`}
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* Full Un-Truncated Note */}
+                              {tx.note && (
+                                <div className="pt-1.5 border-t border-white/[0.06] space-y-0.5">
+                                  <div className="text-[11px] text-zinc-500">備註說明</div>
+                                  <div className="text-[12.5px] text-zinc-200 leading-relaxed break-words">
+                                    {tx.note}
+                                  </div>
+                                </div>
                               )}
                             </div>
-                            {tx.note && <div className="text-[12px] text-zinc-400">備註：{tx.note}</div>}
 
                             {isLoan && !tx.isLoanSettled && (
                               <button
@@ -2425,7 +2598,7 @@
                                 <button
                                   type="button"
                                   onClick={() => onEditTx(tx)}
-                                  className="flex-1 py-2 rounded-xl bg-white/[0.08] text-zinc-200 text-[12px] font-medium flex items-center justify-center gap-1"
+                                  className="flex-1 py-2.5 rounded-xl bg-white/[0.10] text-white text-[12.5px] font-medium flex items-center justify-center gap-1"
                                 >
                                   <Icon name="edit" size={14} /> 編輯
                                 </button>
@@ -2433,7 +2606,7 @@
                               <button
                                 type="button"
                                 onClick={() => handleDeleteTx(tx)}
-                                className="flex-1 py-2 rounded-xl bg-rose-500/15 border border-rose-500/25 text-rose-400 text-[12px] font-medium flex items-center justify-center gap-1"
+                                className="flex-1 py-2.5 rounded-xl bg-rose-500/15 border border-rose-500/25 text-rose-400 text-[12.5px] font-medium flex items-center justify-center gap-1"
                               >
                                 <Icon name="trash" size={14} />
                                 {isLoan && tx.isLoanSettled

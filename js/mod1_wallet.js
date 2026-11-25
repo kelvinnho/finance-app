@@ -10,7 +10,7 @@
     { value: 'CASH', label: '實體現金' }
   ];
 
-  function WalletView({ state, showToast }) {
+  function WalletView({ state, showToast, onFocusChange, resetSignal }) {
     const { Icon, BottomSheet, NumericInput } = window.WealthUI;
     const Store = window.WealthStore;
 
@@ -57,18 +57,40 @@
       return focusedAcc.balances.find((b) => b.id === pickedId) || focusedAcc.balances[0];
     }, [focusedAcc, selectedBalMap]);
 
+    const syncEditDraftFromAcc = (acc) => {
+      if (!acc) return;
+      setEditCardDraft({
+        name: acc.name,
+        subtitle: acc.subtitle || '',
+        type: acc.type || 'BANK',
+        theme: acc.theme || 'obsidian'
+      });
+    };
+
     useEffect(() => {
       if (focusedAcc) {
-        setEditCardDraft({
-          name: focusedAcc.name,
-          subtitle: focusedAcc.subtitle || '',
-          type: focusedAcc.type || 'BANK',
-          theme: focusedAcc.theme || 'obsidian'
-        });
+        syncEditDraftFromAcc(focusedAcc);
       } else {
         setFlipped(false);
       }
     }, [focusedAcc]);
+
+    useEffect(() => {
+      if (onFocusChange) onFocusChange(Boolean(focusedAcc));
+    }, [focusedAcc, onFocusChange]);
+
+    useEffect(() => {
+      return () => {
+        if (onFocusChange) onFocusChange(false);
+      };
+    }, [onFocusChange]);
+
+    useEffect(() => {
+      if (resetSignal > 0) {
+        setFocusedAccId(null);
+        setFlipped(false);
+      }
+    }, [resetSignal]);
 
     // Available Bank funding options for E-Wallet top-up
     const bankSources = useMemo(() => {
@@ -154,7 +176,8 @@
 
     return (
       <div className="space-y-4 pb-6">
-        {/* Top Summary Card (2-Tier Full-Width Hierarchy — Zero Truncation) */}
+        {/* Top Summary Card (Only in Overview Mode so Focused Card sits at Top of Screen) */}
+        {!focusedAcc && (
         <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
           <div>
             <div className="flex items-center justify-between gap-2 mb-1">
@@ -181,6 +204,7 @@
             </div>
           </div>
         </div>
+        )}
 
         {/* Mode A: Apple Wallet Stacked Card Pack (卡包堆疊樣式) */}
         {!focusedAcc && (
@@ -288,10 +312,13 @@
               </button>
               <button
                 type="button"
-                onClick={() => setFlipped(!flipped)}
-                className="px-3 py-1 rounded-full bg-white/[0.08] text-[12px] text-zinc-200 active:bg-white/15"
+                onClick={() => {
+                  syncEditDraftFromAcc(focusedAcc);
+                  setFlipped((prev) => !prev);
+                }}
+                className="px-3 py-1.5 rounded-full bg-[#1C1C22] border border-white/10 text-[12px] font-medium text-zinc-200 active:bg-white/15"
               >
-                {flipped ? '返回正面' : '卡片設定'}
+                {flipped ? '取消並返回正面' : '卡片設定'}
               </button>
             </div>
 
@@ -385,7 +412,7 @@
               </div>
             ) : (
               /* Card Back: Edit Settings */
-              <div className="rounded-[22px] p-5 bg-[#141417] border border-white/15 space-y-3.5">
+              <div className="rounded-[22px] p-5 bg-[#191920] border border-white/15 shadow-2xl space-y-3.5">
                 <div className="text-[14px] font-semibold text-white">編輯帳戶卡片</div>
                 <div>
                   <label className="text-[11px] text-zinc-400 block mb-1">帳戶名稱</label>
@@ -464,37 +491,49 @@
               </div>
             )}
 
-            {/* Sub-Allocations Slicing Panel */}
-            <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-[14px] font-semibold text-white">戶口內部份額切分 ({activeBalance.currency})</div>
-                  <div className="text-[12px] text-zinc-400 mt-0.5 tabular-nums">
-                    未分配自由額：{Store.formatMoney(freeAmount, activeBalance.currency)}
-                  </div>
+            {/* Elevated Connected Card Options Tray (Distinct from Black Canvas) */}
+            <div
+              className="rounded-[24px] bg-[#18181F] border border-white/[0.13] shadow-[0_10px_30px_rgba(0,0,0,0.45)] overflow-hidden"
+              style={{ borderTop: `2px solid ${getThemeObj(focusedAcc.theme).accent}88` }}
+            >
+              <div className="px-4 py-2.5 bg-white/[0.04] border-b border-white/[0.08] flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: getThemeObj(focusedAcc.theme).accent }} />
+                  <span className="text-[12px] font-semibold text-zinc-200 truncate">「{focusedAcc.name}」卡片專屬選項</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAllocDraft({ name: '', amount: Math.min(5000, freeAmount || 5000), locked: true, poolId: 'pool_reserve' });
-                    setAddAllocOpen(true);
-                  }}
-                  className="px-3 py-1.5 rounded-full bg-white/[0.08] text-[12px] font-medium text-white active:bg-white/15"
-                >
-                  + 份額
-                </button>
+                <span className="text-[11px] text-zinc-400 shrink-0 tabular-nums">{activeBalance.currency} 份額管理</span>
               </div>
 
-              {activeAllocations.length === 0 ? (
-                <div className="py-4 text-center text-[12px] text-zinc-500">
-                  此幣種目前全額為自由活期，可新增份額來劃分凍結底倉或專項目標。
+              <div className="p-4 space-y-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[14.5px] font-semibold text-white">戶口內部份額切分 ({activeBalance.currency})</div>
+                    <div className="text-[12px] text-zinc-400 mt-0.5 tabular-nums">
+                      未分配自由額：{Store.formatMoney(freeAmount, activeBalance.currency)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAllocDraft({ name: '', amount: Math.min(5000, freeAmount || 5000), locked: true, poolId: 'pool_reserve' });
+                      setAddAllocOpen(true);
+                    }}
+                    className="px-3 py-1.5 rounded-full bg-white text-black text-[12px] font-bold active:scale-95 transition shrink-0"
+                  >
+                    + 新增份額
+                  </button>
                 </div>
-              ) : (
-                <div className="space-y-3">
-                  {activeAllocations.map((al) => {
-                    const maxForThis = Math.max(al.amount, Store.round2(al.amount + freeAmount));
-                    return (
-                      <div key={al.id} className="p-3 rounded-xl bg-black/40 border border-white/[0.06] space-y-2.5">
+
+                {activeAllocations.length === 0 ? (
+                  <div className="py-5 px-3 rounded-2xl bg-[#111116] border border-white/[0.07] text-center text-[12.5px] text-zinc-400">
+                    此幣種目前全額為自由活期，可新增份額來劃分凍結底倉或專項目標。
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {activeAllocations.map((al) => {
+                      const maxForThis = Math.max(al.amount, Store.round2(al.amount + freeAmount));
+                      return (
+                        <div key={al.id} className="p-3.5 rounded-2xl bg-[#111116] border border-white/[0.09] space-y-2.5">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0">
                             <button
@@ -577,8 +616,9 @@
                       </div>
                     );
                   })}
-                </div>
-              )}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Bottom Stacked Card Dock for Quick Switching */}
