@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 2 r4';
+  const APP_VERSION = 'Stage 2 r5';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -15,14 +15,54 @@
   ];
 
   const CARD_THEMES = [
-    { id: 'obsidian', name: '曜石黑', bg: 'linear-gradient(135deg, #1E1F24 0%, #0E0F12 100%)', accent: '#E5E7EB' },
-    { id: 'titanium', name: '原色鈦', bg: 'linear-gradient(135deg, #3A3A40 0%, #1C1C20 100%)', accent: '#F3F4F6' },
-    { id: 'emerald', name: '深邃綠', bg: 'linear-gradient(135deg, #0D3B2E 0%, #071F18 100%)', accent: '#34D399' },
-    { id: 'sapphire', name: '午夜藍', bg: 'linear-gradient(135deg, #12294B 0%, #091528 100%)', accent: '#60A5FA' },
-    { id: 'amber', name: '流沙金', bg: 'linear-gradient(135deg, #4B3312 0%, #241707 100%)', accent: '#FBBF24' },
-    { id: 'crimson', name: '酒紅釉', bg: 'linear-gradient(135deg, #4C1622 0%, #240A10 100%)', accent: '#FB7185' },
-    { id: 'violet', name: '星雲紫', bg: 'linear-gradient(135deg, #311B4E 0%, #160B24 100%)', accent: '#A78BFA' },
-    { id: 'copper', name: '暖古銅', bg: 'linear-gradient(135deg, #522916 0%, #261209 100%)', accent: '#FB923C' }
+    {
+      id: 'obsidian', name: '曜石黑',
+      bg: 'linear-gradient(140deg, #2A2D37 0%, #161820 52%, #0C0D12 100%)',
+      glow: 'radial-gradient(circle at 86% 14%, rgba(226,232,240,0.20) 0%, rgba(148,163,184,0.06) 36%, transparent 68%)',
+      accent: '#E2E8F0'
+    },
+    {
+      id: 'titanium', name: '原色鈦',
+      bg: 'linear-gradient(140deg, #51535F 0%, #30323C 48%, #1A1B22 100%)',
+      glow: 'radial-gradient(circle at 84% 16%, rgba(255,255,255,0.24) 0%, rgba(212,212,216,0.08) 38%, transparent 70%)',
+      accent: '#F8FAFC'
+    },
+    {
+      id: 'emerald', name: '極光綠',
+      bg: 'linear-gradient(140deg, #10634B 0%, #0A3C2E 52%, #051D17 100%)',
+      glow: 'radial-gradient(circle at 86% 14%, rgba(52,211,153,0.34) 0%, rgba(16,185,129,0.10) 38%, transparent 70%)',
+      accent: '#34D399'
+    },
+    {
+      id: 'sapphire', name: '深海藍',
+      bg: 'linear-gradient(140deg, #1C4A8A 0%, #112C56 52%, #08152B 100%)',
+      glow: 'radial-gradient(circle at 86% 14%, rgba(96,165,250,0.36) 0%, rgba(56,189,248,0.10) 38%, transparent 70%)',
+      accent: '#60A5FA'
+    },
+    {
+      id: 'amber', name: '香檳金',
+      bg: 'linear-gradient(140deg, #74501B 0%, #442D0D 52%, #1E1305 100%)',
+      glow: 'radial-gradient(circle at 86% 14%, rgba(251,191,36,0.34) 0%, rgba(245,158,11,0.10) 38%, transparent 70%)',
+      accent: '#FBBF24'
+    },
+    {
+      id: 'crimson', name: '酒紅釉',
+      bg: 'linear-gradient(140deg, #7A1F38 0%, #481122 52%, #1F070F 100%)',
+      glow: 'radial-gradient(circle at 86% 14%, rgba(251,113,133,0.34) 0%, rgba(244,63,94,0.10) 38%, transparent 70%)',
+      accent: '#FB7185'
+    },
+    {
+      id: 'violet', name: '星雲紫',
+      bg: 'linear-gradient(140deg, #532B88 0%, #2F1651 52%, #140924 100%)',
+      glow: 'radial-gradient(circle at 86% 14%, rgba(167,139,250,0.36) 0%, rgba(139,92,246,0.10) 38%, transparent 70%)',
+      accent: '#A78BFA'
+    },
+    {
+      id: 'copper', name: '日落銅',
+      bg: 'linear-gradient(140deg, #7D3E1E 0%, #49220F 52%, #200E06 100%)',
+      glow: 'radial-gradient(circle at 86% 14%, rgba(251,146,60,0.34) 0%, rgba(249,115,22,0.10) 38%, transparent 70%)',
+      accent: '#FB923C'
+    }
   ];
 
   const POOL_COLORS = ['#34D399', '#38BDF8', '#60A5FA', '#FBBF24', '#A78BFA', '#FB7185', '#FB923C', '#9CA3AF'];
@@ -976,34 +1016,83 @@
     };
   }
 
-  function getCreditCardCycle(card) {
+  function getCreditCardCycle(card, bucket) {
     const now = new Date();
     const y = now.getFullYear();
     const m = now.getMonth();
     const todayD = now.getDate();
-    const stmtDay = Math.min(28, Math.max(1, Number(card.statementDay || 15)));
-    const dueDay = Math.min(28, Math.max(1, Number(card.dueDay || 5)));
+    const todayMid = new Date(y, m, todayD);
+    const stmtDay = Math.min(28, Math.max(1, Number((card && card.statementDay) || 15)));
+    const dueDay = Math.min(28, Math.max(1, Number((card && card.dueDay) || 5)));
+    const hasBilledDebt = Boolean(card && Number(card.billed || 0) > 0);
 
-    let cycleStart, cycleEnd;
-    if (todayD <= stmtDay) {
-      cycleStart = new Date(y, m - 1, stmtDay + 1);
-      cycleEnd = new Date(y, m, stmtDay);
-    } else {
-      cycleStart = new Date(y, m, stmtDay + 1);
-      cycleEnd = new Date(y, m + 1, stmtDay);
+    // 1. 本期已出帳 (BILLED): Most recently closed statement cycle
+    const billedEnd = todayD >= stmtDay
+      ? new Date(y, m, stmtDay)
+      : new Date(y, m - 1, stmtDay);
+    const billedStart = new Date(billedEnd.getFullYear(), billedEnd.getMonth() - 1, stmtDay + 1);
+    let billedDue = new Date(billedEnd.getFullYear(), billedEnd.getMonth(), dueDay);
+    if (billedDue.getTime() <= billedEnd.getTime()) {
+      billedDue = new Date(billedEnd.getFullYear(), billedEnd.getMonth() + 1, dueDay);
     }
 
-    let dueDate = new Date(cycleEnd.getFullYear(), cycleEnd.getMonth(), dueDay);
-    if (dueDate <= cycleEnd) {
-      dueDate = new Date(cycleEnd.getFullYear(), cycleEnd.getMonth() + 1, dueDay);
+    // 2. 未出帳下期 (UNBILLED): Currently accumulating cycle (closing next statementDay)
+    const unbilledStart = new Date(billedEnd.getFullYear(), billedEnd.getMonth(), billedEnd.getDate() + 1);
+    const unbilledEnd = new Date(billedEnd.getFullYear(), billedEnd.getMonth() + 1, stmtDay);
+    let unbilledDue = new Date(unbilledEnd.getFullYear(), unbilledEnd.getMonth(), dueDay);
+    if (unbilledDue.getTime() <= unbilledEnd.getTime()) {
+      unbilledDue = new Date(unbilledEnd.getFullYear(), unbilledEnd.getMonth() + 1, dueDay);
     }
-    const daysToDue = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-    const fmt = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
-    return {
-      periodLabel: `${fmt(cycleStart)} – ${fmt(cycleEnd)}`,
-      dueLabel: `${dueDate.getMonth() + 1}月${dueDate.getDate()}日`,
-      daysToDue: Math.max(0, daysToDue)
+
+    const fmtSlash = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
+    const fmtZh = (d) => `${d.getMonth() + 1}月${d.getDate()}日`;
+
+    const buildCycleInfo = (startD, endD, dueD, kind) => {
+      const diffDays = Math.round((dueD.getTime() - todayMid.getTime()) / 86400000);
+      const isOverdue = kind === 'BILLED' && diffDays < 0 && hasBilledDebt;
+      const isUrgent = kind === 'BILLED' && diffDays >= 0 && diffDays <= 5 && hasBilledDebt;
+      let countdownText;
+      if (diffDays < 0) {
+        countdownText = hasBilledDebt && kind === 'BILLED'
+          ? `已逾期 ${Math.abs(diffDays)} 天`
+          : `已過到期日`;
+      } else if (diffDays === 0) {
+        countdownText = '今日到期';
+      } else {
+        countdownText = `${diffDays} 天後到期`;
+      }
+      return {
+        kind,
+        monthNum: endD.getMonth() + 1,
+        monthLabel: `${endD.getMonth() + 1}月帳單`,
+        periodLabel: `${fmtSlash(startD)} – ${fmtSlash(endD)}`,
+        stmtDateLabel: `${fmtSlash(endD)} 截數`,
+        dueLabel: fmtZh(dueD),
+        shortDueLabel: fmtSlash(dueD),
+        daysToDue: diffDays,
+        countdownText,
+        isOverdue,
+        isUrgent
+      };
     };
+
+    const billed = buildCycleInfo(billedStart, billedEnd, billedDue, 'BILLED');
+    const unbilled = buildCycleInfo(unbilledStart, unbilledEnd, unbilledDue, 'UNBILLED');
+
+    let active;
+    if (bucket === 'BILLED') {
+      active = billed;
+    } else if (bucket === 'UNBILLED') {
+      active = unbilled;
+    } else {
+      active = hasBilledDebt ? billed : unbilled;
+    }
+
+    return Object.assign({}, active, {
+      billed,
+      unbilled,
+      active
+    });
   }
 
   function getAutoCardBillingBucket(card, txDateISO) {

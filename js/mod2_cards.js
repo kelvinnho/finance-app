@@ -1,7 +1,49 @@
+// mod2_cards.js · Stage 2 r5
 (function () {
   'use strict';
 
   const { useState, useMemo, useEffect } = React;
+
+  function CardMetallicLayers({ theme }) {
+    return (
+      <>
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{ background: theme.glow || 'radial-gradient(circle at 86% 14%, rgba(255,255,255,0.20) 0%, transparent 65%)' }}
+        />
+        <div
+          className="absolute inset-0 pointer-events-none opacity-45"
+          style={{ background: 'linear-gradient(122deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.02) 34%, transparent 56%)' }}
+        />
+        <div className="absolute -right-10 -bottom-10 w-40 h-40 rounded-full border border-white/[0.08] pointer-events-none" />
+        <div className="absolute -right-2 -bottom-2 w-24 h-24 rounded-full border border-white/[0.05] pointer-events-none" />
+        <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/40 to-transparent pointer-events-none" />
+      </>
+    );
+  }
+
+  function EmvChip({ small }) {
+    return (
+      <svg
+        width={small ? 24 : 30}
+        height={small ? 18 : 22}
+        viewBox="0 0 32 24"
+        fill="none"
+        className="shrink-0 opacity-90 drop-shadow-sm"
+      >
+        <defs>
+          <linearGradient id="chipGold" x1="0" y1="0" x2="32" y2="24" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FDE68A" />
+            <stop offset="50%" stopColor="#D4A353" />
+            <stop offset="100%" stopColor="#926C2C" />
+          </linearGradient>
+        </defs>
+        <rect x="0.75" y="0.75" width="30.5" height="22.5" rx="4.25" fill="url(#chipGold)" stroke="rgba(255,255,255,0.35)" strokeWidth="1" />
+        <path d="M11 1V23M21 1V23M1 9H11M21 9H31M1 15H11M21 15H31" stroke="rgba(0,0,0,0.28)" strokeWidth="1" />
+        <rect x="12.5" y="7.5" width="7" height="9" rx="1.5" stroke="rgba(0,0,0,0.28)" strokeWidth="1" />
+      </svg>
+    );
+  }
 
   function CreditCardsView({ state, showToast, onFocusChange, resetSignal }) {
     const { Icon, BottomSheet, NumericInput, SegmentedControl } = window.WealthUI;
@@ -463,7 +505,7 @@
       }
     };
 
-    const focusedCycle = focusedCard ? Store.getCreditCardCycle(focusedCard) : null;
+    const focusedCycle = focusedCard ? Store.getCreditCardCycle(focusedCard, bucketFilter) : null;
     const focusedTotal = focusedCard ? Store.round2((focusedCard.billed || 0) + (focusedCard.unbilled || 0)) : 0;
     const focusedRatio = focusedCard && focusedCard.creditLimit > 0
       ? Math.min(100, Math.round((focusedTotal / focusedCard.creditLimit) * 100))
@@ -481,12 +523,12 @@
             ) : (
               <div className="relative pt-0.5">
                 {state.cards.map((card, idx) => {
-                  const cycle = Store.getCreditCardCycle(card);
+                  const cardBucket = (card.billed || 0) > 0 ? 'BILLED' : 'UNBILLED';
+                  const cycle = Store.getCreditCardCycle(card, cardBucket);
                   const spent = Store.round2((card.billed || 0) + (card.unbilled || 0));
                   const ratio = card.creditLimit > 0 ? Math.min(100, Math.round((spent / card.creditLimit) * 100)) : 0;
                   const theme = getThemeObj(card.theme);
                   const isLast = idx === state.cards.length - 1;
-                  const cardBucket = (card.billed || 0) > 0 ? 'BILLED' : 'UNBILLED';
                   const plan = Store.getCardSettlementPlan(card.id, cardBucket, state);
 
                   return (
@@ -498,47 +540,54 @@
                         background: theme.bg,
                         zIndex: idx + 1
                       }}
-                      className={`relative block w-full rounded-[22px] border border-white/15 shadow-[0_-10px_28px_rgba(0,0,0,0.55)] text-left transition-transform active:scale-[0.985] overflow-hidden ${
+                      className={`relative block w-full rounded-[24px] border border-white/20 shadow-[0_-12px_30px_rgba(0,0,0,0.6)] text-left transition-transform active:scale-[0.985] overflow-hidden ${
                         idx > 0 ? '-mt-12' : ''
-                      } ${isLast ? 'p-5 min-h-[168px]' : 'px-5 pt-4 pb-16 min-h-[142px]'}`}
+                      } ${isLast ? 'p-5 min-h-[178px]' : 'px-5 pt-4 pb-16 min-h-[146px]'}`}
                     >
-                      <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/30 to-transparent pointer-events-none" />
+                      <CardMetallicLayers theme={theme} />
 
-                      <div className="flex items-start justify-between gap-2.5">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: theme.accent }} />
-                            <span className="text-[16px] font-bold text-white truncate">{card.name}</span>
+                      <div className="relative flex items-start justify-between gap-2.5">
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          <div className="pt-0.5">
+                            <EmvChip small />
                           </div>
-                          <div className="text-[11px] text-white/70 truncate mt-0.5 pl-[18px] tabular-nums">
-                            {plan.mainBank ? plan.mainBank.shortName : '未設主戶'} · {card.statementDay}日截 · {cycle.daysToDue}天後到期
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-[16px] font-bold text-white truncate">{card.name}</span>
+                              {card.last4 && (
+                                <span className="text-[11px] text-white/55 tabular-nums shrink-0">•{card.last4}</span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-white/75 truncate mt-0.5 tabular-nums">
+                              {plan.mainBank ? plan.mainBank.shortName : '未設主戶'} · {cardBucket === 'BILLED' ? `本期 ${cycle.shortDueLabel} 到期 (${cycle.countdownText})` : `下期 ${cycle.shortDueLabel} 到期`}
+                            </div>
                           </div>
                         </div>
 
                         <div className="text-right shrink-0">
-                          <div className="text-[17px] font-bold text-white tabular-nums tracking-tight whitespace-nowrap">
+                          <div className="text-[18px] font-bold text-white tabular-nums tracking-tight whitespace-nowrap">
                             {Store.formatMoney(spent, card.currency)}
                           </div>
                           <div className="text-[10.5px] mt-0.5 whitespace-nowrap tabular-nums">
                             {plan.totalInboundRemaining > 0 ? (
-                              <span className="px-1.5 py-0.5 rounded bg-amber-400/25 text-amber-200 font-semibold">
+                              <span className="px-1.5 py-0.5 rounded bg-amber-400/25 border border-amber-300/35 text-amber-200 font-semibold">
                                 待轉 {Store.formatMoney(plan.totalInboundRemaining, card.currency)}
                               </span>
                             ) : (card.billed || 0) > 0 ? (
                               <span className="text-amber-300 font-medium">本期 {Store.formatMoney(card.billed, card.currency)}</span>
                             ) : (
-                              <span className="text-white/60">未出帳 {ratio}%</span>
+                              <span className="text-sky-200/80">未出帳 {ratio}%</span>
                             )}
                           </div>
                         </div>
                       </div>
 
                       {isLast && (
-                        <div className="mt-6 space-y-2.5">
-                          <div className="h-1.5 rounded-full bg-black/35 overflow-hidden">
-                            <div className="h-full bg-white/85 rounded-full" style={{ width: `${ratio}%` }} />
+                        <div className="relative mt-6 space-y-2.5">
+                          <div className="h-1.5 rounded-full bg-black/40 overflow-hidden">
+                            <div className="h-full bg-gradient-to-r from-white/90 to-white/60 rounded-full" style={{ width: `${ratio}%` }} />
                           </div>
-                          <div className="flex items-center justify-between text-[11px] text-white/65 tabular-nums">
+                          <div className="flex items-center justify-between text-[11px] text-white/70 tabular-nums">
                             <span>
                               {(card.billed || 0) > 0
                                 ? `本期 ${Store.formatMoney(card.billed, card.currency)} · 下期 ${Store.formatMoney(card.unbilled || 0, card.currency)}`
@@ -635,113 +684,197 @@
             </div>
 
             {/* Card Front or Back */}
-            {!flipped ? (
-              <div
-                className="rounded-[22px] p-5 border border-white/15 shadow-2xl relative overflow-hidden space-y-4"
-                style={{ background: getThemeObj(focusedCard.theme).bg }}
-              >
-                <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/30 to-transparent pointer-events-none" />
+            {!flipped ? (() => {
+              const cardTheme = getThemeObj(focusedCard.theme);
+              const isBilledView = bucketFilter === 'BILLED';
+              const isUnbilledView = bucketFilter === 'UNBILLED';
+              const activeInfo = focusedCycle.active;
+              const billedInfo = focusedCycle.billed;
+              const unbilledInfo = focusedCycle.unbilled;
 
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[18px] font-bold text-white truncate">{focusedCard.name}</div>
-                    <div className="text-[12px] text-white/65 mt-0.5 tabular-nums">
-                      {focusedCard.last4 ? `•••• ${focusedCard.last4} · ` : ''}截數期 {focusedCycle.periodLabel}
+              const heroLabel = isBilledView
+                ? `本期應繳 · ${billedInfo.monthLabel} (${focusedCard.currency})`
+                : isUnbilledView
+                ? `下期累積 · ${unbilledInfo.monthLabel} (${focusedCard.currency})`
+                : `總累積待繳 (${focusedCard.currency})`;
+
+              const heroAmount = isBilledView
+                ? Store.round2(focusedCard.billed || 0)
+                : isUnbilledView
+                ? Store.round2(focusedCard.unbilled || 0)
+                : focusedTotal;
+
+              const periodHeadline = isBilledView
+                ? `本期 ${billedInfo.monthLabel} · ${billedInfo.periodLabel}`
+                : isUnbilledView
+                ? `下期 ${unbilledInfo.monthLabel} · ${unbilledInfo.periodLabel}`
+                : `${billedInfo.monthLabel}＋${unbilledInfo.monthLabel}`;
+
+              const badgeToneClass = activeInfo.isOverdue
+                ? 'bg-rose-500/30 border-rose-300/60 text-rose-100'
+                : isUnbilledView
+                ? 'bg-sky-500/25 border-sky-300/45 text-sky-100'
+                : 'bg-amber-400/25 border-amber-300/50 text-amber-200';
+
+              const badgeText = isBilledView
+                ? `${billedInfo.countdownText} (${billedInfo.dueLabel})`
+                : isUnbilledView
+                ? `${unbilledInfo.countdownText} (${unbilledInfo.dueLabel})`
+                : (focusedCard.billed > 0
+                    ? `本期 ${billedInfo.dueLabel} 到期`
+                    : `下期 ${unbilledInfo.dueLabel} 到期`);
+
+              return (
+                <div
+                  className="rounded-[24px] p-5 border border-white/20 shadow-[0_18px_40px_rgba(0,0,0,0.65)] relative overflow-hidden space-y-4"
+                  style={{ background: cardTheme.bg }}
+                >
+                  <CardMetallicLayers theme={cardTheme} />
+
+                  {/* Row 1: EMV Chip + Card Name + Dynamic Period Deadline Pill */}
+                  <div className="relative flex items-start justify-between gap-2">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <div className="pt-0.5">
+                        <EmvChip />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-[18px] font-bold text-white truncate leading-tight">{focusedCard.name}</span>
+                          {focusedCard.last4 && (
+                            <span className="text-[11.5px] text-white/60 tabular-nums shrink-0">•••• {focusedCard.last4}</span>
+                          )}
+                        </div>
+                        <div className="text-[11.5px] text-white/80 mt-1 tabular-nums truncate">
+                          {periodHeadline}
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <span className="px-2.5 py-1 rounded-full bg-black/35 border border-white/15 text-[11px] font-semibold text-amber-300 whitespace-nowrap shrink-0">
-                    {focusedCycle.daysToDue} 天後到期 ({focusedCycle.dueLabel})
-                  </span>
-                </div>
 
-                {/* Highlighted Main Settlement Bank Pill */}
-                <div className="px-3 py-2 rounded-xl bg-black/35 border border-white/15 flex items-center justify-between gap-2">
-                  <span className="text-[11px] text-white/70 shrink-0">主找數戶口</span>
-                  <button
-                    type="button"
-                    onClick={() => toggleCardSettings(true)}
-                    className="text-[12.5px] font-bold text-emerald-300 truncate active:opacity-75"
-                  >
-                    {focusedPlan.mainBank ? focusedPlan.mainBank.label : '尚未設定（點此指定）'} ▾
-                  </button>
-                </div>
+                  {/* Row 2: Dynamic Deadline Strip + Main Bank Selector */}
+                  <div className="relative flex items-center justify-between gap-2 flex-wrap">
+                    <span className={`px-2.5 py-1 rounded-full border text-[11px] font-bold whitespace-nowrap tabular-nums ${badgeToneClass}`}>
+                      {badgeText}
+                    </span>
 
-                <div>
-                  <div className="text-[11px] text-white/60 mb-1">總累積待繳 ({focusedCard.currency})</div>
-                  <div className="text-[30px] font-bold text-white tabular-nums tracking-tight leading-tight break-all">
-                    {Store.formatMoney(focusedTotal, focusedCard.currency)}
-                  </div>
-                </div>
-
-                {/* Billed vs Unbilled Breakdown Pills */}
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setBucketFilter('BILLED')}
-                    className={`px-3 py-2 rounded-xl border text-left transition ${
-                      bucketFilter === 'BILLED' ? 'bg-amber-400/20 border-amber-300/60' : 'bg-black/30 border-white/10'
-                    }`}
-                  >
-                    <div className="text-[10.5px] text-white/70">本期已出帳應繳</div>
-                    <div className="text-[14.5px] font-bold text-amber-300 tabular-nums mt-0.5">
-                      {Store.formatMoney(focusedCard.billed || 0, focusedCard.currency)}
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setBucketFilter('UNBILLED')}
-                    className={`px-3 py-2 rounded-xl border text-left transition ${
-                      bucketFilter === 'UNBILLED' ? 'bg-sky-400/20 border-sky-300/60' : 'bg-black/30 border-white/10'
-                    }`}
-                  >
-                    <div className="text-[10.5px] text-white/70">未出帳下期累積</div>
-                    <div className="text-[14.5px] font-bold text-sky-300 tabular-nums mt-0.5">
-                      {Store.formatMoney(focusedCard.unbilled || 0, focusedCard.currency)}
-                    </div>
-                  </button>
-                </div>
-
-                {/* Utilization Bar */}
-                <div className="space-y-1">
-                  <div className="h-1.5 rounded-full bg-black/35 overflow-hidden">
-                    <div className="h-full bg-white/90 rounded-full" style={{ width: `${focusedRatio}%` }} />
-                  </div>
-                  <div className="flex justify-between text-[11px] text-white/60 tabular-nums">
-                    <span>已用額度 {focusedRatio}%</span>
-                    <span>可用 {Store.formatMoney(Math.max(0, Store.round2((focusedCard.creditLimit || 0) - focusedTotal)), focusedCard.currency)}</span>
-                  </div>
-                </div>
-
-                {/* Card Quick Actions */}
-                <div className="pt-2 border-t border-white/10 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => openPayBillSheet('MAIN_FLOW')}
-                    disabled={focusedTotal <= 0}
-                    className="flex-1 py-2.5 rounded-xl bg-white text-black text-[13.5px] font-bold active:scale-[0.98] transition disabled:opacity-40"
-                  >
-                    找數還款
-                  </button>
-                  {(focusedCard.unbilled || 0) > 0 && (
                     <button
                       type="button"
-                      onClick={() => {
-                        if (window.confirm(`確定將「${focusedCard.name}」的未出帳金額 ${Store.formatMoney(focusedCard.unbilled, focusedCard.currency)} 結轉為本期已出帳？`)) {
-                          const moved = Store.closeCardStatement(focusedCard.id);
-                          if (moved > 0) {
-                            setBucketFilter('BILLED');
-                            showToast(`已結單出帳 ${Store.formatMoney(moved, focusedCard.currency)}`);
-                          }
-                        }
-                      }}
-                      className="px-3.5 py-2.5 rounded-xl bg-black/35 border border-white/20 text-white text-[12.5px] font-semibold active:bg-black/50 whitespace-nowrap"
+                      onClick={() => toggleCardSettings(true)}
+                      className="px-2.5 py-1 rounded-full bg-black/35 border border-white/15 text-[11.5px] font-semibold text-emerald-300 truncate max-w-[60%] active:opacity-75"
                     >
-                      截單出帳
+                      主戶：{focusedPlan.mainBank ? focusedPlan.mainBank.shortName : '未設定'} ▾
                     </button>
-                  )}
+                  </div>
+
+                  {/* Row 3: Dynamic Hero Amount (Switches Live Between 本期 / 下期 / 總額) */}
+                  <div className="relative flex items-end justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-[11.5px] text-white/70 mb-0.5">{heroLabel}</div>
+                      <div className={`text-[32px] font-bold tabular-nums tracking-tight leading-tight break-all ${
+                        isBilledView ? 'text-white' : isUnbilledView ? 'text-sky-100' : 'text-white'
+                      }`}>
+                        {Store.formatMoney(heroAmount, focusedCard.currency)}
+                      </div>
+                    </div>
+                    {(isBilledView || isUnbilledView) && focusedTotal !== heroAmount && (
+                      <button
+                        type="button"
+                        onClick={() => setBucketFilter('ALL')}
+                        className="text-right shrink-0 pb-1 active:opacity-75"
+                      >
+                        <div className="text-[10px] text-white/55">總累積</div>
+                        <div className="text-[13px] font-semibold text-white/85 tabular-nums whitespace-nowrap">
+                          {Store.formatMoney(focusedTotal, focusedCard.currency)}
+                        </div>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Row 4: Interactive 本期 / 下期 Glass Tiles (Each Displays Its Own Billing Month & Deadline) */}
+                  <div className="relative grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setBucketFilter('BILLED')}
+                      className={`px-3 py-2.5 rounded-2xl border text-left transition ${
+                        isBilledView
+                          ? 'bg-amber-400/20 border-amber-300/75 shadow-[0_0_16px_rgba(251,191,36,0.18)]'
+                          : 'bg-black/30 border-white/10 active:bg-black/45'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1 text-[10.5px]">
+                        <span className={isBilledView ? 'text-amber-200 font-semibold' : 'text-white/70'}>
+                          本期 · {billedInfo.monthLabel}
+                        </span>
+                        <span className="text-white/60 tabular-nums shrink-0">{billedInfo.shortDueLabel}止</span>
+                      </div>
+                      <div className="text-[15.5px] font-bold text-amber-300 tabular-nums mt-1">
+                        {Store.formatMoney(focusedCard.billed || 0, focusedCard.currency)}
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setBucketFilter('UNBILLED')}
+                      className={`px-3 py-2.5 rounded-2xl border text-left transition ${
+                        isUnbilledView
+                          ? 'bg-sky-400/20 border-sky-300/75 shadow-[0_0_16px_rgba(56,189,248,0.18)]'
+                          : 'bg-black/30 border-white/10 active:bg-black/45'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1 text-[10.5px]">
+                        <span className={isUnbilledView ? 'text-sky-200 font-semibold' : 'text-white/70'}>
+                          下期 · {unbilledInfo.monthLabel}
+                        </span>
+                        <span className="text-white/60 tabular-nums shrink-0">{unbilledInfo.shortDueLabel}止</span>
+                      </div>
+                      <div className="text-[15.5px] font-bold text-sky-300 tabular-nums mt-1">
+                        {Store.formatMoney(focusedCard.unbilled || 0, focusedCard.currency)}
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Row 5: Utilization Bar */}
+                  <div className="relative space-y-1">
+                    <div className="h-1.5 rounded-full bg-black/40 overflow-hidden">
+                      <div className="h-full bg-gradient-to-r from-white/95 to-white/65 rounded-full" style={{ width: `${focusedRatio}%` }} />
+                    </div>
+                    <div className="flex justify-between text-[11px] text-white/70 tabular-nums">
+                      <span>額度已用 {focusedRatio}%</span>
+                      <span>可用 {Store.formatMoney(Math.max(0, Store.round2((focusedCard.creditLimit || 0) - focusedTotal)), focusedCard.currency)}</span>
+                    </div>
+                  </div>
+
+                  {/* Row 6: Card Quick Actions */}
+                  <div className="relative pt-2 border-t border-white/15 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => openPayBillSheet('MAIN_FLOW')}
+                      disabled={focusedTotal <= 0}
+                      className="flex-1 py-2.5 rounded-xl bg-white text-black text-[13.5px] font-bold active:scale-[0.98] transition disabled:opacity-40"
+                    >
+                      找數還款
+                    </button>
+                    {(focusedCard.unbilled || 0) > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`確定將「${focusedCard.name}」的未出帳金額 ${Store.formatMoney(focusedCard.unbilled, focusedCard.currency)} 結轉為本期已出帳？`)) {
+                            const moved = Store.closeCardStatement(focusedCard.id);
+                            if (moved > 0) {
+                              setBucketFilter('BILLED');
+                              showToast(`已結單出帳 ${Store.formatMoney(moved, focusedCard.currency)}`);
+                            }
+                          }
+                        }}
+                        className="px-3.5 py-2.5 rounded-xl bg-black/35 border border-white/20 text-white text-[12.5px] font-semibold active:bg-black/50 whitespace-nowrap"
+                      >
+                        截單出帳
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ) : (
+              );
+            })() : (
               /* Card Back: Complete Settings & Balance Calibration */
               <div className="rounded-[22px] p-4 bg-[#191920] border border-white/15 shadow-2xl space-y-3.5">
                 <div className="text-[15px] font-semibold text-white">編輯信用卡與主找數戶口</div>
@@ -1148,11 +1281,12 @@
                         key={c.id}
                         type="button"
                         onClick={() => openCardDetail(c)}
-                        className="shrink-0 min-w-[146px] p-3 rounded-2xl border border-white/10 text-left active:scale-95 transition"
+                        className="relative shrink-0 min-w-[146px] p-3 rounded-2xl border border-white/15 text-left active:scale-95 transition overflow-hidden"
                         style={{ background: th.bg }}
                       >
-                        <div className="text-[12.5px] font-semibold text-white truncate">{c.name}</div>
-                        <div className="text-[11px] text-white/65 tabular-nums mt-1">
+                        <div className="absolute inset-0 pointer-events-none" style={{ background: th.glow }} />
+                        <div className="relative text-[12.5px] font-semibold text-white truncate">{c.name}</div>
+                        <div className="relative text-[11px] text-white/75 tabular-nums mt-1">
                           待繳 {Store.formatMoney(amt, c.currency)}
                         </div>
                       </button>
