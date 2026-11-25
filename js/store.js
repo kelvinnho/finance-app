@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 2 r1';
+  const APP_VERSION = 'Stage 2 r2';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -153,12 +153,31 @@
     return (prefix || 'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
   }
 
-  function todayISO() {
-    const d = new Date();
+  function formatDateISO(d) {
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     const dd = String(d.getDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
+  }
+
+  function todayISO() {
+    return formatDateISO(new Date());
+  }
+
+  function demoDateForStmt(stmtDay, isBilled, offsetDays) {
+    const now = new Date();
+    const todayD = now.getDate();
+    const lastStmt = todayD >= stmtDay
+      ? new Date(now.getFullYear(), now.getMonth(), stmtDay)
+      : new Date(now.getFullYear(), now.getMonth() - 1, stmtDay);
+    const d = new Date(lastStmt.getTime());
+    if (isBilled) {
+      d.setDate(d.getDate() - Math.max(1, offsetDays || 2));
+    } else {
+      d.setDate(d.getDate() + Math.max(1, offsetDays || 1));
+      if (d.getTime() > now.getTime()) return formatDateISO(now);
+    }
+    return formatDateISO(d);
   }
 
   function nowTimeHM() {
@@ -225,9 +244,12 @@
     const today = todayISO();
     const pools = JSON.parse(JSON.stringify(DEFAULT_POOLS));
     pools.forEach((p) => {
-      if (p.id === 'pool_liquid' || p.id === 'pool_household') {
+      if (p.id === 'pool_liquid') {
         p.settlementAccountId = 'acc_bank_main';
         p.settlementBalanceId = 'bal_main_base';
+      } else if (p.id === 'pool_household') {
+        p.settlementAccountId = 'acc_bank_family';
+        p.settlementBalanceId = 'bal_fam_base';
       } else if (p.id === 'pool_reserve' || p.id === 'pool_goal') {
         p.settlementAccountId = 'acc_bank_high';
         p.settlementBalanceId = 'bal_high_base';
@@ -252,7 +274,7 @@
         {
           id: 'acc_bank_main',
           name: '主力綜合銀行',
-          subtitle: '綜合活期',
+          subtitle: '日常活期・主找數戶',
           type: 'BANK',
           theme: 'sapphire',
           balances: [
@@ -260,21 +282,32 @@
             { id: 'bal_main_hkd', currency: base === 'HKD' ? 'USD' : 'HKD', amount: 12000, poolId: 'pool_reserve', isDefaultPayment: false }
           ],
           allocations: [
-            { id: 'alloc_1', currency: base, name: '應急底倉', amount: 20000, locked: true, poolId: 'pool_reserve' },
-            { id: 'alloc_2', currency: base, name: '年度旅行基金', amount: 8000, locked: false, poolId: 'pool_goal' }
+            { id: 'alloc_1', currency: base, name: '應急底倉', amount: 20000, locked: true, poolId: 'pool_reserve' }
           ]
+        },
+        {
+          id: 'acc_bank_family',
+          name: '家庭聯名銀行',
+          subtitle: '家庭共同開支戶',
+          type: 'BANK',
+          theme: 'amber',
+          balances: [
+            { id: 'bal_fam_base', currency: base, amount: 32600, poolId: 'pool_household', isDefaultPayment: false }
+          ],
+          allocations: []
         },
         {
           id: 'acc_bank_high',
           name: '高息儲蓄銀行',
-          subtitle: '高息活期戶',
+          subtitle: '高息底倉與目標戶',
           type: 'BANK',
           theme: 'emerald',
           balances: [
             { id: 'bal_high_base', currency: base, amount: 245000, poolId: 'pool_reserve', isDefaultPayment: false }
           ],
           allocations: [
-            { id: 'alloc_3', currency: base, name: '核心凍結底倉', amount: 200000, locked: true, poolId: 'pool_reserve' }
+            { id: 'alloc_3', currency: base, name: '核心凍結底倉', amount: 200000, locked: true, poolId: 'pool_reserve' },
+            { id: 'alloc_2', currency: base, name: '年度旅行基金', amount: 18000, locked: false, poolId: 'pool_goal' }
           ]
         },
         {
@@ -309,8 +342,8 @@
           creditLimit: 80000,
           statementDay: 15,
           dueDay: 5,
-          unbilled: 1830,
-          billed: 2450,
+          billed: 2680,
+          unbilled: 948,
           theme: 'titanium',
           autoPayAccountId: 'acc_bank_main',
           autoPayBalanceId: 'bal_main_base',
@@ -322,10 +355,10 @@
           last4: '3094',
           currency: base,
           creditLimit: 50000,
-          statementDay: 25,
-          dueDay: 18,
-          unbilled: 1320,
-          billed: 0,
+          statementDay: 20,
+          dueDay: 10,
+          billed: 1180,
+          unbilled: 240,
           theme: 'crimson',
           autoPayAccountId: 'acc_bank_main',
           autoPayBalanceId: 'bal_main_base',
@@ -339,11 +372,11 @@
           creditLimit: 60000,
           statementDay: 10,
           dueDay: 28,
-          unbilled: 680,
-          billed: 0,
+          billed: 680,
+          unbilled: 0,
           theme: 'sapphire',
-          autoPayAccountId: 'acc_bank_main',
-          autoPayBalanceId: 'bal_main_base',
+          autoPayAccountId: 'acc_bank_high',
+          autoPayBalanceId: 'bal_high_base',
           note: '機票酒店與網購專卡'
         }
       ],
@@ -370,6 +403,7 @@
         }
       ],
       transactions: [
+        // --- Card 1: Unbilled (下期) ---
         {
           id: 'tx_demo_1',
           type: 'EXPENSE',
@@ -385,6 +419,7 @@
           subCategoryId: 'sub_food_2',
           subCategoryName: '午餐',
           poolId: 'pool_liquid',
+          billingBucket: 'UNBILLED',
           date: today,
           time: '12:30',
           note: ''
@@ -404,6 +439,7 @@
           subCategoryId: 'sub_food_4',
           subCategoryName: '咖啡飲品',
           poolId: 'pool_liquid',
+          billingBucket: null,
           date: today,
           time: '09:15',
           note: ''
@@ -423,12 +459,176 @@
           subCategoryId: 'sub_food_5',
           subCategoryName: '聚餐外食',
           poolId: 'pool_liquid',
+          billingBucket: null,
           counterparty: '同事 A',
           isLoanSettled: false,
           settlementTxId: null,
           date: today,
           time: '08:40',
           note: '週五聚餐代付'
+        },
+        {
+          id: 'tx_demo_c1_u2',
+          type: 'EXPENSE',
+          title: '水電煤網',
+          amount: 780,
+          currency: base,
+          settledAmount: 780,
+          settledCurrency: base,
+          accountKind: 'CARD',
+          accountId: 'card_1',
+          balanceId: null,
+          categoryId: 'cat_home',
+          subCategoryId: 'sub_hm_1',
+          subCategoryName: '水電煤網',
+          poolId: 'pool_household',
+          billingBucket: 'UNBILLED',
+          date: demoDateForStmt(15, false, 3),
+          time: '18:20',
+          note: '居家月費自動扣刷'
+        },
+        // --- Card 1: Billed (本期已出帳 2,680 = 1,500 專項 + 720 家庭 + 460 日常) ---
+        {
+          id: 'tx_demo_c1_b1',
+          type: 'EXPENSE',
+          title: '旅遊機票預訂',
+          amount: 1500,
+          currency: base,
+          settledAmount: 1500,
+          settledCurrency: base,
+          accountKind: 'CARD',
+          accountId: 'card_1',
+          balanceId: null,
+          categoryId: 'cat_leisure',
+          subCategoryId: 'sub_le_3',
+          subCategoryName: '旅遊度假',
+          poolId: 'pool_goal',
+          billingBucket: 'BILLED',
+          date: demoDateForStmt(15, true, 3),
+          time: '20:15',
+          note: '由高息儲蓄銀行專項目標歸墊'
+        },
+        {
+          id: 'tx_demo_c1_b2',
+          type: 'EXPENSE',
+          title: '超市買菜',
+          amount: 720,
+          currency: base,
+          settledAmount: 720,
+          settledCurrency: base,
+          accountKind: 'CARD',
+          accountId: 'card_1',
+          balanceId: null,
+          categoryId: 'cat_food',
+          subCategoryId: 'sub_food_6',
+          subCategoryName: '超市買菜',
+          poolId: 'pool_household',
+          billingBucket: 'BILLED',
+          date: demoDateForStmt(15, true, 5),
+          time: '17:45',
+          note: '由家庭聯名銀行歸墊'
+        },
+        {
+          id: 'tx_demo_c1_b3',
+          type: 'EXPENSE',
+          title: '商務午餐與交通',
+          amount: 460,
+          currency: base,
+          settledAmount: 460,
+          settledCurrency: base,
+          accountKind: 'CARD',
+          accountId: 'card_1',
+          balanceId: null,
+          categoryId: 'cat_food',
+          subCategoryId: 'sub_food_2',
+          subCategoryName: '午餐',
+          poolId: 'pool_liquid',
+          billingBucket: 'BILLED',
+          date: demoDateForStmt(15, true, 7),
+          time: '13:10',
+          note: ''
+        },
+        // --- Card 2: Billed (1,180 = 860 家庭 + 320 日常) & Unbilled (240) ---
+        {
+          id: 'tx_demo_c2_u1',
+          type: 'EXPENSE',
+          title: '咖啡飲品與輕食',
+          amount: 240,
+          currency: base,
+          settledAmount: 240,
+          settledCurrency: base,
+          accountKind: 'CARD',
+          accountId: 'card_2',
+          balanceId: null,
+          categoryId: 'cat_food',
+          subCategoryId: 'sub_food_4',
+          subCategoryName: '咖啡飲品',
+          poolId: 'pool_liquid',
+          billingBucket: 'UNBILLED',
+          date: demoDateForStmt(20, false, 2),
+          time: '15:20',
+          note: ''
+        },
+        {
+          id: 'tx_demo_c2_b1',
+          type: 'EXPENSE',
+          title: '家庭週末聚餐',
+          amount: 860,
+          currency: base,
+          settledAmount: 860,
+          settledCurrency: base,
+          accountKind: 'CARD',
+          accountId: 'card_2',
+          balanceId: null,
+          categoryId: 'cat_food',
+          subCategoryId: 'sub_food_5',
+          subCategoryName: '聚餐外食',
+          poolId: 'pool_household',
+          billingBucket: 'BILLED',
+          date: demoDateForStmt(20, true, 2),
+          time: '19:30',
+          note: '由家庭聯名銀行歸墊至主力綜合銀行'
+        },
+        {
+          id: 'tx_demo_c2_b2',
+          type: 'EXPENSE',
+          title: '工作日午餐',
+          amount: 320,
+          currency: base,
+          settledAmount: 320,
+          settledCurrency: base,
+          accountKind: 'CARD',
+          accountId: 'card_2',
+          balanceId: null,
+          categoryId: 'cat_food',
+          subCategoryId: 'sub_food_2',
+          subCategoryName: '午餐',
+          poolId: 'pool_liquid',
+          billingBucket: 'BILLED',
+          date: demoDateForStmt(20, true, 6),
+          time: '12:40',
+          note: ''
+        },
+        // --- Card 3: Main Bank is 高息儲蓄銀行; Billed 680 from 日常流動 (主力綜合銀行) ---
+        {
+          id: 'tx_demo_c3_b1',
+          type: 'EXPENSE',
+          title: '運動用品網購',
+          amount: 680,
+          currency: base,
+          settledAmount: 680,
+          settledCurrency: base,
+          accountKind: 'CARD',
+          accountId: 'card_3',
+          balanceId: null,
+          categoryId: 'cat_shopping',
+          subCategoryId: 'sub_sh_4',
+          subCategoryName: '網購消費',
+          poolId: 'pool_liquid',
+          billingBucket: 'BILLED',
+          date: demoDateForStmt(10, true, 3),
+          time: '21:10',
+          note: '由主力綜合銀行轉入高息儲蓄銀行找數'
         }
       ],
       splitRules: [
@@ -462,6 +662,20 @@
         },
         {
           id: 'sr_3',
+          name: '撥入家庭共同戶',
+          enabled: true,
+          type: 'TRANSFER',
+          amount: 6000,
+          currency: base,
+          fromAccountId: 'acc_bank_main',
+          fromBalanceId: 'bal_main_base',
+          toAccountId: 'acc_bank_family',
+          toBalanceId: 'bal_fam_base',
+          categoryId: null,
+          poolId: 'pool_household'
+        },
+        {
+          id: 'sr_4',
           name: '電子錢包月度增值',
           enabled: true,
           type: 'TRANSFER',
@@ -809,7 +1023,6 @@
     const s = st || state;
     let acc = accId ? (s.accounts || []).find((a) => a.id === accId) : null;
     if (!acc) {
-      // Fall back to default payment account
       for (let i = 0; i < (s.accounts || []).length; i++) {
         const a = s.accounts[i];
         const defB = (a.balances || []).find((b) => b.isDefaultPayment);
@@ -819,7 +1032,9 @@
             accountId: a.id,
             balanceId: defB.id,
             currency: defB.currency,
-            label: a.balances.length > 1 ? `${a.name} (${defB.currency})` : a.name
+            balanceAmount: round2(defB.amount || 0),
+            label: a.balances.length > 1 ? `${a.name} (${defB.currency})` : a.name,
+            shortName: a.name
           };
         }
       }
@@ -834,8 +1049,18 @@
       accountId: acc.id,
       balanceId: bal.id,
       currency: bal.currency,
-      label: acc.balances.length > 1 ? `${acc.name} (${bal.currency})` : acc.name
+      balanceAmount: round2(bal.amount || 0),
+      label: acc.balances.length > 1 ? `${acc.name} (${bal.currency})` : acc.name,
+      shortName: acc.name
     };
+  }
+
+  function convertBetweenCurrencies(amount, fromCur, toCur, st) {
+    if (!fromCur || !toCur || fromCur === toCur) return round2(amount);
+    const s = st || state;
+    const inBase = convertToBase(amount, fromCur, s);
+    const toRate = (s.meta.fxRates && s.meta.fxRates[toCur]) || 1;
+    return round2(inBase / toRate);
   }
 
   function getCardPoolBreakdown(cardId, bucketFilter, st) {
@@ -843,12 +1068,14 @@
     const card = (s.cards || []).find((c) => c.id === cardId);
     if (!card) return { targetTotal: 0, pools: [], byBank: [] };
 
-    const mode = bucketFilter || 'ALL'; // ALL | BILLED | UNBILLED
+    const mode = bucketFilter || 'ALL';
     const targetTotal = mode === 'BILLED'
       ? Math.max(0, round2(card.billed || 0))
       : mode === 'UNBILLED'
       ? Math.max(0, round2(card.unbilled || 0))
       : Math.max(0, round2((card.billed || 0) + (card.unbilled || 0)));
+
+    const mainBank = resolveBankAccountInfo(card.autoPayAccountId, card.autoPayBalanceId, card.currency, s);
 
     const poolTotals = {};
     const txCharges = (s.transactions || []).filter((tx) => {
@@ -889,8 +1116,6 @@
       taggedPositiveSum = round2(taggedPositiveSum + val);
     });
 
-    // Reconcile difference between tagged transactions and actual card debt (e.g., opening balance / partial payments)
-    const fallbackBank = resolveBankAccountInfo(card.autoPayAccountId, card.autoPayBalanceId, card.currency, s);
     if (targetTotal > 0) {
       if (taggedPositiveSum === 0) {
         poolsList.push({
@@ -898,7 +1123,7 @@
           poolName: '未歸類／期初帳款',
           color: '#71717A',
           amount: targetTotal,
-          bank: fallbackBank
+          bank: mainBank
         });
       } else if (taggedPositiveSum < targetTotal - 0.01) {
         poolsList.push({
@@ -906,10 +1131,9 @@
           poolName: '前期結轉／未分類餘額',
           color: '#71717A',
           amount: round2(targetTotal - taggedPositiveSum),
-          bank: fallbackBank
+          bank: mainBank
         });
       } else if (taggedPositiveSum > targetTotal + 0.01) {
-        // Scale down proportionally if card was partially paid
         const ratio = targetTotal / taggedPositiveSum;
         let running = 0;
         poolsList.forEach((item, idx) => {
@@ -925,7 +1149,6 @@
       poolsList.length = 0;
     }
 
-    // Group by settlement bank account
     const bankMap = new Map();
     poolsList.forEach((item) => {
       const bKey = item.bank ? item.bank.key : '__unassigned_bank__';
@@ -935,6 +1158,9 @@
           accountId: item.bank ? item.bank.accountId : null,
           balanceId: item.bank ? item.bank.balanceId : null,
           label: item.bank ? item.bank.label : '未綁定找數戶口',
+          shortName: item.bank ? item.bank.shortName : '未綁定戶口',
+          bankCurrency: item.bank ? item.bank.currency : card.currency,
+          bankBalance: item.bank ? item.bank.balanceAmount : 0,
           currency: card.currency,
           amount: 0,
           pools: []
@@ -942,55 +1168,235 @@
       }
       const entry = bankMap.get(bKey);
       entry.amount = round2(entry.amount + item.amount);
-      entry.pools.push({ name: item.poolName, color: item.color, amount: item.amount });
+      entry.pools.push({ poolId: item.poolId, name: item.poolName, color: item.color, amount: item.amount });
     });
 
     return {
       targetTotal,
+      mainBank,
       pools: poolsList.sort((a, b) => b.amount - a.amount),
       byBank: Array.from(bankMap.values()).sort((a, b) => b.amount - a.amount)
     };
   }
 
-  function getAllCardsSettlementSummary(bucketFilter, st) {
+  function getCardSettlementPlan(cardId, bucketFilter, st) {
     const s = st || state;
-    const bankAgg = new Map();
-    let grandBase = 0;
+    const card = (s.cards || []).find((c) => c.id === cardId);
+    if (!card) {
+      return {
+        targetTotal: 0,
+        currency: s.meta.baseCurrency,
+        mainBank: null,
+        inboundTransfers: [],
+        mainBankSelfAmount: 0,
+        mainBankSelfPools: [],
+        totalInboundRequired: 0,
+        totalInboundRemaining: 0,
+        totalInboundDone: 0,
+        mainBankAfterInbound: 0,
+        mainBankAfterPay: 0,
+        isMainBankSufficientAfterInbound: true,
+        pools: [],
+        byBank: []
+      };
+    }
+
+    const mode = bucketFilter || 'ALL';
+    const bd = getCardPoolBreakdown(cardId, mode, s);
+    const mainBank = bd.mainBank;
+    const mainKey = mainBank ? mainBank.key : null;
+
+    // Tally already-executed (uncleared) reimbursement transfers into this card's mainBank
+    const reimbursedByFromKey = {};
+    (s.transactions || []).forEach((tx) => {
+      if (tx.type !== 'TRANSFER' || !tx.cardReimbursement) return;
+      const cr = tx.cardReimbursement;
+      if (cr.cardId !== cardId || cr.cleared) return;
+      if (mode !== 'ALL' && cr.bucket && cr.bucket !== 'ALL' && cr.bucket !== mode) return;
+      const fKey = `${tx.accountId}::${tx.balanceId || ''}`;
+      const amtInCard = round2(cr.amountInCardCur != null ? cr.amountInCardCur : tx.settledAmount);
+      reimbursedByFromKey[fKey] = round2((reimbursedByFromKey[fKey] || 0) + amtInCard);
+    });
+
+    const inboundTransfers = [];
+    let mainBankSelfAmount = 0;
+    const mainBankSelfPools = [];
+
+    bd.byBank.forEach((b) => {
+      if (mainKey && b.key === mainKey) {
+        mainBankSelfAmount = round2(mainBankSelfAmount + b.amount);
+        b.pools.forEach((p) => mainBankSelfPools.push(p));
+      } else {
+        const doneAmt = Math.min(b.amount, round2(reimbursedByFromKey[b.key] || 0));
+        const remAmt = Math.max(0, round2(b.amount - doneAmt));
+        const remInSourceCur = convertBetweenCurrencies(remAmt, card.currency, b.bankCurrency, s);
+        inboundTransfers.push({
+          fromKey: b.key,
+          fromAccountId: b.accountId,
+          fromBalanceId: b.balanceId,
+          fromLabel: b.label,
+          fromShortName: b.shortName,
+          fromCurrency: b.bankCurrency,
+          fromBalance: b.bankBalance,
+          toKey: mainKey,
+          toAccountId: mainBank ? mainBank.accountId : null,
+          toBalanceId: mainBank ? mainBank.balanceId : null,
+          toLabel: mainBank ? mainBank.label : '未設定主找數戶口',
+          toCurrency: mainBank ? mainBank.currency : card.currency,
+          cardCurrency: card.currency,
+          requiredAmount: b.amount,
+          alreadyReimbursed: doneAmt,
+          remainingAmount: remAmt,
+          remainingInSourceCur: remInSourceCur,
+          isDone: remAmt <= 0.01,
+          pools: b.pools
+        });
+      }
+    });
+
+    const totalInboundRequired = round2(inboundTransfers.reduce((acc, x) => acc + x.requiredAmount, 0));
+    const totalInboundDone = round2(inboundTransfers.reduce((acc, x) => acc + x.alreadyReimbursed, 0));
+    const totalInboundRemaining = round2(inboundTransfers.reduce((acc, x) => acc + x.remainingAmount, 0));
+
+    const mainCur = mainBank ? mainBank.currency : card.currency;
+    const mainBalNow = mainBank ? mainBank.balanceAmount : 0;
+    const remInboundInMainCur = convertBetweenCurrencies(totalInboundRemaining, card.currency, mainCur, s);
+    const totalDueInMainCur = convertBetweenCurrencies(bd.targetTotal, card.currency, mainCur, s);
+
+    const mainBankAfterInbound = round2(mainBalNow + remInboundInMainCur);
+    const mainBankAfterPay = round2(mainBankAfterInbound - totalDueInMainCur);
+
+    return {
+      targetTotal: bd.targetTotal,
+      currency: card.currency,
+      mainBank,
+      inboundTransfers,
+      mainBankSelfAmount,
+      mainBankSelfPools,
+      totalInboundRequired,
+      totalInboundDone,
+      totalInboundRemaining,
+      mainBankAfterInbound,
+      mainBankAfterPay,
+      isMainBankSufficientAfterInbound: mainBankAfterPay >= -0.01,
+      pools: bd.pools,
+      byBank: bd.byBank
+    };
+  }
+
+  function getAllCardsTransferPlan(bucketFilter, st) {
+    const s = st || state;
+    const mode = bucketFilter || 'BILLED';
+    const routeMap = new Map();
+    const mainBankPayMap = new Map();
+    let grandDebtBase = 0;
+    let grandTransferRemainingBase = 0;
+    let grandTransferRequiredBase = 0;
 
     (s.cards || []).forEach((card) => {
-      const bd = getCardPoolBreakdown(card.id, bucketFilter, s);
-      if (bd.targetTotal <= 0) return;
-      grandBase = round2(grandBase + convertToBase(bd.targetTotal, card.currency, s));
-      bd.byBank.forEach((b) => {
-        const aggKey = b.key;
-        if (!bankAgg.has(aggKey)) {
-          bankAgg.set(aggKey, {
-            key: aggKey,
-            accountId: b.accountId,
-            balanceId: b.balanceId,
-            label: b.label,
-            totalBase: 0,
-            items: []
+      const plan = getCardSettlementPlan(card.id, mode, s);
+      if (plan.targetTotal <= 0) return;
+
+      const cardDebtBase = convertToBase(plan.targetTotal, card.currency, s);
+      grandDebtBase = round2(grandDebtBase + cardDebtBase);
+      grandTransferRequiredBase = round2(grandTransferRequiredBase + convertToBase(plan.totalInboundRequired, card.currency, s));
+      grandTransferRemainingBase = round2(grandTransferRemainingBase + convertToBase(plan.totalInboundRemaining, card.currency, s));
+
+      // Aggregate per-Main-Bank total upcoming autopay deduction
+      if (plan.mainBank) {
+        const mKey = plan.mainBank.key;
+        if (!mainBankPayMap.has(mKey)) {
+          mainBankPayMap.set(mKey, {
+            key: mKey,
+            accountId: plan.mainBank.accountId,
+            balanceId: plan.mainBank.balanceId,
+            label: plan.mainBank.label,
+            currency: plan.mainBank.currency,
+            currentBalance: plan.mainBank.balanceAmount,
+            totalPayInMainCur: 0,
+            totalInboundRemInMainCur: 0,
+            cards: []
           });
         }
-        const entry = bankAgg.get(aggKey);
-        const amtBase = convertToBase(b.amount, card.currency, s);
-        entry.totalBase = round2(entry.totalBase + amtBase);
-        entry.items.push({
+        const mEntry = mainBankPayMap.get(mKey);
+        const payInMain = convertBetweenCurrencies(plan.targetTotal, card.currency, plan.mainBank.currency, s);
+        const inRemInMain = convertBetweenCurrencies(plan.totalInboundRemaining, card.currency, plan.mainBank.currency, s);
+        mEntry.totalPayInMainCur = round2(mEntry.totalPayInMainCur + payInMain);
+        mEntry.totalInboundRemInMainCur = round2(mEntry.totalInboundRemInMainCur + inRemInMain);
+        mEntry.cards.push({
           cardId: card.id,
           cardName: card.name,
           last4: card.last4,
           currency: card.currency,
-          amount: b.amount,
-          pools: b.pools
+          amount: plan.targetTotal
+        });
+      }
+
+      // Aggregate cross-bank transfer routes: (fromBank -> toMainBank)
+      plan.inboundTransfers.forEach((tr) => {
+        const rKey = `${tr.fromKey}==>${tr.toKey}`;
+        if (!routeMap.has(rKey)) {
+          routeMap.set(rKey, {
+            routeKey: rKey,
+            fromKey: tr.fromKey,
+            fromAccountId: tr.fromAccountId,
+            fromBalanceId: tr.fromBalanceId,
+            fromLabel: tr.fromLabel,
+            fromShortName: tr.fromShortName,
+            fromCurrency: tr.fromCurrency,
+            toKey: tr.toKey,
+            toAccountId: tr.toAccountId,
+            toBalanceId: tr.toBalanceId,
+            toLabel: tr.toLabel,
+            toCurrency: tr.toCurrency,
+            totalRequiredBase: 0,
+            totalRemainingBase: 0,
+            totalRemainingInToCur: 0,
+            isDone: true,
+            breakdown: []
+          });
+        }
+        const rEntry = routeMap.get(rKey);
+        rEntry.totalRequiredBase = round2(rEntry.totalRequiredBase + convertToBase(tr.requiredAmount, card.currency, s));
+        rEntry.totalRemainingBase = round2(rEntry.totalRemainingBase + convertToBase(tr.remainingAmount, card.currency, s));
+        rEntry.totalRemainingInToCur = round2(
+          rEntry.totalRemainingInToCur + convertBetweenCurrencies(tr.remainingAmount, card.currency, tr.toCurrency, s)
+        );
+        if (!tr.isDone) rEntry.isDone = false;
+        rEntry.breakdown.push({
+          cardId: card.id,
+          cardName: card.name,
+          last4: card.last4,
+          currency: card.currency,
+          requiredAmount: tr.requiredAmount,
+          remainingAmount: tr.remainingAmount,
+          isDone: tr.isDone,
+          pools: tr.pools
         });
       });
     });
 
+    const routes = Array.from(routeMap.values()).sort((a, b) => b.totalRemainingBase - a.totalRemainingBase);
+    const mainBanks = Array.from(mainBankPayMap.values()).map((m) => {
+      const afterInbound = round2(m.currentBalance + m.totalInboundRemInMainCur);
+      const afterPay = round2(afterInbound - m.totalPayInMainCur);
+      return Object.assign({}, m, { afterInbound, afterPay, isSufficient: afterPay >= -0.01 });
+    }).sort((a, b) => b.totalPayInMainCur - a.totalPayInMainCur);
+
     return {
-      grandBase,
-      banks: Array.from(bankAgg.values()).sort((a, b) => b.totalBase - a.totalBase)
+      grandDebtBase,
+      grandTransferRequiredBase,
+      grandTransferRemainingBase,
+      pendingRouteCount: routes.filter((r) => !r.isDone).length,
+      routes,
+      mainBanks
     };
+  }
+
+  function getAllCardsSettlementSummary(bucketFilter, st) {
+    // Kept for backwards compatibility
+    const plan = getAllCardsTransferPlan(bucketFilter, st);
+    return { grandBase: plan.grandDebtBase, banks: plan.mainBanks };
   }
 
   const WealthStore = {
@@ -1013,6 +1419,8 @@
     getCreditCardCycle,
     getAutoCardBillingBucket,
     getCardPoolBreakdown,
+    getCardSettlementPlan,
+    getAllCardsTransferPlan,
     getAllCardsSettlementSummary,
 
     getState() {
@@ -1318,9 +1726,75 @@
       return moved;
     },
 
+    executeCardReimbursements(items) {
+      // items: [{ cardId, cardName, bucket, fromAccountId, fromBalanceId, toAccountId, toBalanceId, amountInCardCur, cardCurrency, note }]
+      if (!Array.isArray(items) || !items.length) return 0;
+      const draft = cloneState();
+      const today = todayISO();
+      const time = nowTimeHM();
+      let count = 0;
+
+      items.forEach((it) => {
+        const amtCard = round2(it.amountInCardCur);
+        if (amtCard <= 0 || !it.fromAccountId || !it.toAccountId) return;
+        if (it.fromAccountId === it.toAccountId && it.fromBalanceId === it.toBalanceId) return;
+
+        const fromAcc = draft.accounts.find((a) => a.id === it.fromAccountId);
+        const toAcc = draft.accounts.find((a) => a.id === it.toAccountId);
+        if (!fromAcc || !toAcc) return;
+        const fromBal = it.fromBalanceId ? fromAcc.balances.find((b) => b.id === it.fromBalanceId) : fromAcc.balances[0];
+        const toBal = it.toBalanceId ? toAcc.balances.find((b) => b.id === it.toBalanceId) : toAcc.balances[0];
+        if (!fromBal || !toBal) return;
+
+        const cardObj = draft.cards.find((c) => c.id === it.cardId);
+        const cardCur = it.cardCurrency || (cardObj ? cardObj.currency : draft.meta.baseCurrency);
+        const cardLabel = it.cardName || (cardObj ? cardObj.name : '信用卡');
+
+        const deductFromAmt = convertBetweenCurrencies(amtCard, cardCur, fromBal.currency, draft);
+        const creditToAmt = convertBetweenCurrencies(amtCard, cardCur, toBal.currency, draft);
+
+        const tx = {
+          id: uid('tx_reimb'),
+          type: 'TRANSFER',
+          title: `找數歸墊：${fromAcc.name} ➔ ${toAcc.name}`,
+          amount: deductFromAmt,
+          currency: fromBal.currency,
+          settledAmount: creditToAmt,
+          settledCurrency: toBal.currency,
+          accountKind: 'ACCOUNT',
+          accountId: fromAcc.id,
+          balanceId: fromBal.id,
+          toAccountKind: 'ACCOUNT',
+          toAccountId: toAcc.id,
+          toBalanceId: toBal.id,
+          categoryId: null,
+          subCategoryId: null,
+          subCategoryName: '',
+          poolId: null,
+          cardReimbursement: {
+            cardId: it.cardId || null,
+            bucket: it.bucket || 'ALL',
+            amountInCardCur: amtCard,
+            cleared: false
+          },
+          date: today,
+          time,
+          note: it.note || `為「${cardLabel}」主找數戶口歸墊資金`
+        };
+
+        applyTransactionEffect(draft, tx, 1);
+        draft.transactions.unshift(tx);
+        count++;
+      });
+
+      if (count > 0) {
+        state = draft;
+        notify();
+      }
+      return count;
+    },
+
     payCardBill(cardId, payments, targetMode) {
-      // payments: [{ fromAccountId, fromBalanceId, amount, note? }]
-      // targetMode: 'BILLED_FIRST' | 'UNBILLED_FIRST'
       const draft = cloneState();
       const card = draft.cards.find((c) => c.id === cardId);
       if (!card || !Array.isArray(payments) || !payments.length) return 0;
@@ -1329,7 +1803,18 @@
       const time = nowTimeHM();
       let count = 0;
 
-      payments.forEach((p) => {
+      // Collect pending reimbursement txs for this card to mark cleared upon payment
+      const clearedIds = [];
+      draft.transactions.forEach((t) => {
+        if (t.type === 'TRANSFER' && t.cardReimbursement && t.cardReimbursement.cardId === cardId && !t.cardReimbursement.cleared) {
+          if (targetMode === 'UNBILLED_FIRST' && t.cardReimbursement.bucket === 'BILLED') return;
+          if (targetMode === 'BILLED_FIRST' && t.cardReimbursement.bucket === 'UNBILLED') return;
+          t.cardReimbursement.cleared = true;
+          clearedIds.push(t.id);
+        }
+      });
+
+      payments.forEach((p, idx) => {
         const payAmt = round2(p.amount);
         if (payAmt <= 0 || !p.fromAccountId) return;
         const fromAcc = draft.accounts.find((a) => a.id === p.fromAccountId);
@@ -1339,13 +1824,7 @@
           : fromAcc.balances[0];
         if (!fromBal) return;
 
-        // Calculate exact deduction from bank (convert if bank currency differs from card currency)
-        let bankDeduct = payAmt;
-        if (fromBal.currency !== card.currency) {
-          const inBase = convertToBase(payAmt, card.currency, draft);
-          const bankRate = (draft.meta.fxRates && draft.meta.fxRates[fromBal.currency]) || 1;
-          bankDeduct = round2(inBase / bankRate);
-        }
+        const bankDeduct = convertBetweenCurrencies(payAmt, card.currency, fromBal.currency, draft);
 
         let billedApplied = 0;
         let unbilledApplied = 0;
@@ -1362,7 +1841,7 @@
         const tx = {
           id: uid('tx_cardpay'),
           type: 'TRANSFER',
-          title: `找數 · ${card.name}`,
+          title: `主戶找數 · ${card.name}`,
           amount: bankDeduct,
           currency: fromBal.currency,
           settledAmount: payAmt,
@@ -1375,6 +1854,7 @@
           toBalanceId: null,
           billedApplied,
           unbilledApplied,
+          clearedReimbursementIds: idx === 0 ? clearedIds : [],
           billingBucket: billedApplied > 0 && unbilledApplied === 0 ? 'BILLED' : 'UNBILLED',
           categoryId: null,
           subCategoryId: null,
@@ -1382,7 +1862,7 @@
           poolId: null,
           date: today,
           time,
-          note: p.note || `由 ${fromAcc.name} 找數還款`
+          note: p.note || `由 ${fromAcc.name} 扣款找數`
         };
 
         applyTransactionEffect(draft, tx, 1);
@@ -1395,6 +1875,18 @@
         notify();
       }
       return count;
+    },
+
+    settleCardWithReimbursements(cardId, bucket, reimburseItems, mainPayInfo, targetMode) {
+      let reimbCount = 0;
+      if (Array.isArray(reimburseItems) && reimburseItems.length > 0) {
+        reimbCount = this.executeCardReimbursements(reimburseItems);
+      }
+      let payCount = 0;
+      if (mainPayInfo && Number(mainPayInfo.amount) > 0 && mainPayInfo.fromAccountId) {
+        payCount = this.payCardBill(cardId, [mainPayInfo], targetMode || (bucket === 'UNBILLED' ? 'UNBILLED_FIRST' : 'BILLED_FIRST'));
+      }
+      return { reimbCount, payCount };
     },
 
     // ---- Pools Management (Cross-Account Settlement Attribution) ----
@@ -1681,6 +2173,12 @@
         return { deleted: 2, mode: 'PAIRED_DELETE' };
       }
 
+      if (Array.isArray(tx.clearedReimbursementIds) && tx.clearedReimbursementIds.length > 0) {
+        tx.clearedReimbursementIds.forEach((rid) => {
+          const rTx = draft.transactions.find((t) => t.id === rid);
+          if (rTx && rTx.cardReimbursement) rTx.cardReimbursement.cleared = false;
+        });
+      }
       applyTransactionEffect(draft, tx, -1);
       draft.transactions.splice(idx, 1);
       state = draft;

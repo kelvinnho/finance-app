@@ -9,11 +9,11 @@
 
     const [focusedCardId, setFocusedCardId] = useState(null);
     const [flipped, setFlipped] = useState(false);
-    const [bucketFilter, setBucketFilter] = useState('ALL'); // ALL | BILLED | UNBILLED
+    const [bucketFilter, setBucketFilter] = useState('BILLED'); // BILLED | UNBILLED | ALL
 
-    // Global cross-card settlement overview sheet
+    // Global cross-card transfer plan sheet
     const [globalSettleOpen, setGlobalSettleOpen] = useState(false);
-    const [globalSettleBucket, setGlobalSettleBucket] = useState('ALL');
+    const [globalSettleBucket, setGlobalSettleBucket] = useState('BILLED');
 
     // Add Card Sheet
     const [addCardOpen, setAddCardOpen] = useState(false);
@@ -46,13 +46,14 @@
       note: ''
     });
 
-    // Pay Bill Sheet (Dual Mode: SINGLE | SPLIT)
+    // Pay Bill Sheet (Dual Mode: MAIN_FLOW | DIRECT)
     const [payOpen, setPayOpen] = useState(false);
-    const [payMode, setPayMode] = useState('SINGLE'); // SINGLE | SPLIT
-    const [singlePayKey, setSinglePayKey] = useState('');
-    const [singlePayAmount, setSinglePayAmount] = useState(0);
-    const [singlePayTarget, setSinglePayTarget] = useState('BILLED_FIRST');
-    const [splitRows, setSplitRows] = useState([]);
+    const [payMode, setPayMode] = useState('MAIN_FLOW');
+    const [payIncludeReimb, setPayIncludeReimb] = useState(true);
+    const [reimbCheckedMap, setReimbCheckedMap] = useState({});
+    const [directPayKey, setDirectPayKey] = useState('');
+    const [directPayAmount, setDirectPayAmount] = useState(0);
+    const [directPayTarget, setDirectPayTarget] = useState('BILLED_FIRST');
 
     // All bank/ewallet balances available for card repayment
     const bankOptions = useMemo(() => {
@@ -96,6 +97,18 @@
       };
     }, [state]);
 
+    // Overview default bucket: BILLED if any card has billed > 0, else ALL
+    const overviewBucket = cardTotals.billed > 0 ? 'BILLED' : 'ALL';
+    const overviewTransferPlan = useMemo(
+      () => Store.getAllCardsTransferPlan(overviewBucket, state),
+      [overviewBucket, state]
+    );
+
+    const globalTransferPlan = useMemo(
+      () => (globalSettleOpen ? Store.getAllCardsTransferPlan(globalSettleBucket, state) : { grandDebtBase: 0, grandTransferRemainingBase: 0, pendingRouteCount: 0, routes: [], mainBanks: [] }),
+      [globalSettleOpen, globalSettleBucket, state]
+    );
+
     const focusedCard = useMemo(() => {
       if (!focusedCardId) return null;
       return (state.cards || []).find((c) => c.id === focusedCardId) || null;
@@ -127,15 +140,10 @@
       }
     }, [focusedCard, bankOptions, defaultBankKey]);
 
-    const focusedBreakdown = useMemo(() => {
-      if (!focusedCard) return { targetTotal: 0, pools: [], byBank: [] };
-      return Store.getCardPoolBreakdown(focusedCard.id, bucketFilter, state);
+    const focusedPlan = useMemo(() => {
+      if (!focusedCard) return null;
+      return Store.getCardSettlementPlan(focusedCard.id, bucketFilter, state);
     }, [focusedCard, bucketFilter, state]);
-
-    const globalSummary = useMemo(() => {
-      if (!globalSettleOpen) return { grandBase: 0, banks: [] };
-      return Store.getAllCardsSettlementSummary(globalSettleBucket, state);
-    }, [globalSettleOpen, globalSettleBucket, state]);
 
     const cardTransactions = useMemo(() => {
       if (!focusedCard) return [];
@@ -143,7 +151,8 @@
         .filter((tx) => {
           const isCharge = tx.accountKind === 'CARD' && tx.accountId === focusedCard.id;
           const isPayment = tx.toAccountKind === 'CARD' && tx.toAccountId === focusedCard.id;
-          if (!isCharge && !isPayment) return false;
+          const isReimb = tx.type === 'TRANSFER' && tx.cardReimbursement && tx.cardReimbursement.cardId === focusedCard.id;
+          if (!isCharge && !isPayment && !isReimb) return false;
           if (isCharge && bucketFilter !== 'ALL') {
             const b = tx.billingBucket || 'UNBILLED';
             if (b !== bucketFilter) return false;
@@ -155,6 +164,12 @@
 
     const getThemeObj = (id) => Store.CARD_THEMES.find((t) => t.id === id) || Store.CARD_THEMES[1];
     const getPoolObj = (pid) => (pid ? state.pools.find((p) => p.id === pid) : null);
+
+    const openCardDetail = (card) => {
+      setFocusedCardId(card.id);
+      setFlipped(false);
+      setBucketFilter((card.billed || 0) > 0 ? 'BILLED' : 'UNBILLED');
+    };
 
     const openAddCard = () => {
       setNewCard({
@@ -194,7 +209,7 @@
         note: newCard.note
       });
       setAddCardOpen(false);
-      setFocusedCardId(created.id);
+      openCardDetail(created);
       showToast(`已新增信用卡「${created.name}」`);
     };
 
@@ -216,88 +231,204 @@
         note: editDraft.note
       });
       setFlipped(false);
-      showToast('信用卡設定已儲存');
+      showToast('信用卡與主找數戶口設定已儲存');
+    };
+
+    // Execute a single card's single inbound reimbursement transfer (Source Bank -> Card Main Bank)
+    const handleSingleReimburse = (tr) => {
+      if (!focusedCard || !tr || tr.isDone) return;
+      if (!tr.fromAccountId || !tr.toAccountId) {
+        showToast('請先為資金池與信用卡綁定銀行戶口');
+        return;
+      }
+      const cnt = Store.executeCardReimbursements([{
+        cardId: focusedCard.id,
+        cardName: focusedCard.name,
+        bucket: bucketFilter,
+        fromAccountId: tr.fromAccountId,
+        fromBalanceId: tr.fromBalanceId,
+        toAccountId: tr.toAccountId,
+        toBalanceId: tr.toBalanceId,
+        amountInCardCur: tr.remainingAmount,
+        cardCurrency: focusedCard.currency,
+        note: `為「${focusedCard.name}」歸墊（${tr.pools.map((p) => p.name).join('、')}）`
+      }]);
+      if (cnt > 0) {
+        showToast(`已轉帳 ${Store.formatMoney(tr.remainingAmount, focusedCard.currency)} 至 ${tr.toLabel}`);
+      }
+    };
+
+    // Execute ALL pending inbound reimbursements for the focused card (Step 1 only, ready for autopay)
+    const handleReimburseAllForCard = () => {
+      if (!focusedCard || !focusedPlan) return;
+      const pending = focusedPlan.inboundTransfers.filter((tr) => !tr.isDone && tr.fromAccountId && tr.toAccountId);
+      if (!pending.length) {
+        showToast('本卡無待歸墊之跨行轉帳');
+        return;
+      }
+      const cnt = Store.executeCardReimbursements(
+        pending.map((tr) => ({
+          cardId: focusedCard.id,
+          cardName: focusedCard.name,
+          bucket: bucketFilter,
+          fromAccountId: tr.fromAccountId,
+          fromBalanceId: tr.fromBalanceId,
+          toAccountId: tr.toAccountId,
+          toBalanceId: tr.toBalanceId,
+          amountInCardCur: tr.remainingAmount,
+          cardCurrency: focusedCard.currency,
+          note: `為「${focusedCard.name}」歸墊（${tr.pools.map((p) => p.name).join('、')}）`
+        }))
+      );
+      if (cnt > 0) {
+        showToast(`已完成 ${cnt} 筆歸墊轉帳至 ${focusedPlan.mainBank ? focusedPlan.mainBank.label : '主找數戶口'}`);
+      }
+    };
+
+    // Execute a merged cross-card route from the Global Transfer Plan sheet
+    const handleExecuteGlobalRoute = (route) => {
+      if (!route || route.isDone) return;
+      const items = route.breakdown
+        .filter((b) => !b.isDone && b.remainingAmount > 0)
+        .map((b) => ({
+          cardId: b.cardId,
+          cardName: b.cardName,
+          bucket: globalSettleBucket,
+          fromAccountId: route.fromAccountId,
+          fromBalanceId: route.fromBalanceId,
+          toAccountId: route.toAccountId,
+          toBalanceId: route.toBalanceId,
+          amountInCardCur: b.remainingAmount,
+          cardCurrency: b.currency,
+          note: `為「${b.cardName}」歸墊（${b.pools.map((p) => p.name).join('、')}）`
+        }));
+      const cnt = Store.executeCardReimbursements(items);
+      if (cnt > 0) {
+        showToast(`已從 ${route.fromShortName} 轉入 ${route.toLabel}（${cnt} 筆）`);
+      }
+    };
+
+    const handleExecuteAllGlobalRoutes = () => {
+      const items = [];
+      globalTransferPlan.routes.forEach((route) => {
+        if (route.isDone) return;
+        route.breakdown.forEach((b) => {
+          if (b.isDone || b.remainingAmount <= 0) return;
+          items.push({
+            cardId: b.cardId,
+            cardName: b.cardName,
+            bucket: globalSettleBucket,
+            fromAccountId: route.fromAccountId,
+            fromBalanceId: route.fromBalanceId,
+            toAccountId: route.toAccountId,
+            toBalanceId: route.toBalanceId,
+            amountInCardCur: b.remainingAmount,
+            cardCurrency: b.currency,
+            note: `為「${b.cardName}」歸墊（${b.pools.map((p) => p.name).join('、')}）`
+          });
+        });
+      });
+      if (!items.length) {
+        showToast('目前無待執行之跨行歸墊轉帳');
+        return;
+      }
+      const cnt = Store.executeCardReimbursements(items);
+      if (cnt > 0) {
+        showToast(`已一鍵完成全部 ${cnt} 筆跨戶歸墊轉帳`);
+      }
     };
 
     const openPayBillSheet = (preferredMode) => {
-      if (!focusedCard) return;
+      if (!focusedCard || !focusedPlan) return;
       const totalDue = Store.round2((focusedCard.billed || 0) + (focusedCard.unbilled || 0));
       if (bankOptions.length === 0) {
         showToast('請先於「銀包」建立扣款銀行帳戶');
         return;
       }
 
-      const defaultPayKey = focusedCard.autoPayAccountId
-        ? (bankOptions.find((b) =>
-            b.accountId === focusedCard.autoPayAccountId &&
-            (!focusedCard.autoPayBalanceId || b.balanceId === focusedCard.autoPayBalanceId)
-          )?.key || defaultBankKey)
-        : defaultBankKey;
+      const mainKey = focusedPlan.mainBank ? focusedPlan.mainBank.key : defaultBankKey;
+      const targetAmt = focusedPlan.targetTotal > 0 ? focusedPlan.targetTotal : totalDue;
+      setDirectPayKey(mainKey);
+      setDirectPayAmount(targetAmt);
+      setDirectPayTarget(bucketFilter === 'UNBILLED' ? 'UNBILLED_FIRST' : 'BILLED_FIRST');
 
-      const defaultAmt = (focusedCard.billed || 0) > 0 ? focusedCard.billed : totalDue;
-      setSinglePayKey(defaultPayKey);
-      setSinglePayAmount(defaultAmt);
-      setSinglePayTarget((focusedCard.billed || 0) > 0 ? 'BILLED_FIRST' : 'UNBILLED_FIRST');
-
-      // Build cross-pool split rows based on current breakdown (or ALL if current bucket is 0)
-      const bd = focusedBreakdown.targetTotal > 0
-        ? focusedBreakdown
-        : Store.getCardPoolBreakdown(focusedCard.id, 'ALL', state);
-
-      const rows = bd.byBank.map((b, i) => ({
-        id: `row_${i}`,
-        checked: true,
-        bankKey: (b.accountId && b.balanceId) ? `${b.accountId}::${b.balanceId}` : defaultPayKey,
-        amount: b.amount,
-        poolLabels: b.pools.map((p) => p.name).join('、')
-      }));
-
-      setSplitRows(rows);
-      setPayMode(preferredMode === 'SPLIT' && rows.length > 0 ? 'SPLIT' : 'SINGLE');
+      const map = {};
+      focusedPlan.inboundTransfers.forEach((tr) => {
+        map[tr.fromKey] = !tr.isDone;
+      });
+      setReimbCheckedMap(map);
+      setPayIncludeReimb(focusedPlan.totalInboundRemaining > 0);
+      setPayMode(preferredMode === 'DIRECT' ? 'DIRECT' : 'MAIN_FLOW');
       setPayOpen(true);
     };
 
     const handleConfirmPayment = () => {
-      if (!focusedCard) return;
-      if (payMode === 'SINGLE') {
-        if (!singlePayKey) {
+      if (!focusedCard || !focusedPlan) return;
+      if (payMode === 'DIRECT') {
+        if (!directPayKey) {
           showToast('請選擇扣款銀行戶口');
           return;
         }
-        if (Number(singlePayAmount) <= 0) {
+        if (Number(directPayAmount) <= 0) {
           showToast('找數金額須大於 0');
           return;
         }
-        const [accId, balId] = singlePayKey.split('::');
+        const [accId, balId] = directPayKey.split('::');
         const cnt = Store.payCardBill(
           focusedCard.id,
-          [{ fromAccountId: accId, fromBalanceId: balId, amount: Number(singlePayAmount) }],
-          singlePayTarget
+          [{ fromAccountId: accId, fromBalanceId: balId, amount: Number(directPayAmount) }],
+          directPayTarget
         );
         if (cnt > 0) {
           setPayOpen(false);
-          showToast(`已完成找數 ${Store.formatMoney(singlePayAmount, focusedCard.currency)}`);
+          showToast(`已完成找數 ${Store.formatMoney(directPayAmount, focusedCard.currency)}`);
         }
       } else {
-        const activeRows = splitRows.filter((r) => r.checked && Number(r.amount) > 0 && r.bankKey);
-        if (!activeRows.length) {
-          showToast('請至少勾選一筆大於 0 的找數項目');
+        if (!focusedPlan.mainBank) {
+          showToast('請先設定此卡的主找數銀行戶口');
           return;
         }
-        const payments = activeRows.map((r) => {
-          const [accId, balId] = r.bankKey.split('::');
-          return {
-            fromAccountId: accId,
-            fromBalanceId: balId,
-            amount: Number(r.amount),
-            note: r.poolLabels ? `跨池找數（${r.poolLabels}）` : '跨池找數還款'
-          };
-        });
-        const target = bucketFilter === 'UNBILLED' ? 'UNBILLED_FIRST' : 'BILLED_FIRST';
-        const cnt = Store.payCardBill(focusedCard.id, payments, target);
-        if (cnt > 0) {
+        if (Number(directPayAmount) <= 0) {
+          showToast('找數金額須大於 0');
+          return;
+        }
+        const reimbItems = payIncludeReimb
+          ? focusedPlan.inboundTransfers
+              .filter((tr) => !tr.isDone && reimbCheckedMap[tr.fromKey] && tr.fromAccountId && tr.toAccountId)
+              .map((tr) => ({
+                cardId: focusedCard.id,
+                cardName: focusedCard.name,
+                bucket: bucketFilter,
+                fromAccountId: tr.fromAccountId,
+                fromBalanceId: tr.fromBalanceId,
+                toAccountId: tr.toAccountId,
+                toBalanceId: tr.toBalanceId,
+                amountInCardCur: tr.remainingAmount,
+                cardCurrency: focusedCard.currency,
+                note: `為「${focusedCard.name}」歸墊（${tr.pools.map((p) => p.name).join('、')}）`
+              }))
+          : [];
+
+        const res = Store.settleCardWithReimbursements(
+          focusedCard.id,
+          bucketFilter,
+          reimbItems,
+          {
+            fromAccountId: focusedPlan.mainBank.accountId,
+            fromBalanceId: focusedPlan.mainBank.balanceId,
+            amount: Number(directPayAmount),
+            note: `由主找數戶口（${focusedPlan.mainBank.label}）清償找數`
+          },
+          bucketFilter === 'UNBILLED' ? 'UNBILLED_FIRST' : 'BILLED_FIRST'
+        );
+
+        if (res.payCount > 0) {
           setPayOpen(false);
-          showToast(`已完成跨池拆單找數（共 ${cnt} 筆轉帳）`);
+          if (res.reimbCount > 0) {
+            showToast(`已完成 ${res.reimbCount} 筆歸墊轉帳並由主戶清償找數`);
+          } else {
+            showToast(`已由主戶（${focusedPlan.mainBank.shortName}）完成找數`);
+          }
         }
       }
     };
@@ -340,24 +471,74 @@
           </div>
         </div>
 
-        {/* Mode A: Apple Wallet Stacked Credit Card Deck */}
+        {/* Mode A: Apple Wallet Stacked Credit Card Deck + Prominent Cross-Bank Transfer Guide */}
         {!focusedCard && (
           <div className="space-y-4">
-            {/* Cross-Card Multi-Pool Settlement Summary Trigger */}
+            {/* FLAGSHIP HERO CARD: Cross-Bank Transfer Plan to Card Main Accounts */}
             {cardTotals.total > 0 && (
-              <button
-                type="button"
-                onClick={() => { setGlobalSettleBucket('ALL'); setGlobalSettleOpen(true); }}
-                className="w-full px-4 py-3 rounded-2xl bg-emerald-500/10 border border-emerald-400/25 flex items-center justify-between gap-2 text-left active:bg-emerald-500/20 transition"
-              >
-                <div className="min-w-0">
-                  <div className="text-[13.5px] font-semibold text-emerald-300">各銀行戶口交叉找數總覽</div>
-                  <div className="text-[11px] text-emerald-200/70 mt-0.5 truncate">
-                    依歸屬資金池彙總全部信用卡應撥付金額
+              <div className={`rounded-2xl border overflow-hidden ${
+                overviewTransferPlan.pendingRouteCount > 0
+                  ? 'bg-gradient-to-br from-amber-500/15 via-[#141417] to-[#111114] border-amber-400/35'
+                  : 'bg-emerald-500/10 border-emerald-400/25'
+              }`}>
+                <button
+                  type="button"
+                  onClick={() => { setGlobalSettleBucket(overviewBucket); setGlobalSettleOpen(true); }}
+                  className="w-full p-4 text-left space-y-3 active:bg-white/[0.03] transition"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold shrink-0 ${
+                          overviewTransferPlan.pendingRouteCount > 0
+                            ? 'bg-amber-400 text-black'
+                            : 'bg-emerald-400 text-black'
+                        }`}>
+                          {overviewBucket === 'BILLED' ? '本期找數轉帳' : '待繳轉帳指引'}
+                        </span>
+                        <span className="text-[14px] font-bold text-white truncate">
+                          {overviewTransferPlan.pendingRouteCount > 0
+                            ? `需跨戶轉入主戶 ${overviewTransferPlan.pendingRouteCount} 筆`
+                            : '主找數戶口資金皆已就位'}
+                        </span>
+                      </div>
+                      <div className="text-[11.5px] text-zinc-400 mt-1">
+                        {overviewTransferPlan.pendingRouteCount > 0
+                          ? `共需跨行歸墊 ${Store.formatMoney(overviewTransferPlan.grandTransferRemainingBase, state.meta.baseCurrency)}（點此一鍵執行）`
+                          : '各卡帳款皆由對應主找數戶口直接負擔，無需跨行轉帳'}
+                      </div>
+                    </div>
+                    <Icon name="chevronRight" size={18} className="text-zinc-300 shrink-0 mt-0.5" />
                   </div>
-                </div>
-                <Icon name="chevronRight" size={16} className="text-emerald-300 shrink-0" />
-              </button>
+
+                  {/* Direct Transfer Route Preview Rows right on Overview */}
+                  {overviewTransferPlan.routes.length > 0 && (
+                    <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
+                      {overviewTransferPlan.routes.slice(0, 3).map((r) => (
+                        <div key={r.routeKey} className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-black/45 border border-white/[0.07]">
+                          <div className="flex items-center gap-1.5 min-w-0 text-[12px]">
+                            <span className="font-semibold text-zinc-100 truncate">{r.fromShortName}</span>
+                            <span className="text-amber-400 font-bold shrink-0">➔</span>
+                            <span className="font-semibold text-emerald-300 truncate">{r.toLabel}</span>
+                          </div>
+                          {r.isDone ? (
+                            <span className="text-[11px] font-semibold text-emerald-400 shrink-0 whitespace-nowrap">✓ 已歸墊</span>
+                          ) : (
+                            <span className="text-[12.5px] font-bold text-amber-300 tabular-nums shrink-0 whitespace-nowrap">
+                              {Store.formatMoney(r.totalRemainingInToCur, r.toCurrency)}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                      {overviewTransferPlan.routes.length > 3 && (
+                        <div className="text-[11px] text-zinc-400 text-center pt-0.5">
+                          還有 {overviewTransferPlan.routes.length - 3} 條轉帳路線，點擊查看全部 ›
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </button>
+              </div>
             )}
 
             {state.cards.length === 0 ? (
@@ -372,19 +553,21 @@
                   const ratio = card.creditLimit > 0 ? Math.min(100, Math.round((spent / card.creditLimit) * 100)) : 0;
                   const theme = getThemeObj(card.theme);
                   const isLast = idx === state.cards.length - 1;
+                  const cardBucket = (card.billed || 0) > 0 ? 'BILLED' : 'UNBILLED';
+                  const plan = Store.getCardSettlementPlan(card.id, cardBucket, state);
 
                   return (
                     <button
                       key={card.id}
                       type="button"
-                      onClick={() => { setFocusedCardId(card.id); setFlipped(false); setBucketFilter('ALL'); }}
+                      onClick={() => openCardDetail(card)}
                       style={{
                         background: theme.bg,
                         zIndex: idx + 1
                       }}
                       className={`relative block w-full rounded-[22px] border border-white/15 shadow-[0_-10px_28px_rgba(0,0,0,0.55)] text-left transition-transform active:scale-[0.985] overflow-hidden ${
                         idx > 0 ? '-mt-12' : ''
-                      } ${isLast ? 'p-5 min-h-[166px]' : 'px-5 pt-4 pb-16 min-h-[140px]'}`}
+                      } ${isLast ? 'p-5 min-h-[172px]' : 'px-5 pt-4 pb-16 min-h-[144px]'}`}
                     >
                       <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/30 to-transparent pointer-events-none" />
 
@@ -394,8 +577,8 @@
                             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: theme.accent }} />
                             <span className="text-[16px] font-bold text-white truncate">{card.name}</span>
                           </div>
-                          <div className="text-[11.5px] text-white/65 truncate mt-0.5 pl-[18px] tabular-nums">
-                            {card.last4 ? `•••• ${card.last4}` : '信用卡'} · 每月{card.statementDay}日截 · {cycle.daysToDue}天後到期
+                          <div className="text-[11px] text-white/70 truncate mt-0.5 pl-[18px] tabular-nums">
+                            主戶：{plan.mainBank ? plan.mainBank.shortName : '未設定'} · {card.statementDay}日截 · {cycle.daysToDue}天後到期
                           </div>
                         </div>
 
@@ -404,9 +587,15 @@
                             {Store.formatMoney(spent, card.currency)}
                           </div>
                           <div className="text-[10.5px] mt-0.5 whitespace-nowrap tabular-nums">
-                            {(card.billed || 0) > 0
-                              ? <span className="text-amber-300 font-medium">已出帳 {Store.formatMoney(card.billed, card.currency)}</span>
-                              : <span className="text-white/60">未出帳 {ratio}%</span>}
+                            {plan.totalInboundRemaining > 0 ? (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-400/25 text-amber-200 font-semibold">
+                                待轉入 {Store.formatMoney(plan.totalInboundRemaining, card.currency)}
+                              </span>
+                            ) : (card.billed || 0) > 0 ? (
+                              <span className="text-amber-300 font-medium">本期 {Store.formatMoney(card.billed, card.currency)}</span>
+                            ) : (
+                              <span className="text-white/60">未出帳 {ratio}%</span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -417,8 +606,12 @@
                             <div className="h-full bg-white/85 rounded-full" style={{ width: `${ratio}%` }} />
                           </div>
                           <div className="flex items-center justify-between text-[11px] text-white/65 tabular-nums">
-                            <span>額度 {Store.formatMoney(card.creditLimit, card.currency)} ({ratio}%)</span>
-                            <span>點擊展開與找數 ›</span>
+                            <span>
+                              {(card.billed || 0) > 0
+                                ? `本期 ${Store.formatMoney(card.billed, card.currency)} · 下期 ${Store.formatMoney(card.unbilled || 0, card.currency)}`
+                                : `額度 ${Store.formatMoney(card.creditLimit, card.currency)} (${ratio}%)`}
+                            </span>
+                            <span>檢視找數轉帳 ›</span>
                           </div>
                         </div>
                       )}
@@ -438,8 +631,8 @@
           </div>
         )}
 
-        {/* Mode B: Focused Credit Card Detail + Cross-Pool Settlement */}
-        {focusedCard && focusedCycle && (
+        {/* Mode B: Focused Credit Card Detail + Flagship Transfer-to-Main-Account Flow */}
+        {focusedCard && focusedCycle && focusedPlan && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <button
@@ -454,7 +647,7 @@
                 onClick={() => setFlipped(!flipped)}
                 className="px-3 py-1.5 rounded-full bg-white/[0.08] text-[12px] text-zinc-200 active:bg-white/15"
               >
-                {flipped ? '返回正面' : '卡片設定'}
+                {flipped ? '返回正面' : '卡片與主戶設定'}
               </button>
             </div>
 
@@ -478,6 +671,18 @@
                   </span>
                 </div>
 
+                {/* Highlighted Main Settlement Bank Pill */}
+                <div className="px-3 py-2 rounded-xl bg-black/35 border border-white/15 flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-white/70 shrink-0">本卡主找數／扣款銀行</span>
+                  <button
+                    type="button"
+                    onClick={() => setFlipped(true)}
+                    className="text-[12.5px] font-bold text-emerald-300 truncate active:opacity-75"
+                  >
+                    {focusedPlan.mainBank ? focusedPlan.mainBank.label : '尚未設定（點此指定）'} ▾
+                  </button>
+                </div>
+
                 <div>
                   <div className="text-[11px] text-white/60 mb-1">總累積待繳 ({focusedCard.currency})</div>
                   <div className="text-[30px] font-bold text-white tabular-nums tracking-tight leading-tight break-all">
@@ -487,18 +692,30 @@
 
                 {/* Billed vs Unbilled Breakdown Pills */}
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="px-3 py-2 rounded-xl bg-black/30 border border-white/10">
-                    <div className="text-[10.5px] text-white/60">本期已出帳應繳</div>
-                    <div className="text-[14px] font-bold text-amber-300 tabular-nums mt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setBucketFilter('BILLED')}
+                    className={`px-3 py-2 rounded-xl border text-left transition ${
+                      bucketFilter === 'BILLED' ? 'bg-amber-400/20 border-amber-300/60' : 'bg-black/30 border-white/10'
+                    }`}
+                  >
+                    <div className="text-[10.5px] text-white/70">本期已出帳應繳</div>
+                    <div className="text-[14.5px] font-bold text-amber-300 tabular-nums mt-0.5">
                       {Store.formatMoney(focusedCard.billed || 0, focusedCard.currency)}
                     </div>
-                  </div>
-                  <div className="px-3 py-2 rounded-xl bg-black/30 border border-white/10">
-                    <div className="text-[10.5px] text-white/60">未出帳下期累積</div>
-                    <div className="text-[14px] font-bold text-sky-300 tabular-nums mt-0.5">
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBucketFilter('UNBILLED')}
+                    className={`px-3 py-2 rounded-xl border text-left transition ${
+                      bucketFilter === 'UNBILLED' ? 'bg-sky-400/20 border-sky-300/60' : 'bg-black/30 border-white/10'
+                    }`}
+                  >
+                    <div className="text-[10.5px] text-white/70">未出帳下期累積</div>
+                    <div className="text-[14.5px] font-bold text-sky-300 tabular-nums mt-0.5">
                       {Store.formatMoney(focusedCard.unbilled || 0, focusedCard.currency)}
                     </div>
-                  </div>
+                  </button>
                 </div>
 
                 {/* Utilization Bar */}
@@ -512,21 +729,15 @@
                   </div>
                 </div>
 
-                {focusedCard.note && (
-                  <div className="text-[11.5px] text-white/75 bg-black/25 px-3 py-1.5 rounded-xl">
-                    備註：{focusedCard.note}
-                  </div>
-                )}
-
-                {/* Card Primary Actions */}
+                {/* Card Quick Actions */}
                 <div className="pt-2 border-t border-white/10 flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => openPayBillSheet('SINGLE')}
+                    onClick={() => openPayBillSheet('MAIN_FLOW')}
                     disabled={focusedTotal <= 0}
                     className="flex-1 py-2.5 rounded-xl bg-white text-black text-[13.5px] font-bold active:scale-[0.98] transition disabled:opacity-40"
                   >
-                    一鍵找數還款
+                    找數還款
                   </button>
                   {(focusedCard.unbilled || 0) > 0 && (
                     <button
@@ -534,7 +745,10 @@
                       onClick={() => {
                         if (window.confirm(`確定將「${focusedCard.name}」的未出帳金額 ${Store.formatMoney(focusedCard.unbilled, focusedCard.currency)} 結轉為本期已出帳？`)) {
                           const moved = Store.closeCardStatement(focusedCard.id);
-                          if (moved > 0) showToast(`已結單出帳 ${Store.formatMoney(moved, focusedCard.currency)}`);
+                          if (moved > 0) {
+                            setBucketFilter('BILLED');
+                            showToast(`已結單出帳 ${Store.formatMoney(moved, focusedCard.currency)}`);
+                          }
                         }
                       }}
                       className="px-3.5 py-2.5 rounded-xl bg-black/35 border border-white/20 text-white text-[12.5px] font-semibold active:bg-black/50 whitespace-nowrap"
@@ -547,7 +761,7 @@
             ) : (
               /* Card Back: Complete Settings & Balance Calibration */
               <div className="rounded-[22px] p-4 bg-[#141417] border border-white/15 space-y-3.5">
-                <div className="text-[15px] font-semibold text-white">編輯信用卡與帳額校準</div>
+                <div className="text-[15px] font-semibold text-white">編輯信用卡與主找數戶口</div>
 
                 <div className="grid grid-cols-12 gap-2.5">
                   <div className="col-span-8">
@@ -570,6 +784,21 @@
                       className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white tabular-nums outline-none"
                     />
                   </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-400/25 space-y-1.5">
+                  <label className="text-[11.5px] font-semibold text-emerald-300 block">本卡主找數／自動扣款銀行戶口</label>
+                  <select
+                    value={editDraft.autoPayKey}
+                    onChange={(e) => setEditDraft((p) => Object.assign({}, p, { autoPayKey: e.target.value }))}
+                    className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[13.5px] text-white outline-none"
+                  >
+                    <option value="">自動採用預設找數戶口</option>
+                    {bankOptions.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+                  </select>
+                  <p className="text-[11px] text-emerald-200/70">
+                    其他資金池的刷卡消費將自動產生「來源銀行 ➔ 此主戶」的歸墊轉帳指引。
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2.5">
@@ -647,18 +876,6 @@
                 </div>
 
                 <div>
-                  <label className="text-[11px] text-zinc-400 block mb-1">預設找數銀行戶口（未分類餘額歸屬）</label>
-                  <select
-                    value={editDraft.autoPayKey}
-                    onChange={(e) => setEditDraft((p) => Object.assign({}, p, { autoPayKey: e.target.value }))}
-                    className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
-                  >
-                    <option value="">自動採用預設找數戶口</option>
-                    {bankOptions.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
-                  </select>
-                </div>
-
-                <div>
                   <label className="text-[11px] text-zinc-400 block mb-1">回贈／用途備註</label>
                   <input
                     type="text"
@@ -713,12 +930,14 @@
               </div>
             )}
 
-            {/* Cross-Pool Settlement Breakdown Panel */}
-            <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3.5">
-              <div className="flex items-center justify-between gap-2">
+            {/* FLAGSHIP SECTION: Actionable Step-by-Step Transfer-to-Main-Account Settlement Plan */}
+            <div className="rounded-2xl bg-[#111114] border border-white/[0.12] p-4 space-y-4">
+              <div className="flex items-start justify-between gap-2">
                 <div>
-                  <div className="text-[14.5px] font-semibold text-white">跨資金池自動分攤找數</div>
-                  <div className="text-[11px] text-zinc-400 mt-0.5">依每筆簽帳的歸屬資金池自動計算各銀行應付</div>
+                  <div className="text-[15.5px] font-bold text-white">找數轉帳指引（轉入主找數戶口）</div>
+                  <div className="text-[11.5px] text-zinc-400 mt-0.5">
+                    主找數戶口：<span className="text-emerald-300 font-semibold">{focusedPlan.mainBank ? focusedPlan.mainBank.label : '未設定'}</span>
+                  </div>
                 </div>
               </div>
 
@@ -726,63 +945,178 @@
                 value={bucketFilter}
                 onChange={setBucketFilter}
                 options={[
-                  { value: 'ALL', label: '全部待繳' },
                   { value: 'BILLED', label: '本期已出帳' },
-                  { value: 'UNBILLED', label: '未出帳下期' }
+                  { value: 'UNBILLED', label: '未出帳下期' },
+                  { value: 'ALL', label: '全部待繳' }
                 ]}
               />
 
-              {focusedBreakdown.targetTotal <= 0 ? (
-                <div className="py-5 text-center text-[12.5px] text-zinc-500">
-                  此帳期目前無待繳金額。
+              {focusedPlan.targetTotal <= 0 ? (
+                <div className="py-6 text-center text-[13px] text-zinc-500">
+                  此帳期目前無待繳金額，無需轉帳或找數。
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {/* Per-Pool Breakdown */}
-                  <div className="space-y-1.5">
-                    <div className="text-[11px] font-medium text-zinc-400">資金池歸屬明細</div>
-                    {focusedBreakdown.pools.map((p) => (
-                      <div key={p.poolId} className="px-3 py-2.5 rounded-xl bg-black/45 border border-white/[0.06] flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: p.color }} />
-                            <span className="text-[13px] font-semibold text-white truncate">{p.poolName}</span>
-                          </div>
-                          <div className="text-[11px] text-zinc-500 mt-0.5 pl-4 truncate">
-                            找數戶口：{p.bank ? p.bank.label : '未綁定'}
-                          </div>
-                        </div>
-                        <span className="text-[13.5px] font-bold text-white tabular-nums whitespace-nowrap shrink-0">
-                          {Store.formatMoney(p.amount, focusedCard.currency)}
-                        </span>
+                <div className="space-y-4">
+                  {/* STEP 1: Cross-Bank Transfers INTO Main Bank Account */}
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[12px] font-bold text-amber-300 flex items-center gap-1.5">
+                        <span className="w-5 h-5 rounded-full bg-amber-400 text-black text-[11px] font-bold inline-flex items-center justify-center">1</span>
+                        需從其他銀行轉入主戶
+                      </span>
+                      <span className="text-[11.5px] font-semibold tabular-nums text-zinc-400">
+                        {focusedPlan.totalInboundRemaining > 0
+                          ? `尚待轉入 ${Store.formatMoney(focusedPlan.totalInboundRemaining, focusedCard.currency)}`
+                          : '已全部就位'}
+                      </span>
+                    </div>
+
+                    {focusedPlan.inboundTransfers.length === 0 ? (
+                      <div className="px-3.5 py-3 rounded-xl bg-emerald-500/10 border border-emerald-400/20 text-[12.5px] text-emerald-300">
+                        ✓ 此帳期所有消費皆屬於主找數戶口（{focusedPlan.mainBank ? focusedPlan.mainBank.shortName : '主戶'}），無需跨行轉帳。
                       </div>
-                    ))}
+                    ) : (
+                      <div className="space-y-2.5">
+                        {focusedPlan.inboundTransfers.map((tr) => (
+                          <div
+                            key={tr.fromKey}
+                            className={`p-3.5 rounded-2xl border space-y-2.5 ${
+                              tr.isDone
+                                ? 'bg-emerald-500/10 border-emerald-400/25'
+                                : 'bg-gradient-to-r from-amber-500/10 via-black/50 to-black/50 border-amber-400/35'
+                            }`}
+                          >
+                            {/* Directional Visual Flow: From Bank ---> Card Main Bank */}
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5 flex-wrap text-[13.5px]">
+                                  <span className="font-bold text-white">{tr.fromShortName}</span>
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-300 text-[11px] font-bold">➔ 轉入</span>
+                                  <span className="font-bold text-emerald-300">{tr.toLabel}</span>
+                                </div>
+                                <div className="text-[11px] text-zinc-400 mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
+                                  {tr.pools.map((p) => (
+                                    <span key={p.poolId} className="inline-flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: p.color }} />
+                                      {p.name} {Store.formatMoney(p.amount, focusedCard.currency)}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Amount + 1-Tap Execute Transfer Button */}
+                            <div className="pt-2 border-t border-white/[0.08] flex items-center justify-between gap-2">
+                              <div>
+                                <div className="text-[10.5px] text-zinc-400">
+                                  {tr.isDone ? '已轉入主戶金額' : '應轉帳金額'}
+                                </div>
+                                <div className={`text-[18px] font-bold tabular-nums leading-tight ${
+                                  tr.isDone ? 'text-emerald-400' : 'text-amber-300'
+                                }`}>
+                                  {Store.formatMoney(tr.isDone ? tr.requiredAmount : tr.remainingAmount, focusedCard.currency)}
+                                </div>
+                                {tr.fromCurrency !== focusedCard.currency && !tr.isDone && (
+                                  <div className="text-[10.5px] text-zinc-400 tabular-nums">
+                                    約扣 {Store.formatMoney(tr.remainingInSourceCur, tr.fromCurrency)}
+                                  </div>
+                                )}
+                              </div>
+
+                              {tr.isDone ? (
+                                <span className="px-3 py-1.5 rounded-xl bg-emerald-400/20 border border-emerald-400/35 text-emerald-300 text-[12px] font-bold shrink-0">
+                                  ✓ 已歸墊主戶
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleSingleReimburse(tr)}
+                                  className="px-3.5 py-2 rounded-xl bg-amber-400 text-black text-[12.5px] font-bold active:scale-95 transition shrink-0 whitespace-nowrap"
+                                >
+                                  立即轉入主戶
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
-                  {/* Grouped By Settlement Bank Account */}
-                  <div className="pt-2.5 border-t border-white/[0.06] space-y-2">
-                    <div className="text-[11px] font-medium text-emerald-300">各銀行戶口應撥付彙總</div>
-                    {focusedBreakdown.byBank.map((b) => (
-                      <div key={b.key} className="px-3 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-400/20 flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="text-[13.5px] font-bold text-white truncate">{b.label}</div>
-                          <div className="text-[11px] text-emerald-200/75 truncate mt-0.5">
-                            涵蓋：{b.pools.map((x) => x.name).join('、')}
-                          </div>
-                        </div>
-                        <span className="text-[14.5px] font-bold text-emerald-300 tabular-nums whitespace-nowrap shrink-0">
-                          {Store.formatMoney(b.amount, focusedCard.currency)}
+                  {/* STEP 2: Main Bank Self-Portion & Final Auto-Pay Summary */}
+                  <div className="pt-3 border-t border-white/[0.08] space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[12px] font-bold text-emerald-300 flex items-center gap-1.5">
+                        <span className="w-5 h-5 rounded-full bg-emerald-400 text-black text-[11px] font-bold inline-flex items-center justify-center">2</span>
+                        由主找數戶口一次清償卡數
+                      </span>
+                    </div>
+
+                    <div className="p-3.5 rounded-2xl bg-black/50 border border-white/[0.08] space-y-2 text-[12.5px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-zinc-400 truncate">
+                          主戶本位負擔（免轉帳{focusedPlan.mainBankSelfPools.length ? ` · ${focusedPlan.mainBankSelfPools.map((p) => p.name).join('、')}` : ''}）
+                        </span>
+                        <span className="font-semibold text-zinc-200 tabular-nums whitespace-nowrap shrink-0">
+                          {Store.formatMoney(focusedPlan.mainBankSelfAmount, focusedCard.currency)}
                         </span>
                       </div>
-                    ))}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-zinc-400">＋ 他行跨戶轉入總計</span>
+                        <span className="font-semibold text-amber-300 tabular-nums whitespace-nowrap shrink-0">
+                          {Store.formatMoney(focusedPlan.totalInboundRequired, focusedCard.currency)}
+                        </span>
+                      </div>
+                      <div className="pt-2 border-t border-white/[0.08] flex items-center justify-between gap-2">
+                        <span className="font-bold text-white">
+                          ＝ {focusedPlan.mainBank ? focusedPlan.mainBank.shortName : '主戶'} 到期總扣款
+                        </span>
+                        <span className="text-[16px] font-bold text-white tabular-nums whitespace-nowrap shrink-0">
+                          {Store.formatMoney(focusedPlan.targetTotal, focusedCard.currency)}
+                        </span>
+                      </div>
 
-                    <button
-                      type="button"
-                      onClick={() => openPayBillSheet('SPLIT')}
-                      className="w-full py-3 rounded-xl bg-emerald-400 text-black text-[13.5px] font-bold active:scale-[0.99] transition"
-                    >
-                      依資金池一鍵拆單找數 ({Store.formatMoney(focusedBreakdown.targetTotal, focusedCard.currency)})
-                    </button>
+                      {focusedPlan.mainBank && (
+                        <div className={`mt-1 px-2.5 py-1.5 rounded-xl text-[11px] flex items-center justify-between gap-2 tabular-nums ${
+                          focusedPlan.isMainBankSufficientAfterInbound
+                            ? 'bg-white/[0.04] text-zinc-400'
+                            : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                        }`}>
+                          <span>主戶餘額檢核</span>
+                          <span className="font-semibold whitespace-nowrap">
+                            現有 {Store.formatMoney(focusedPlan.mainBank.balanceAmount, focusedPlan.mainBank.currency)} ➔ 找數後 {Store.formatMoney(focusedPlan.mainBankAfterPay, focusedPlan.mainBank.currency)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Primary Action Buttons */}
+                    {focusedPlan.totalInboundRemaining > 0 ? (
+                      <div className="space-y-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => openPayBillSheet('MAIN_FLOW')}
+                          className="w-full py-3.5 rounded-xl bg-emerald-400 text-black text-[14px] font-bold active:scale-[0.99] transition"
+                        >
+                          一步到位：歸墊至主戶 ＋ 主戶找數
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleReimburseAllForCard}
+                          className="w-full py-2.5 rounded-xl bg-amber-400/15 border border-amber-400/35 text-amber-300 text-[13px] font-semibold active:bg-amber-400/25 transition"
+                        >
+                          僅先執行全部歸墊轉帳（等自動扣款）
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => openPayBillSheet('MAIN_FLOW')}
+                        className="w-full py-3.5 rounded-xl bg-emerald-400 text-black text-[14px] font-bold active:scale-[0.99] transition"
+                      >
+                        由主戶（{focusedPlan.mainBank ? focusedPlan.mainBank.shortName : '主找數戶'}）清償 {Store.formatMoney(focusedPlan.targetTotal, focusedCard.currency)}
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -791,25 +1125,28 @@
             {/* Card Recent Transactions */}
             <div className="rounded-2xl bg-[#111114] border border-white/[0.08] overflow-hidden">
               <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
-                <span className="text-[13.5px] font-semibold text-white">本卡近期交易</span>
+                <span className="text-[13.5px] font-semibold text-white">本卡相關簽帳與找數紀錄</span>
                 <span className="text-[11px] text-zinc-500 tabular-nums">{cardTransactions.length} 筆</span>
               </div>
               {cardTransactions.length === 0 ? (
                 <div className="py-8 text-center text-[12.5px] text-zinc-500">
-                  尚無對應交易紀錄
+                  此帳期尚無對應交易紀錄
                 </div>
               ) : (
                 <div className="divide-y divide-white/[0.06]">
                   {cardTransactions.map((tx) => {
                     const isPayment = tx.toAccountKind === 'CARD' && tx.toAccountId === focusedCard.id;
-                    const isRefund = !isPayment && tx.type === 'INCOME';
-                    const pool = !isPayment ? getPoolObj(tx.poolId) : null;
+                    const isReimb = Boolean(tx.cardReimbursement && tx.cardReimbursement.cardId === focusedCard.id);
+                    const isRefund = !isPayment && !isReimb && tx.type === 'INCOME';
+                    const pool = !isPayment && !isReimb ? getPoolObj(tx.poolId) : null;
                     return (
                       <div key={tx.id} className="px-4 py-3 flex items-center justify-between gap-3">
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
                             <span className="text-[13.5px] font-semibold text-white truncate">{tx.title}</span>
-                            {isPayment ? (
+                            {isReimb ? (
+                              <span className="px-1.5 py-0.5 rounded text-[9.5px] font-semibold bg-amber-500/20 text-amber-300 shrink-0">歸墊</span>
+                            ) : isPayment ? (
                               <span className="px-1.5 py-0.5 rounded text-[9.5px] font-semibold bg-emerald-500/15 text-emerald-300 shrink-0">找數</span>
                             ) : (
                               <span className={`px-1.5 py-0.5 rounded text-[9.5px] font-semibold shrink-0 ${
@@ -830,9 +1167,11 @@
                           </div>
                         </div>
                         <div className={`text-[13.5px] font-semibold tabular-nums whitespace-nowrap shrink-0 ${
-                          isPayment || isRefund ? 'text-emerald-400' : 'text-white'
+                          isReimb ? 'text-amber-300' : (isPayment || isRefund ? 'text-emerald-400' : 'text-white')
                         }`}>
-                          {isPayment || isRefund
+                          {isReimb
+                            ? Store.formatMoney(tx.cardReimbursement.amountInCardCur || tx.settledAmount, focusedCard.currency)
+                            : isPayment || isRefund
                             ? Store.formatMoney(tx.settledAmount != null ? tx.settledAmount : tx.amount, focusedCard.currency, { showPlus: true })
                             : Store.formatMoney(-(tx.settledAmount != null ? tx.settledAmount : tx.amount), focusedCard.currency)}
                         </div>
@@ -855,7 +1194,7 @@
                       <button
                         key={c.id}
                         type="button"
-                        onClick={() => { setFocusedCardId(c.id); setFlipped(false); setBucketFilter('ALL'); }}
+                        onClick={() => openCardDetail(c)}
                         className="shrink-0 min-w-[146px] p-3 rounded-2xl border border-white/10 text-left active:scale-95 transition"
                         style={{ background: th.bg }}
                       >
@@ -876,7 +1215,7 @@
         <BottomSheet
           open={addCardOpen}
           title="新增信用卡"
-          subtitle="設定截數日、到期日與預設找數戶口"
+          subtitle="設定截數日、到期日與本卡主找數銀行戶口"
           onClose={() => setAddCardOpen(false)}
           footer={
             <button
@@ -908,9 +1247,21 @@
                   placeholder="8821"
                   value={newCard.last4}
                   onChange={(e) => setNewCard((p) => Object.assign({}, p, { last4: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) }))}
-                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white tabular-nums outline-none"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white tabular-nums outline-none"
                 />
               </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-400/25 space-y-1.5">
+              <label className="text-[12px] font-semibold text-emerald-300 block">本卡主找數／扣款銀行戶口</label>
+              <select
+                value={newCard.autoPayKey}
+                onChange={(e) => setNewCard((p) => Object.assign({}, p, { autoPayKey: e.target.value }))}
+                className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[13.5px] text-white outline-none"
+              >
+                <option value="">自動採用預設找數戶口</option>
+                {bankOptions.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+              </select>
             </div>
 
             <div className="grid grid-cols-2 gap-2.5">
@@ -988,18 +1339,6 @@
             </div>
 
             <div>
-              <label className="text-[12px] text-zinc-400 block mb-1">預設找數銀行戶口</label>
-              <select
-                value={newCard.autoPayKey}
-                onChange={(e) => setNewCard((p) => Object.assign({}, p, { autoPayKey: e.target.value }))}
-                className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[13.5px] text-white outline-none"
-              >
-                <option value="">自動採用預設找數戶口</option>
-                {bankOptions.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
-              </select>
-            </div>
-
-            <div>
               <label className="text-[12px] text-zinc-400 block mb-1">卡面質感</label>
               <div className="grid grid-cols-4 gap-2">
                 {Store.CARD_THEMES.map((t) => (
@@ -1031,11 +1370,11 @@
           </div>
         </BottomSheet>
 
-        {/* Sheet 2: Smart Card Bill Payment (Single Bank OR Cross-Pool Split Settlement) */}
+        {/* Sheet 2: Smart Card Bill Payment (Main-Account Flow with Reimbursements OR Direct Override) */}
         <BottomSheet
-          open={payOpen && Boolean(focusedCard)}
+          open={payOpen && Boolean(focusedCard && focusedPlan)}
           title={focusedCard ? `找數還款 · ${focusedCard.name}` : '找數還款'}
-          subtitle={focusedCard ? `總待繳 ${Store.formatMoney(focusedTotal, focusedCard.currency)}（已出帳 ${Store.formatMoney(focusedCard.billed || 0, focusedCard.currency)}）` : ''}
+          subtitle={focusedPlan && focusedPlan.mainBank ? `主找數戶口：${focusedPlan.mainBank.label}` : ''}
           onClose={() => setPayOpen(false)}
           footer={
             <button
@@ -1043,188 +1382,283 @@
               onClick={handleConfirmPayment}
               className="w-full py-3.5 rounded-2xl bg-emerald-400 text-black text-[15px] font-bold active:scale-[0.99] transition"
             >
-              {payMode === 'SINGLE'
-                ? `確認找數 ${focusedCard ? Store.formatMoney(singlePayAmount, focusedCard.currency) : ''}`
-                : `執行跨池拆單找數 (${splitRows.filter((r) => r.checked && Number(r.amount) > 0).length} 筆)`}
+              {payMode === 'MAIN_FLOW'
+                ? (payIncludeReimb && focusedPlan && focusedPlan.inboundTransfers.some((tr) => !tr.isDone && reimbCheckedMap[tr.fromKey])
+                    ? `執行歸墊並由主戶找數 ${focusedCard ? Store.formatMoney(directPayAmount, focusedCard.currency) : ''}`
+                    : `由主戶清償找數 ${focusedCard ? Store.formatMoney(directPayAmount, focusedCard.currency) : ''}`)
+                : `確認直接找數 ${focusedCard ? Store.formatMoney(directPayAmount, focusedCard.currency) : ''}`}
             </button>
           }
         >
-          <div className="space-y-4">
-            <SegmentedControl
-              value={payMode}
-              onChange={setPayMode}
-              options={[
-                { value: 'SINGLE', label: '單一銀行找數' },
-                { value: 'SPLIT', label: '跨池自動拆單' }
-              ]}
-            />
+          {focusedCard && focusedPlan && (
+            <div className="space-y-4">
+              <SegmentedControl
+                value={payMode}
+                onChange={setPayMode}
+                options={[
+                  { value: 'MAIN_FLOW', label: '主戶找數（含歸墊）' },
+                  { value: 'DIRECT', label: '自選單戶直接找數' }
+                ]}
+              />
 
-            {payMode === 'SINGLE' && focusedCard && (
-              <div className="space-y-3.5">
-                <div>
-                  <label className="text-[12px] text-zinc-400 block mb-1.5">扣款銀行／錢包戶口</label>
-                  <select
-                    value={singlePayKey}
-                    onChange={(e) => setSinglePayKey(e.target.value)}
-                    className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
-                  >
-                    {bankOptions.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-[12px] text-zinc-400 block mb-1.5">
-                    找數金額 ({focusedCard.currency})
-                  </label>
-                  <NumericInput
-                    size="lg"
-                    value={singlePayAmount}
-                    currency={focusedCard.currency}
-                    label={`輸入找數金額 (${focusedCard.currency})`}
-                    onChange={(val) => setSinglePayAmount(val)}
-                    className="!text-emerald-400"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  {(focusedCard.billed || 0) > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => { setSinglePayAmount(focusedCard.billed); setSinglePayTarget('BILLED_FIRST'); }}
-                      className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-400/30 text-[12.5px] font-semibold text-amber-300 tabular-nums"
-                    >
-                      清本期 {Store.formatMoney(focusedCard.billed, focusedCard.currency)}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => { setSinglePayAmount(focusedTotal); setSinglePayTarget('BILLED_FIRST'); }}
-                    className={`py-2.5 px-3 rounded-xl bg-white/[0.08] border border-white/15 text-[12.5px] font-semibold text-white tabular-nums ${
-                      (focusedCard.billed || 0) > 0 ? '' : 'col-span-2'
-                    }`}
-                  >
-                    清全部 {Store.formatMoney(focusedTotal, focusedCard.currency)}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {payMode === 'SPLIT' && focusedCard && (
-              <div className="space-y-2.5">
-                {splitRows.length === 0 ? (
-                  <div className="py-6 text-center text-[13px] text-zinc-500">目前無可拆單金額。</div>
-                ) : (
-                  splitRows.map((row, idx) => (
-                    <div
-                      key={row.id}
-                      className={`p-3.5 rounded-2xl border space-y-2.5 transition ${
-                        row.checked ? 'bg-black/50 border-white/15' : 'bg-black/25 border-white/[0.05] opacity-55'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
+              {payMode === 'MAIN_FLOW' && (
+                <div className="space-y-4">
+                  {/* Step 1: Inbound reimbursements to main bank */}
+                  {focusedPlan.inboundTransfers.filter((tr) => !tr.isDone).length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[12px] font-bold text-amber-300">步驟 1：同步執行跨行歸墊至主戶</span>
                         <button
                           type="button"
-                          onClick={() => setSplitRows((prev) => prev.map((r, i) => i === idx ? Object.assign({}, r, { checked: !r.checked }) : r))}
-                          className="flex items-center gap-2 text-left min-w-0 flex-1"
+                          onClick={() => setPayIncludeReimb(!payIncludeReimb)}
+                          className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+                            payIncludeReimb ? 'bg-amber-400 text-black' : 'bg-white/10 text-zinc-400'
+                          }`}
                         >
-                          <span className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
-                            row.checked ? 'bg-emerald-400 border-emerald-400 text-black' : 'border-white/25'
-                          }`}>
-                            {row.checked && <Icon name="check" size={13} strokeWidth={2.5} />}
-                          </span>
-                          <span className="text-[12px] text-zinc-300 truncate">
-                            資金池：{row.poolLabels || '一般'}
-                          </span>
+                          {payIncludeReimb ? '包含歸墊' : '略過歸墊'}
                         </button>
                       </div>
 
-                      <select
-                        value={row.bankKey}
-                        onChange={(e) => setSplitRows((prev) => prev.map((r, i) => i === idx ? Object.assign({}, r, { bankKey: e.target.value }) : r))}
-                        className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
-                      >
-                        {bankOptions.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
-                      </select>
-
-                      <NumericInput
-                        size="sm"
-                        value={row.amount}
-                        currency={focusedCard.currency}
-                        label="調整此戶口找數金額"
-                        onChange={(val) => setSplitRows((prev) => prev.map((r, i) => i === idx ? Object.assign({}, r, { amount: val }) : r))}
-                      />
+                      {payIncludeReimb && focusedPlan.inboundTransfers.filter((tr) => !tr.isDone).map((tr) => {
+                        const checked = Boolean(reimbCheckedMap[tr.fromKey]);
+                        return (
+                          <button
+                            key={tr.fromKey}
+                            type="button"
+                            onClick={() => setReimbCheckedMap((p) => Object.assign({}, p, { [tr.fromKey]: !checked }))}
+                            className={`w-full p-3 rounded-xl border flex items-center justify-between gap-2 text-left transition ${
+                              checked ? 'bg-amber-500/10 border-amber-400/35' : 'bg-black/35 border-white/[0.06] opacity-55'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <span className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
+                                checked ? 'bg-amber-400 border-amber-400 text-black' : 'border-white/25'
+                              }`}>
+                                {checked && <Icon name="check" size={13} strokeWidth={2.5} />}
+                              </span>
+                              <div className="min-w-0">
+                                <div className="text-[13px] font-semibold text-white truncate">
+                                  {tr.fromShortName} ➔ {tr.toLabel}
+                                </div>
+                                <div className="text-[11px] text-zinc-400 truncate">
+                                  {tr.pools.map((p) => p.name).join('、')}
+                                </div>
+                              </div>
+                            </div>
+                            <span className="text-[13.5px] font-bold text-amber-300 tabular-nums whitespace-nowrap shrink-0">
+                              {Store.formatMoney(tr.remainingAmount, focusedCard.currency)}
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
+                  )}
+
+                  {/* Step 2: Main bank pays card */}
+                  <div className="space-y-2.5">
+                    <div className="text-[12px] font-bold text-emerald-300">
+                      步驟 {focusedPlan.inboundTransfers.filter((tr) => !tr.isDone).length > 0 ? '2' : '1'}：由主找數戶口（{focusedPlan.mainBank ? focusedPlan.mainBank.label : '未設定'}）扣款找數
+                    </div>
+                    <NumericInput
+                      size="lg"
+                      value={directPayAmount}
+                      currency={focusedCard.currency}
+                      label={`主戶找數金額 (${focusedCard.currency})`}
+                      onChange={(val) => setDirectPayAmount(val)}
+                      className="!text-emerald-400"
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      {(focusedCard.billed || 0) > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setDirectPayAmount(focusedCard.billed)}
+                          className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-400/30 text-[12.5px] font-semibold text-amber-300 tabular-nums"
+                        >
+                          清本期 {Store.formatMoney(focusedCard.billed, focusedCard.currency)}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setDirectPayAmount(focusedTotal)}
+                        className={`py-2.5 px-3 rounded-xl bg-white/[0.08] border border-white/15 text-[12.5px] font-semibold text-white tabular-nums ${
+                          (focusedCard.billed || 0) > 0 ? '' : 'col-span-2'
+                        }`}
+                      >
+                        清全部 {Store.formatMoney(focusedTotal, focusedCard.currency)}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {payMode === 'DIRECT' && (
+                <div className="space-y-3.5">
+                  <div>
+                    <label className="text-[12px] text-zinc-400 block mb-1.5">自選扣款銀行／錢包戶口</label>
+                    <select
+                      value={directPayKey}
+                      onChange={(e) => setDirectPayKey(e.target.value)}
+                      className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                    >
+                      {bankOptions.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[12px] text-zinc-400 block mb-1.5">
+                      找數金額 ({focusedCard.currency})
+                    </label>
+                    <NumericInput
+                      size="lg"
+                      value={directPayAmount}
+                      currency={focusedCard.currency}
+                      label={`輸入找數金額 (${focusedCard.currency})`}
+                      onChange={(val) => setDirectPayAmount(val)}
+                      className="!text-emerald-400"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </BottomSheet>
 
-        {/* Sheet 3: Global Cross-Card Bank Settlement Overview */}
+        {/* Sheet 3: Global Cross-Card Bank Transfer Plan (Merged From -> To Main Bank Instructions) */}
         <BottomSheet
           open={globalSettleOpen}
-          title="全信用卡 · 各銀行找數總覽"
-          subtitle="依歸屬資金池彙總每個銀行戶口應準備的找數資金"
+          title="全信用卡 · 跨戶歸墊轉帳總覽"
+          subtitle="依每張卡的主找數戶口，自動合併同方向之跨行轉帳"
           onClose={() => setGlobalSettleOpen(false)}
+          footer={
+            globalTransferPlan.pendingRouteCount > 0 ? (
+              <button
+                type="button"
+                onClick={handleExecuteAllGlobalRoutes}
+                className="w-full py-3.5 rounded-2xl bg-amber-400 text-black text-[15px] font-bold active:scale-[0.99] transition"
+              >
+                一鍵執行全部待歸墊轉帳 ({Store.formatMoney(globalTransferPlan.grandTransferRemainingBase, state.meta.baseCurrency)})
+              </button>
+            ) : null
+          }
         >
           <div className="space-y-4">
             <SegmentedControl
               value={globalSettleBucket}
               onChange={setGlobalSettleBucket}
               options={[
-                { value: 'ALL', label: '全部待繳' },
-                { value: 'BILLED', label: '僅本期已出帳' },
-                { value: 'UNBILLED', label: '僅未出帳下期' }
+                { value: 'BILLED', label: '本期已出帳' },
+                { value: 'UNBILLED', label: '未出帳下期' },
+                { value: 'ALL', label: '全部待繳' }
               ]}
             />
 
-            <div className="p-3.5 rounded-2xl bg-black/50 border border-white/[0.08] flex items-center justify-between">
-              <span className="text-[12.5px] text-zinc-400">彙總應準備金額（折算 {state.meta.baseCurrency}）</span>
-              <span className="text-[17px] font-bold text-white tabular-nums">
-                {Store.formatMoney(globalSummary.grandBase, state.meta.baseCurrency)}
-              </span>
+            {/* Section 1: Merged Cross-Bank Transfer Routes */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[12.5px] font-bold text-amber-300">步驟 1：跨銀行轉入主找數戶口清單</span>
+                <span className="text-[11px] text-zinc-400 tabular-nums">
+                  {globalTransferPlan.routes.length} 條路線
+                </span>
+              </div>
+
+              {globalTransferPlan.routes.length === 0 ? (
+                <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-400/20 text-[13px] text-emerald-300 text-center">
+                  ✓ 此帳期無需跨行轉帳，所有消費皆落在各卡主找數戶口內。
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {globalTransferPlan.routes.map((route) => (
+                    <div
+                      key={route.routeKey}
+                      className={`rounded-2xl border overflow-hidden ${
+                        route.isDone
+                          ? 'bg-emerald-500/10 border-emerald-400/25'
+                          : 'bg-black/50 border-amber-400/35'
+                      }`}
+                    >
+                      <div className="px-4 py-3 bg-white/[0.04] border-b border-white/[0.06] flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap text-[14px]">
+                            <span className="font-bold text-white">{route.fromShortName}</span>
+                            <span className="px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-300 text-[10.5px] font-bold">➔ 轉入</span>
+                            <span className="font-bold text-emerald-300">{route.toLabel}</span>
+                          </div>
+                        </div>
+                        <span className={`text-[15.5px] font-bold tabular-nums whitespace-nowrap shrink-0 ${
+                          route.isDone ? 'text-emerald-400' : 'text-amber-300'
+                        }`}>
+                          {route.isDone
+                            ? '✓ 已歸墊'
+                            : Store.formatMoney(route.totalRemainingInToCur, route.toCurrency)}
+                        </span>
+                      </div>
+
+                      <div className="divide-y divide-white/[0.05]">
+                        {route.breakdown.map((it) => (
+                          <button
+                            key={it.cardId}
+                            type="button"
+                            onClick={() => {
+                              setGlobalSettleOpen(false);
+                              setFocusedCardId(it.cardId);
+                              setBucketFilter(globalSettleBucket);
+                            }}
+                            className="w-full px-4 py-2.5 flex items-center justify-between gap-2 text-left active:bg-white/[0.05]"
+                          >
+                            <div className="min-w-0">
+                              <div className="text-[12.5px] font-medium text-zinc-100 truncate">
+                                {it.cardName} {it.last4 ? `(${it.last4})` : ''}
+                              </div>
+                              <div className="text-[11px] text-zinc-500 truncate">
+                                {it.pools.map((p) => `${p.name} ${Store.formatMoney(p.amount, it.currency)}`).join(' · ')}
+                              </div>
+                            </div>
+                            <span className={`text-[12.5px] font-semibold tabular-nums whitespace-nowrap shrink-0 ${
+                              it.isDone ? 'text-emerald-400' : 'text-zinc-200'
+                            }`}>
+                              {it.isDone ? '已歸墊' : Store.formatMoney(it.remainingAmount, it.currency)} ›
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+
+                      {!route.isDone && (
+                        <div className="px-3.5 py-2.5 bg-white/[0.02] border-t border-white/[0.06]">
+                          <button
+                            type="button"
+                            onClick={() => handleExecuteGlobalRoute(route)}
+                            className="w-full py-2 rounded-xl bg-amber-400 text-black text-[12.5px] font-bold active:scale-[0.99] transition"
+                          >
+                            立即從 {route.fromShortName} 轉入 {Store.formatMoney(route.totalRemainingInToCur, route.toCurrency)}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
-            {globalSummary.banks.length === 0 ? (
-              <div className="py-8 text-center text-[13px] text-zinc-500">
-                此帳期目前沒有待繳信用卡帳款。
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {globalSummary.banks.map((bank) => (
-                  <div key={bank.key} className="rounded-2xl bg-black/45 border border-white/[0.08] overflow-hidden">
-                    <div className="px-4 py-3 bg-white/[0.04] border-b border-white/[0.06] flex items-center justify-between gap-2">
-                      <span className="text-[14px] font-bold text-white truncate">{bank.label}</span>
-                      <span className="text-[14.5px] font-bold text-emerald-400 tabular-nums whitespace-nowrap shrink-0">
-                        {Store.formatMoney(bank.totalBase, state.meta.baseCurrency)}
+            {/* Section 2: Per-Main-Bank Upcoming Auto-Pay Totals & Balance Check */}
+            {globalTransferPlan.mainBanks.length > 0 && (
+              <div className="pt-2 border-t border-white/[0.08] space-y-2.5">
+                <span className="text-[12.5px] font-bold text-emerald-300 block">步驟 2：各主找數戶口到期扣款檢核</span>
+                {globalTransferPlan.mainBanks.map((mb) => (
+                  <div key={mb.key} className="p-3.5 rounded-2xl bg-black/45 border border-white/[0.08] space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[14px] font-bold text-white truncate">{mb.label}</span>
+                      <span className="text-[14.5px] font-bold text-white tabular-nums whitespace-nowrap shrink-0">
+                        扣款 {Store.formatMoney(mb.totalPayInMainCur, mb.currency)}
                       </span>
                     </div>
-                    <div className="divide-y divide-white/[0.05]">
-                      {bank.items.map((it) => (
-                        <button
-                          key={it.cardId}
-                          type="button"
-                          onClick={() => {
-                            setGlobalSettleOpen(false);
-                            setFocusedCardId(it.cardId);
-                            setBucketFilter(globalSettleBucket);
-                          }}
-                          className="w-full px-4 py-2.5 flex items-center justify-between gap-2 text-left active:bg-white/[0.05]"
-                        >
-                          <div className="min-w-0">
-                            <div className="text-[13px] font-medium text-zinc-100 truncate">
-                              {it.cardName} {it.last4 ? `(${it.last4})` : ''}
-                            </div>
-                            <div className="text-[11px] text-zinc-500 truncate">
-                              {it.pools.map((p) => p.name).join('、')}
-                            </div>
-                          </div>
-                          <span className="text-[13px] font-semibold text-zinc-200 tabular-nums whitespace-nowrap shrink-0">
-                            {Store.formatMoney(it.amount, it.currency)} ›
-                          </span>
-                        </button>
-                      ))}
+                    <div className="text-[11px] text-zinc-400">
+                      對應卡片：{mb.cards.map((c) => `${c.cardName} (${Store.formatMoney(c.amount, c.currency)})`).join('、')}
+                    </div>
+                    <div className={`px-2.5 py-1.5 rounded-xl text-[11px] flex items-center justify-between gap-2 tabular-nums ${
+                      mb.isSufficient ? 'bg-white/[0.04] text-zinc-300' : 'bg-rose-500/15 text-rose-300'
+                    }`}>
+                      <span>歸墊後餘額 {Store.formatMoney(mb.afterInbound, mb.currency)}</span>
+                      <span className="font-semibold">找數後 {Store.formatMoney(mb.afterPay, mb.currency)}</span>
                     </div>
                   </div>
                 ))}
