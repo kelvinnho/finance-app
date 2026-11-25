@@ -10,7 +10,7 @@
     { value: 'INCOME', label: '收入' },
     { value: 'TRANSFER', label: '轉帳' },
     { value: 'RECEIVABLE', label: '應收' },
-    { value: 'PAYABLE', label: '應付' }
+    { value: 'PAYABLE', label: '借貸' }
   ];
 
   function parseYMD(iso) {
@@ -37,6 +37,12 @@
     const parts = String(iso || '').split('-');
     if (parts.length !== 3) return iso || '';
     return `${Number(parts[1])}/${Number(parts[2])}`;
+  }
+
+  function formatDisplayDate(iso) {
+    const parts = String(iso || '').split('-');
+    if (parts.length !== 3) return iso || '';
+    return `${parts[0]} / ${parts[1]} / ${parts[2]}`;
   }
 
   function buildAccountOptions(state, includeCards) {
@@ -232,7 +238,7 @@
     }, [open, editingTx, initialType, prefillToCardId]);
 
     const allowCardsForType = txType === 'EXPENSE' || txType === 'RECEIVABLE';
-    const showPoolForType = txType === 'EXPENSE' || txType === 'RECEIVABLE' || txType === 'PAYABLE';
+    const showPoolForType = txType === 'EXPENSE' || txType === 'RECEIVABLE';
 
     const filteredCats = useMemo(() => {
       const targetType = txType === 'INCOME' ? 'INCOME' : 'EXPENSE';
@@ -354,6 +360,7 @@
           }
         }
         if (nextType === 'INCOME' && (panel === 'POOL' || panel === 'BILLING')) setPanel('KEYPAD');
+        if (nextType === 'PAYABLE' && (panel === 'CATEGORY' || panel === 'POOL' || panel === 'BILLING')) setPanel('KEYPAD');
       }
     };
 
@@ -450,7 +457,7 @@
           : txType === 'RECEIVABLE'
           ? `代墊 · ${counterparty.trim() || (selectedSub ? selectedSub.name : (selectedCat ? selectedCat.name : '應收款項'))}`
           : txType === 'PAYABLE'
-          ? `借款 · ${counterparty.trim() || '應付款項'}`
+          ? (counterparty.trim() ? `借入 · ${counterparty.trim()}` : '借貸款項')
           : (selectedSub ? selectedSub.name : (selectedCat ? selectedCat.name : '日常紀錄'))
       );
 
@@ -467,9 +474,9 @@
         toAccountKind: txType === 'TRANSFER' && toOpt ? 'ACCOUNT' : null,
         toAccountId: txType === 'TRANSFER' && toOpt ? toOpt.accountId : null,
         toBalanceId: txType === 'TRANSFER' && toOpt ? toOpt.balanceId : null,
-        categoryId: txType === 'TRANSFER' ? null : (selectedCat ? selectedCat.id : null),
-        subCategoryId: txType === 'TRANSFER' ? null : (selectedSub ? selectedSub.id : null),
-        subCategoryName: txType === 'TRANSFER' ? '' : (selectedSub ? selectedSub.name : ''),
+        categoryId: (txType === 'TRANSFER' || txType === 'PAYABLE') ? null : (selectedCat ? selectedCat.id : null),
+        subCategoryId: (txType === 'TRANSFER' || txType === 'PAYABLE') ? null : (selectedSub ? selectedSub.id : null),
+        subCategoryName: (txType === 'TRANSFER' || txType === 'PAYABLE') ? '' : (selectedSub ? selectedSub.name : ''),
         poolId: showPoolForType ? poolId : null,
         billingBucket: isCardSelected ? billingBucket : null,
         counterparty: (txType === 'RECEIVABLE' || txType === 'PAYABLE') ? counterparty.trim() : '',
@@ -511,7 +518,7 @@
       : txType === 'RECEIVABLE'
       ? '代墊付款'
       : txType === 'PAYABLE'
-      ? '借款入帳'
+      ? '借入帳戶'
       : (isCardSelected ? '信用卡' : '付款帳戶');
 
     const keypadKeys = [
@@ -663,8 +670,63 @@
                   </button>
                 </div>
               </div>
+            ) : txType === 'PAYABLE' ? (
+              /* === PAYABLE (借貸) Dedicated 2-Row Inflow Layout (No Category, No Pool) === */
+              <div className="rounded-2xl bg-[#141417] border border-white/[0.09] divide-y divide-white/[0.08] overflow-hidden">
+                <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
+                  <button
+                    type="button"
+                    onClick={() => togglePanel('NOTE')}
+                    className={`h-[58px] px-3.5 flex items-center gap-2.5 text-left transition min-w-0 ${panel === 'NOTE' ? activeCellClass : ''}`}
+                  >
+                    <span className="shrink-0 text-amber-400">
+                      <Icon name="users" size={19} />
+                    </span>
+                    <span className={`text-[15.5px] truncate flex-1 ${counterparty ? 'text-amber-300 font-semibold' : 'text-amber-400/80 font-medium'}`}>
+                      {counterparty ? `待還 · ${counterparty}` : '借貸對象'}
+                    </span>
+                    <span className="text-[11px] text-zinc-500 shrink-0">▾</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => togglePanel('DATETIME')}
+                    className={`h-[58px] px-3.5 flex items-center justify-between gap-2 text-left transition min-w-0 ${panel === 'DATETIME' ? activeCellClass : ''}`}
+                  >
+                    <span className="text-[15px] font-semibold text-emerald-300 tabular-nums truncate">
+                      {formatShortDate(date)} · {time}
+                    </span>
+                    <Icon name="calendar" size={16} className="text-zinc-400 shrink-0" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
+                  <button
+                    type="button"
+                    onClick={() => togglePanel('NOTE')}
+                    className={`h-[58px] px-3.5 flex items-center gap-2 text-left transition min-w-0 ${panel === 'NOTE' ? activeCellClass : ''}`}
+                  >
+                    <span className="text-zinc-500 text-[14px] shrink-0">↳</span>
+                    <span className={`text-[15px] truncate flex-1 ${title ? 'text-white font-medium' : 'text-zinc-400'}`}>
+                      {title || '借貸款項'}
+                    </span>
+                    <span className="text-[11px] text-zinc-500 shrink-0">▾</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => togglePanel('NOTE')}
+                    className={`h-[58px] px-3.5 flex items-center justify-between gap-2 text-left transition min-w-0 ${panel === 'NOTE' ? activeCellClass : ''}`}
+                  >
+                    <span className={`text-[14px] truncate ${note ? 'text-white font-medium' : 'text-zinc-500'}`}>
+                      {note || '備註說明'}
+                    </span>
+                    <span className="text-[11px] text-zinc-500 shrink-0">▾</span>
+                  </button>
+                </div>
+              </div>
             ) : (
-              /* === EXPENSE / INCOME / RECEIVABLE / PAYABLE Larger & Clearer Info Grid === */
+              /* === EXPENSE / INCOME / RECEIVABLE Larger & Clearer Info Grid === */
               <div className="rounded-2xl bg-[#141417] border border-white/[0.09] divide-y divide-white/[0.08] overflow-hidden">
                 {/* Row 1: Major Category | Date & Time */}
                 <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
@@ -826,6 +888,17 @@
               </div>
             )}
 
+            {txType === 'PAYABLE' && fromOpt && (
+              <div className="px-3.5 py-2 rounded-xl bg-amber-500/10 border border-amber-400/25 flex items-center justify-between gap-2 text-[12.5px]">
+                <span className="text-amber-200/90 truncate">
+                  借入至：<strong className="text-white">{fromOpt.label}</strong>（待償還）
+                </span>
+                <span className="text-emerald-300 font-semibold tabular-nums whitespace-nowrap shrink-0">
+                  借入後 {Store.formatMoney(Store.round2(fromOpt.amount + (isCrossCurrency ? settledAmount : numericAmount)), fromOpt.currency)}
+                </span>
+              </div>
+            )}
+
             {isCrossCurrency && (
               <button
                 type="button"
@@ -887,7 +960,7 @@
                 <div className={`font-bold tabular-nums tracking-tight leading-none truncate w-full ${
                   expr.length > 11 ? 'text-[22px]' : 'text-[28px]'
                 } ${
-                  txType === 'INCOME' ? 'text-emerald-400' : 'text-white'
+                  (txType === 'INCOME' || txType === 'PAYABLE') ? 'text-emerald-400' : 'text-white'
                 }`}>
                   {expr}
                 </div>
@@ -1372,27 +1445,45 @@
                     </button>
                   ))}
                 </div>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="text-[11.5px] text-zinc-400 block mb-1">自訂日期</label>
-                    <input
-                      type="date"
-                      value={date}
-                      onChange={(e) => {
-                        setDate(e.target.value);
-                        if (isCardSelected) setBillingAuto(true);
-                      }}
-                      className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
-                    />
+                <div className="grid grid-cols-12 gap-2.5">
+                  <div className="col-span-7 min-w-0">
+                    <label className="text-[11.5px] text-zinc-400 block mb-1.5">自訂日期</label>
+                    <div className="relative h-[46px] rounded-xl bg-black/60 border border-white/[0.12] px-3 flex items-center justify-between gap-2 overflow-hidden active:border-white/40 transition">
+                      <span className="text-[14.5px] font-semibold text-white tabular-nums truncate">
+                        {formatDisplayDate(date)}
+                      </span>
+                      <Icon name="calendar" size={16} className="text-zinc-400 shrink-0" />
+                      <input
+                        type="date"
+                        value={date}
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            setDate(e.target.value);
+                            if (isCardSelected) setBillingAuto(true);
+                          }
+                        }}
+                        aria-label="選擇日期"
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-[11.5px] text-zinc-400 block mb-1">時間</label>
-                    <input
-                      type="time"
-                      value={time}
-                      onChange={(e) => setTime(e.target.value)}
-                      className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
-                    />
+                  <div className="col-span-5 min-w-0">
+                    <label className="text-[11.5px] text-zinc-400 block mb-1.5">時間</label>
+                    <div className="relative h-[46px] rounded-xl bg-black/60 border border-white/[0.12] px-3 flex items-center justify-between gap-1.5 overflow-hidden active:border-white/40 transition">
+                      <span className="text-[14.5px] font-semibold text-white tabular-nums truncate">
+                        {time}
+                      </span>
+                      <span className="text-[11px] text-zinc-400 shrink-0">▾</span>
+                      <input
+                        type="time"
+                        value={time}
+                        onChange={(e) => {
+                          if (e.target.value) setTime(e.target.value);
+                        }}
+                        aria-label="選擇時間"
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1414,7 +1505,7 @@
                 {(txType === 'RECEIVABLE' || txType === 'PAYABLE') && (
                   <div>
                     <label className="text-[11.5px] text-amber-300 block mb-1">
-                      {txType === 'RECEIVABLE' ? '代墊對象（待收回）' : '借款對象（待償還）'}
+                      {txType === 'RECEIVABLE' ? '代墊對象（待收回）' : '借貸對象（待償還）'}
                     </label>
                     <input
                       type="text"
@@ -1438,7 +1529,9 @@
                 {txType !== 'TRANSFER' && (
                   <div>
                     <label className="text-[11.5px] text-zinc-400 block mb-1">
-                      自訂項目標題（留空自動帶入：{selectedSub ? selectedSub.name : (selectedCat ? selectedCat.name : '類別名')}）
+                      {txType === 'PAYABLE'
+                        ? '借貸名稱／事由（留空自動帶入：借貸款項）'
+                        : `自訂項目標題（留空自動帶入：${selectedSub ? selectedSub.name : (selectedCat ? selectedCat.name : '類別名')}）`}
                     </label>
                     <input
                       type="text"
@@ -1932,7 +2025,7 @@
       state.transactions.forEach((tx) => {
         if (!tx.date || !tx.date.startsWith(monthPrefix)) return;
         if (!map[tx.date]) map[tx.date] = { inc: false, exp: false };
-        if (tx.type === 'INCOME' || (tx.type === 'LOAN_SETTLEMENT' && tx.settlementDirection === 'IN')) {
+        if (tx.type === 'INCOME' || tx.type === 'PAYABLE' || (tx.type === 'LOAN_SETTLEMENT' && tx.settlementDirection === 'IN')) {
           map[tx.date].inc = true;
         } else {
           map[tx.date].exp = true;
@@ -2037,7 +2130,7 @@
       const res = Store.deleteTransaction(tx.id);
       setExpandedTxId(null);
       if (res.mode === 'PAIRED_DELETE') {
-        showToast('已成對刪除代墊／借款與結清紀錄並回滾餘額');
+        showToast('已成對刪除代墊／借貸與結清紀錄並回滾餘額');
       } else if (res.mode === 'REOPEN_LOAN') {
         showToast('已刪除結清紀錄，原單已回復為待收／待還狀態');
       } else {
@@ -2193,9 +2286,9 @@
                     const cat = getCategoryObj(tx.categoryId);
                     const isLoan = tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE';
                     const isSettlement = tx.type === 'LOAN_SETTLEMENT';
-                    const isPositive = tx.type === 'INCOME' || (isSettlement && tx.settlementDirection === 'IN');
+                    const isPositive = tx.type === 'INCOME' || tx.type === 'PAYABLE' || (isSettlement && tx.settlementDirection === 'IN');
                     const isTransfer = tx.type === 'TRANSFER';
-                    const showPoolTag = !isTransfer && tx.type !== 'INCOME' && !isSettlement;
+                    const showPoolTag = tx.type === 'EXPENSE' || tx.type === 'RECEIVABLE';
                     const pool = showPoolTag ? getPoolObj(tx.poolId) : null;
 
                     const iconName = isTransfer

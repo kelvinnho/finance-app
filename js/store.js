@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 1 r14';
+  const APP_VERSION = 'Stage 1 r15';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -1255,7 +1255,7 @@
         counterparty: loanTx.counterparty || '',
         date: todayISO(),
         time: nowTimeHM(),
-        note: `對應${isReceivable ? '代墊' : '借款'}原單結清`
+        note: `對應${isReceivable ? '代墊' : '借貸'}原單結清`
       };
 
       applyTransactionEffect(draft, settleTx, 1);
@@ -1512,7 +1512,7 @@
         }
       });
       checks.push({
-        label: '應收／應付成對結清一致性',
+        label: '應收／借貸成對結清一致性',
         ok: !brokenLoan,
         detail: brokenLoan ? '發現孤立結清紀錄' : '雙向關聯 100% 閉環'
       });
