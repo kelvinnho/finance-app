@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 1 r15';
+  const APP_VERSION = 'Stage 2 r1';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -309,10 +309,12 @@
           creditLimit: 80000,
           statementDay: 15,
           dueDay: 5,
-          unbilled: 4280,
-          billed: 0,
+          unbilled: 1830,
+          billed: 2450,
           theme: 'titanium',
-          autoPayAccountId: 'acc_bank_main'
+          autoPayAccountId: 'acc_bank_main',
+          autoPayBalanceId: 'bal_main_base',
+          note: '日常與海外消費 2% 回贈'
         },
         {
           id: 'card_2',
@@ -325,7 +327,9 @@
           unbilled: 1320,
           billed: 0,
           theme: 'crimson',
-          autoPayAccountId: 'acc_bank_main'
+          autoPayAccountId: 'acc_bank_main',
+          autoPayBalanceId: 'bal_main_base',
+          note: '餐飲與外賣專享回贈'
         },
         {
           id: 'card_3',
@@ -338,7 +342,9 @@
           unbilled: 680,
           billed: 0,
           theme: 'sapphire',
-          autoPayAccountId: 'acc_bank_main'
+          autoPayAccountId: 'acc_bank_main',
+          autoPayBalanceId: 'bal_main_base',
+          note: '機票酒店與網購專卡'
         }
       ],
       investments: [
@@ -518,7 +524,10 @@
       pools: migratedPools,
       categories: migratedCats,
       accounts: Array.isArray(raw.accounts) ? raw.accounts : [],
-      cards: Array.isArray(raw.cards) ? raw.cards : [],
+      cards: Array.isArray(raw.cards) ? raw.cards.map((c) => Object.assign(
+        { last4: '', currency: base, creditLimit: 50000, statementDay: 15, dueDay: 5, unbilled: 0, billed: 0, theme: 'titanium', autoPayAccountId: null, autoPayBalanceId: null, note: '' },
+        c
+      )) : [],
       investments: Array.isArray(raw.investments) ? raw.investments : [],
       transactions: Array.isArray(raw.transactions) ? raw.transactions : [],
       splitRules: Array.isArray(raw.splitRules) ? raw.splitRules : []
@@ -602,7 +611,12 @@
         adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, -sign * amt);
       }
       if (tx.toAccountKind === 'CARD') {
-        adjustAccountOrCard(draft, 'CARD', tx.toAccountId, null, -sign * settled, tx.billingBucket);
+        if (tx.billedApplied != null || tx.unbilledApplied != null) {
+          if (tx.billedApplied) adjustAccountOrCard(draft, 'CARD', tx.toAccountId, null, -sign * tx.billedApplied, 'BILLED');
+          if (tx.unbilledApplied) adjustAccountOrCard(draft, 'CARD', tx.toAccountId, null, -sign * tx.unbilledApplied, 'UNBILLED');
+        } else {
+          adjustAccountOrCard(draft, 'CARD', tx.toAccountId, null, -sign * settled, tx.billingBucket);
+        }
       } else {
         adjustAccountOrCard(draft, 'ACCOUNT', tx.toAccountId, tx.toBalanceId, sign * settled);
       }
@@ -791,6 +805,194 @@
     return txD.getTime() <= lastStmtDate.getTime() ? 'BILLED' : 'UNBILLED';
   }
 
+  function resolveBankAccountInfo(accId, balId, preferredCurrency, st) {
+    const s = st || state;
+    let acc = accId ? (s.accounts || []).find((a) => a.id === accId) : null;
+    if (!acc) {
+      // Fall back to default payment account
+      for (let i = 0; i < (s.accounts || []).length; i++) {
+        const a = s.accounts[i];
+        const defB = (a.balances || []).find((b) => b.isDefaultPayment);
+        if (defB) {
+          return {
+            key: `${a.id}::${defB.id}`,
+            accountId: a.id,
+            balanceId: defB.id,
+            currency: defB.currency,
+            label: a.balances.length > 1 ? `${a.name} (${defB.currency})` : a.name
+          };
+        }
+      }
+      acc = (s.accounts || [])[0] || null;
+    }
+    if (!acc || !(acc.balances || []).length) return null;
+    let bal = balId ? acc.balances.find((b) => b.id === balId) : null;
+    if (!bal && preferredCurrency) bal = acc.balances.find((b) => b.currency === preferredCurrency);
+    if (!bal) bal = acc.balances[0];
+    return {
+      key: `${acc.id}::${bal.id}`,
+      accountId: acc.id,
+      balanceId: bal.id,
+      currency: bal.currency,
+      label: acc.balances.length > 1 ? `${acc.name} (${bal.currency})` : acc.name
+    };
+  }
+
+  function getCardPoolBreakdown(cardId, bucketFilter, st) {
+    const s = st || state;
+    const card = (s.cards || []).find((c) => c.id === cardId);
+    if (!card) return { targetTotal: 0, pools: [], byBank: [] };
+
+    const mode = bucketFilter || 'ALL'; // ALL | BILLED | UNBILLED
+    const targetTotal = mode === 'BILLED'
+      ? Math.max(0, round2(card.billed || 0))
+      : mode === 'UNBILLED'
+      ? Math.max(0, round2(card.unbilled || 0))
+      : Math.max(0, round2((card.billed || 0) + (card.unbilled || 0)));
+
+    const poolTotals = {};
+    const txCharges = (s.transactions || []).filter((tx) => {
+      if (tx.accountKind !== 'CARD' || tx.accountId !== cardId) return false;
+      if (tx.type !== 'EXPENSE' && tx.type !== 'RECEIVABLE' && tx.type !== 'INCOME') return false;
+      const b = tx.billingBucket || 'UNBILLED';
+      if (mode === 'BILLED' && b !== 'BILLED') return false;
+      if (mode === 'UNBILLED' && b !== 'UNBILLED') return false;
+      return true;
+    });
+
+    txCharges.forEach((tx) => {
+      const pid = tx.poolId || (s.pools[0] && s.pools[0].id) || 'pool_liquid';
+      const amt = round2(tx.settledAmount != null ? tx.settledAmount : tx.amount);
+      const signed = tx.type === 'INCOME' ? -amt : amt;
+      poolTotals[pid] = round2((poolTotals[pid] || 0) + signed);
+    });
+
+    const poolsList = [];
+    let taggedPositiveSum = 0;
+    Object.keys(poolTotals).forEach((pid) => {
+      const val = round2(poolTotals[pid]);
+      if (val <= 0) return;
+      const pObj = (s.pools || []).find((p) => p.id === pid) || { id: pid, name: '一般資金池', color: '#9CA3AF' };
+      const bankInfo = resolveBankAccountInfo(
+        pObj.settlementAccountId || card.autoPayAccountId,
+        pObj.settlementBalanceId || card.autoPayBalanceId,
+        card.currency,
+        s
+      );
+      poolsList.push({
+        poolId: pObj.id,
+        poolName: pObj.name,
+        color: pObj.color || '#9CA3AF',
+        amount: val,
+        bank: bankInfo
+      });
+      taggedPositiveSum = round2(taggedPositiveSum + val);
+    });
+
+    // Reconcile difference between tagged transactions and actual card debt (e.g., opening balance / partial payments)
+    const fallbackBank = resolveBankAccountInfo(card.autoPayAccountId, card.autoPayBalanceId, card.currency, s);
+    if (targetTotal > 0) {
+      if (taggedPositiveSum === 0) {
+        poolsList.push({
+          poolId: '__unassigned__',
+          poolName: '未歸類／期初帳款',
+          color: '#71717A',
+          amount: targetTotal,
+          bank: fallbackBank
+        });
+      } else if (taggedPositiveSum < targetTotal - 0.01) {
+        poolsList.push({
+          poolId: '__unassigned__',
+          poolName: '前期結轉／未分類餘額',
+          color: '#71717A',
+          amount: round2(targetTotal - taggedPositiveSum),
+          bank: fallbackBank
+        });
+      } else if (taggedPositiveSum > targetTotal + 0.01) {
+        // Scale down proportionally if card was partially paid
+        const ratio = targetTotal / taggedPositiveSum;
+        let running = 0;
+        poolsList.forEach((item, idx) => {
+          if (idx === poolsList.length - 1) {
+            item.amount = Math.max(0, round2(targetTotal - running));
+          } else {
+            item.amount = round2(item.amount * ratio);
+            running = round2(running + item.amount);
+          }
+        });
+      }
+    } else {
+      poolsList.length = 0;
+    }
+
+    // Group by settlement bank account
+    const bankMap = new Map();
+    poolsList.forEach((item) => {
+      const bKey = item.bank ? item.bank.key : '__unassigned_bank__';
+      if (!bankMap.has(bKey)) {
+        bankMap.set(bKey, {
+          key: bKey,
+          accountId: item.bank ? item.bank.accountId : null,
+          balanceId: item.bank ? item.bank.balanceId : null,
+          label: item.bank ? item.bank.label : '未綁定找數戶口',
+          currency: card.currency,
+          amount: 0,
+          pools: []
+        });
+      }
+      const entry = bankMap.get(bKey);
+      entry.amount = round2(entry.amount + item.amount);
+      entry.pools.push({ name: item.poolName, color: item.color, amount: item.amount });
+    });
+
+    return {
+      targetTotal,
+      pools: poolsList.sort((a, b) => b.amount - a.amount),
+      byBank: Array.from(bankMap.values()).sort((a, b) => b.amount - a.amount)
+    };
+  }
+
+  function getAllCardsSettlementSummary(bucketFilter, st) {
+    const s = st || state;
+    const bankAgg = new Map();
+    let grandBase = 0;
+
+    (s.cards || []).forEach((card) => {
+      const bd = getCardPoolBreakdown(card.id, bucketFilter, s);
+      if (bd.targetTotal <= 0) return;
+      grandBase = round2(grandBase + convertToBase(bd.targetTotal, card.currency, s));
+      bd.byBank.forEach((b) => {
+        const aggKey = b.key;
+        if (!bankAgg.has(aggKey)) {
+          bankAgg.set(aggKey, {
+            key: aggKey,
+            accountId: b.accountId,
+            balanceId: b.balanceId,
+            label: b.label,
+            totalBase: 0,
+            items: []
+          });
+        }
+        const entry = bankAgg.get(aggKey);
+        const amtBase = convertToBase(b.amount, card.currency, s);
+        entry.totalBase = round2(entry.totalBase + amtBase);
+        entry.items.push({
+          cardId: card.id,
+          cardName: card.name,
+          last4: card.last4,
+          currency: card.currency,
+          amount: b.amount,
+          pools: b.pools
+        });
+      });
+    });
+
+    return {
+      grandBase,
+      banks: Array.from(bankAgg.values()).sort((a, b) => b.totalBase - a.totalBase)
+    };
+  }
+
   const WealthStore = {
     APP_VERSION,
     SCHEMA_VERSION,
@@ -810,6 +1012,8 @@
     getSummaryMetrics,
     getCreditCardCycle,
     getAutoCardBillingBucket,
+    getCardPoolBreakdown,
+    getAllCardsSettlementSummary,
 
     getState() {
       return state;
@@ -901,6 +1105,12 @@
         if (p.settlementAccountId === accId) {
           p.settlementAccountId = null;
           p.settlementBalanceId = null;
+        }
+      });
+      draft.cards.forEach((c) => {
+        if (c.autoPayAccountId === accId) {
+          c.autoPayAccountId = null;
+          c.autoPayBalanceId = null;
         }
       });
       state = draft;
@@ -1034,6 +1244,157 @@
         state = draft;
         notify();
       }
+    },
+
+    // ---- Credit Cards Management & Cross-Pool Settlement (Module 2) ----
+    addCard(payload) {
+      const draft = cloneState();
+      const card = {
+        id: uid('card'),
+        name: (payload.name || '新信用卡').trim(),
+        last4: String(payload.last4 || '').replace(/[^0-9]/g, '').slice(-4),
+        currency: payload.currency || draft.meta.baseCurrency,
+        creditLimit: Math.max(0, round2(payload.creditLimit || 50000)),
+        statementDay: Math.min(28, Math.max(1, Number(payload.statementDay || 15))),
+        dueDay: Math.min(28, Math.max(1, Number(payload.dueDay || 5))),
+        billed: Math.max(0, round2(payload.billed || 0)),
+        unbilled: Math.max(0, round2(payload.unbilled || 0)),
+        theme: payload.theme || 'titanium',
+        autoPayAccountId: payload.autoPayAccountId || null,
+        autoPayBalanceId: payload.autoPayBalanceId || null,
+        note: (payload.note || '').trim()
+      };
+      draft.cards.push(card);
+      state = draft;
+      notify();
+      return card;
+    },
+
+    updateCard(cardId, patch) {
+      const draft = cloneState();
+      const card = draft.cards.find((c) => c.id === cardId);
+      if (!card) return;
+      if (patch.name != null) card.name = patch.name.trim() || card.name;
+      if (patch.last4 != null) card.last4 = String(patch.last4).replace(/[^0-9]/g, '').slice(-4);
+      if (patch.currency != null) card.currency = patch.currency;
+      if (patch.creditLimit != null && Number.isFinite(Number(patch.creditLimit))) {
+        card.creditLimit = Math.max(0, round2(patch.creditLimit));
+      }
+      if (patch.statementDay != null) card.statementDay = Math.min(28, Math.max(1, Number(patch.statementDay) || 15));
+      if (patch.dueDay != null) card.dueDay = Math.min(28, Math.max(1, Number(patch.dueDay) || 5));
+      if (patch.billed != null && Number.isFinite(Number(patch.billed))) card.billed = Math.max(0, round2(patch.billed));
+      if (patch.unbilled != null && Number.isFinite(Number(patch.unbilled))) card.unbilled = Math.max(0, round2(patch.unbilled));
+      if (patch.theme != null) card.theme = patch.theme;
+      if ('autoPayAccountId' in patch) card.autoPayAccountId = patch.autoPayAccountId || null;
+      if ('autoPayBalanceId' in patch) card.autoPayBalanceId = patch.autoPayBalanceId || null;
+      if (patch.note != null) card.note = patch.note.trim();
+      state = draft;
+      notify();
+    },
+
+    deleteCard(cardId) {
+      const draft = cloneState();
+      draft.cards = draft.cards.filter((c) => c.id !== cardId);
+      state = draft;
+      notify();
+    },
+
+    closeCardStatement(cardId) {
+      const draft = cloneState();
+      const card = draft.cards.find((c) => c.id === cardId);
+      if (!card) return 0;
+      const moved = round2(card.unbilled || 0);
+      if (moved <= 0) return 0;
+      card.billed = round2((card.billed || 0) + moved);
+      card.unbilled = 0;
+      // Roll matching UNBILLED card transactions to BILLED so cross-pool breakdown stays aligned
+      draft.transactions.forEach((tx) => {
+        if (tx.accountKind === 'CARD' && tx.accountId === cardId && (tx.billingBucket || 'UNBILLED') === 'UNBILLED') {
+          tx.billingBucket = 'BILLED';
+        }
+      });
+      state = draft;
+      notify();
+      return moved;
+    },
+
+    payCardBill(cardId, payments, targetMode) {
+      // payments: [{ fromAccountId, fromBalanceId, amount, note? }]
+      // targetMode: 'BILLED_FIRST' | 'UNBILLED_FIRST'
+      const draft = cloneState();
+      const card = draft.cards.find((c) => c.id === cardId);
+      if (!card || !Array.isArray(payments) || !payments.length) return 0;
+
+      const today = todayISO();
+      const time = nowTimeHM();
+      let count = 0;
+
+      payments.forEach((p) => {
+        const payAmt = round2(p.amount);
+        if (payAmt <= 0 || !p.fromAccountId) return;
+        const fromAcc = draft.accounts.find((a) => a.id === p.fromAccountId);
+        if (!fromAcc) return;
+        const fromBal = p.fromBalanceId
+          ? fromAcc.balances.find((b) => b.id === p.fromBalanceId)
+          : fromAcc.balances[0];
+        if (!fromBal) return;
+
+        // Calculate exact deduction from bank (convert if bank currency differs from card currency)
+        let bankDeduct = payAmt;
+        if (fromBal.currency !== card.currency) {
+          const inBase = convertToBase(payAmt, card.currency, draft);
+          const bankRate = (draft.meta.fxRates && draft.meta.fxRates[fromBal.currency]) || 1;
+          bankDeduct = round2(inBase / bankRate);
+        }
+
+        let billedApplied = 0;
+        let unbilledApplied = 0;
+        if (targetMode === 'UNBILLED_FIRST') {
+          const availUnbilled = Math.max(0, round2(card.unbilled || 0));
+          unbilledApplied = Math.min(payAmt, availUnbilled);
+          billedApplied = round2(payAmt - unbilledApplied);
+        } else {
+          const availBilled = Math.max(0, round2(card.billed || 0));
+          billedApplied = Math.min(payAmt, availBilled);
+          unbilledApplied = round2(payAmt - billedApplied);
+        }
+
+        const tx = {
+          id: uid('tx_cardpay'),
+          type: 'TRANSFER',
+          title: `找數 · ${card.name}`,
+          amount: bankDeduct,
+          currency: fromBal.currency,
+          settledAmount: payAmt,
+          settledCurrency: card.currency,
+          accountKind: 'ACCOUNT',
+          accountId: fromAcc.id,
+          balanceId: fromBal.id,
+          toAccountKind: 'CARD',
+          toAccountId: card.id,
+          toBalanceId: null,
+          billedApplied,
+          unbilledApplied,
+          billingBucket: billedApplied > 0 && unbilledApplied === 0 ? 'BILLED' : 'UNBILLED',
+          categoryId: null,
+          subCategoryId: null,
+          subCategoryName: '',
+          poolId: null,
+          date: today,
+          time,
+          note: p.note || `由 ${fromAcc.name} 找數還款`
+        };
+
+        applyTransactionEffect(draft, tx, 1);
+        draft.transactions.unshift(tx);
+        count++;
+      });
+
+      if (count > 0) {
+        state = draft;
+        notify();
+      }
+      return count;
     },
 
     // ---- Pools Management (Cross-Account Settlement Attribution) ----

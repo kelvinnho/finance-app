@@ -1,13 +1,14 @@
-const CACHE_NAME = 'wealth-pwa-v1.9-stage1-r15';
+const CACHE_NAME = 'wealth-pwa-v1.9-stage2-r1';
 const CORE_ASSETS = [
   './',
   './index.html',
   './manifest.json',
-  './js/store.js?v=1.9-stage1-r15',
-  './js/ui.js?v=1.9-stage1-r15',
-  './js/mod1_wallet.js?v=1.9-stage1-r15',
-  './js/mod3_ledger.js?v=1.9-stage1-r15',
-  './js/app.js?v=1.9-stage1-r15'
+  './js/store.js?v=1.9-stage2-r1',
+  './js/ui.js?v=1.9-stage2-r1',
+  './js/mod1_wallet.js?v=1.9-stage2-r1',
+  './js/mod2_cards.js?v=1.9-stage2-r1',
+  './js/mod3_ledger.js?v=1.9-stage2-r1',
+  './js/app.js?v=1.9-stage2-r1'
 ];
 
 self.addEventListener('install', (event) => {

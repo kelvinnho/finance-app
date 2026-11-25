@@ -154,74 +154,121 @@
 
     return (
       <div className="space-y-4 pb-6">
-        {/* Top Summary Card */}
-        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 flex items-end justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-[11px] text-zinc-400 mb-1">活期與錢包可用</div>
-            <div className="text-[26px] font-bold text-white tabular-nums tracking-tight leading-none truncate">
+        {/* Top Summary Card (2-Tier Full-Width Hierarchy — Zero Truncation) */}
+        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
+          <div>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <span className="text-[11px] text-zinc-400">活期與錢包可用</span>
+              <span className="text-[10.5px] text-zinc-500 tabular-nums">共 {state.accounts.length} 張卡片</span>
+            </div>
+            <div className="text-[28px] font-bold text-white tabular-nums tracking-tight leading-tight break-all">
               {Store.formatMoney(metrics.liquidCash, state.meta.baseCurrency)}
             </div>
           </div>
-          <div className="text-right shrink-0">
-            <div className="text-[11px] text-zinc-500 mb-1">凍結與定存鎖定</div>
-            <div className="text-[15px] font-semibold text-zinc-300 tabular-nums">
-              {Store.formatMoney(metrics.lockedAndInvestments, state.meta.baseCurrency)}
+
+          <div className="pt-2.5 border-t border-white/[0.06] grid grid-cols-2 gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] text-zinc-500">凍結與定存鎖定</div>
+              <div className="text-[14.5px] font-semibold text-zinc-200 tabular-nums mt-0.5 whitespace-nowrap">
+                {Store.formatMoney(metrics.lockedAndInvestments, state.meta.baseCurrency)}
+              </div>
+            </div>
+            <div className="min-w-0 text-right">
+              <div className="text-[11px] text-zinc-500">銀包總餘額（含凍結）</div>
+              <div className="text-[14.5px] font-semibold text-emerald-400 tabular-nums mt-0.5 whitespace-nowrap">
+                {Store.formatMoney(Store.round2(metrics.liquidCash + metrics.lockedWallet), state.meta.baseCurrency)}
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Mode A: Apple Wallet Overview List */}
+        {/* Mode A: Apple Wallet Stacked Card Pack (卡包堆疊樣式) */}
         {!focusedAcc && (
-          <div className="space-y-3">
-            <div className="rounded-2xl bg-[#111114] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
-              {state.accounts.length === 0 ? (
-                <div className="p-8 text-center text-[13px] text-zinc-500">
-                  尚未建立任何銀包帳戶，點擊下方新增。
-                </div>
-              ) : (
-                state.accounts.map((acc) => {
+          <div className="space-y-4">
+            {state.accounts.length === 0 ? (
+              <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-8 text-center text-[13px] text-zinc-500">
+                尚未建立任何銀包帳戶，點擊下方新增。
+              </div>
+            ) : (
+              <div className="relative pt-1">
+                {state.accounts.map((acc, idx) => {
                   const primaryBal = acc.balances[0] || { currency: state.meta.baseCurrency, amount: 0 };
+                  const extraBals = acc.balances.slice(1);
                   const hasLocked = (acc.allocations || []).some((al) => al.locked && al.amount > 0);
+                  const isDefault = (acc.balances || []).some((b) => b.isDefaultPayment);
                   const theme = getThemeObj(acc.theme);
+                  const isLast = idx === state.accounts.length - 1;
+                  const typeLabel = (ACCOUNT_TYPES.find((t) => t.value === acc.type) || { label: '活期' }).label;
+
                   return (
                     <button
                       key={acc.id}
                       type="button"
                       onClick={() => { setFocusedAccId(acc.id); setFlipped(false); }}
-                      className="w-full px-4 py-3.5 flex items-center justify-between gap-3 text-left active:bg-white/[0.04] transition"
+                      style={{
+                        background: theme.bg,
+                        zIndex: idx + 1
+                      }}
+                      className={`relative block w-full rounded-[22px] border border-white/15 shadow-[0_-10px_28px_rgba(0,0,0,0.55)] text-left transition-transform active:scale-[0.985] overflow-hidden ${
+                        idx > 0 ? '-mt-12' : ''
+                      } ${isLast ? 'p-5 min-h-[154px]' : 'px-5 pt-4 pb-16 min-h-[136px]'}`}
                     >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div
-                          className="w-9 h-9 rounded-xl border border-white/15 shrink-0 flex items-center justify-center"
-                          style={{ background: theme.bg }}
-                        >
-                          <span className="w-2.5 h-2.5 rounded-full" style={{ background: theme.accent }} />
-                        </div>
+                      {/* Top subtle metallic highlight */}
+                      <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/30 to-transparent pointer-events-none" />
+
+                      {/* Card Header Row (Always cleanly visible in stacked deck) */}
+                      <div className="flex items-start justify-between gap-2.5">
                         <div className="min-w-0">
-                          <div className="text-[15px] font-semibold text-white truncate">{acc.name}</div>
-                          <div className="text-[12px] text-zinc-400 truncate mt-0.5">
-                            {acc.balances.map((b) => b.currency).join(' / ')} · {acc.subtitle || '活期'}
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: theme.accent }} />
+                            <span className="text-[16px] font-bold text-white truncate">{acc.name}</span>
+                            {isDefault && (
+                              <span className="px-1.5 py-0.5 rounded-md bg-amber-400/20 border border-amber-300/35 text-[9.5px] font-semibold text-amber-200 shrink-0">
+                                預設
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11.5px] text-white/65 truncate mt-0.5 pl-[18px]">
+                            {acc.balances.map((b) => b.currency).join(' / ')} · {acc.subtitle || typeLabel}
+                          </div>
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <div className="text-[17px] font-bold text-white tabular-nums tracking-tight whitespace-nowrap">
+                            {Store.formatMoney(primaryBal.amount, primaryBal.currency)}
+                          </div>
+                          <div className="text-[10.5px] text-white/60 mt-0.5 whitespace-nowrap">
+                            {hasLocked ? '含凍結底倉' : poolName(primaryBal.poolId)}
                           </div>
                         </div>
                       </div>
-                      <div className="text-right shrink-0">
-                        <div className="text-[15px] font-semibold text-white tabular-nums">
-                          {Store.formatMoney(primaryBal.amount, primaryBal.currency)}
+
+                      {/* Expanded Bottom Details for Front-Most Card */}
+                      {isLast && (
+                        <div className="mt-6 pt-3 border-t border-white/10 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="px-2 py-0.5 rounded-lg bg-black/30 text-[11px] text-white/80">
+                              {typeLabel}
+                            </span>
+                            {extraBals.map((eb) => (
+                              <span key={eb.id} className="px-2 py-0.5 rounded-lg bg-black/30 text-[11px] text-white/80 tabular-nums">
+                                {Store.formatMoney(eb.amount, eb.currency)}
+                              </span>
+                            ))}
+                          </div>
+                          <span className="text-[11px] text-white/60 shrink-0">點擊展開管理 ›</span>
                         </div>
-                        <div className="text-[11px] text-zinc-500 mt-0.5">
-                          {hasLocked ? '含凍結底倉' : (acc.balances.length > 1 ? `共 ${acc.balances.length} 幣種` : poolName(primaryBal.poolId))}
-                        </div>
-                      </div>
+                      )}
                     </button>
                   );
-                })
-              )}
-            </div>
+                })}
+              </div>
+            )}
 
             <button
               type="button"
               onClick={() => setAddAccOpen(true)}
-              className="w-full py-3 rounded-2xl border border-dashed border-white/15 text-[13px] font-medium text-zinc-300 flex items-center justify-center gap-1.5 active:bg-white/[0.04]"
+              className="w-full py-3.5 rounded-2xl border border-dashed border-white/15 text-[13.5px] font-medium text-zinc-300 flex items-center justify-center gap-1.5 active:bg-white/[0.04]"
             >
               <Icon name="plus" size={16} /> 新增銀包 / 銀行帳戶
             </button>

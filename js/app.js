@@ -95,84 +95,6 @@
     );
   }
 
-  // ---- Assets Sub-Tab 2: Credit Cards (Stage 1 Preview Shell — Full CRUD & Cross-Pool Settlement in Stage 2) ----
-  function CreditCardsTab({ state, onPayCard }) {
-    const Store = window.WealthStore;
-    const totalDebt = state.cards.reduce((s, c) => s + Store.convertToBase((c.unbilled || 0) + (c.billed || 0), c.currency, state), 0);
-
-    return (
-      <div className="space-y-3.5 pb-6">
-        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 flex items-end justify-between">
-          <div>
-            <div className="text-[11px] text-zinc-400 mb-1">信用卡總待繳額</div>
-            <div className="text-[24px] font-bold text-white tabular-nums">
-              {Store.formatMoney(totalDebt, state.meta.baseCurrency)}
-            </div>
-          </div>
-          <div className="text-[11px] text-zinc-500">共 {state.cards.length} 張 · 完整卡務將於階段 2 接入</div>
-        </div>
-
-        {state.cards.length === 0 ? (
-          <div className="rounded-2xl bg-[#111114] border border-white/[0.08] py-10 text-center text-[13px] text-zinc-500">
-            尚未設定信用卡（多卡新增／編輯、截數與一鍵跨池找數將於階段 2 完成）。
-          </div>
-        ) : (
-          state.cards.map((card) => {
-            const cycle = Store.getCreditCardCycle(card);
-            const spent = Store.round2((card.unbilled || 0) + (card.billed || 0));
-            const ratio = card.creditLimit > 0 ? Math.min(100, Math.round((spent / card.creditLimit) * 100)) : 0;
-            const theme = Store.CARD_THEMES.find((t) => t.id === card.theme) || Store.CARD_THEMES[1];
-            return (
-              <div
-                key={card.id}
-                className="rounded-2xl p-4 border border-white/[0.12] space-y-3"
-                style={{ background: theme.bg }}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="text-[15px] font-bold text-white">{card.name}</div>
-                    <div className="text-[11px] text-white/60 mt-0.5">
-                      尾號 {card.last4} · 截數區間 {cycle.periodLabel}
-                    </div>
-                  </div>
-                  <span className="px-2.5 py-1 rounded-full bg-black/35 border border-white/15 text-[11px] font-semibold text-amber-300 whitespace-nowrap">
-                    {cycle.daysToDue} 天後到期 ({cycle.dueLabel})
-                  </span>
-                </div>
-
-                <div className="flex items-end justify-between">
-                  <div>
-                    <div className="text-[11px] text-white/60">本期累積待繳</div>
-                    <div className="text-[22px] font-bold text-white tabular-nums">
-                      {Store.formatMoney(spent, card.currency)}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onPayCard(card.id)}
-                    className="px-3.5 py-1.5 rounded-full bg-white text-black text-[12px] font-bold active:scale-95 transition"
-                  >
-                    找數還款
-                  </button>
-                </div>
-
-                <div className="space-y-1">
-                  <div className="h-1.5 rounded-full bg-black/35 overflow-hidden">
-                    <div className="h-full bg-white/85 rounded-full" style={{ width: `${ratio}%` }} />
-                  </div>
-                  <div className="flex justify-between text-[11px] text-white/55 tabular-nums">
-                    <span>額度使用率 {ratio}%</span>
-                    <span>額度 {Store.formatMoney(card.creditLimit, card.currency)}</span>
-                  </div>
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-    );
-  }
-
   // ---- Assets Sub-Tab 3: Fixed Deposits & Investments ----
   function InvestmentsTab({ state }) {
     const Store = window.WealthStore;
@@ -183,14 +105,14 @@
 
     return (
       <div className="space-y-3.5 pb-6">
-        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 flex items-end justify-between">
-          <div>
-            <div className="text-[11px] text-zinc-400 mb-1">定存與投資市值</div>
-            <div className="text-[24px] font-bold text-white tabular-nums">
-              {Store.formatMoney(totalInv, state.meta.baseCurrency)}
-            </div>
+        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-zinc-400">定存與投資市值</span>
+            <span className="text-[11px] text-zinc-500 tabular-nums">{state.investments.length} 項持倉</span>
           </div>
-          <div className="text-[11px] text-zinc-500">{state.investments.length} 項持倉</div>
+          <div className="text-[28px] font-bold text-white tabular-nums tracking-tight leading-tight break-all">
+            {Store.formatMoney(totalInv, state.meta.baseCurrency)}
+          </div>
         </div>
 
         <div className="rounded-2xl bg-[#111114] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
@@ -270,37 +192,42 @@
     return (
       <div className="space-y-4 pb-6">
         <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
-          <div className="flex items-end justify-between">
-            <div>
-              <div className="text-[11px] text-zinc-400">總淨資產</div>
-              <div className="text-[28px] font-bold text-white tabular-nums tracking-tight mt-0.5">
-                {Store.formatMoney(metrics.totalNetWorth, state.meta.baseCurrency)}
-              </div>
+          <div>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <span className="text-[11px] text-zinc-400">總淨資產 ({state.meta.baseCurrency})</span>
+              {metrics.pendingReceivables > 0 && (
+                <span className="text-[11px] text-amber-300 tabular-nums whitespace-nowrap">
+                  待收 {Store.formatMoney(metrics.pendingReceivables, state.meta.baseCurrency)}
+                </span>
+              )}
             </div>
-            <div className="text-right">
-              <div className="text-[11px] text-zinc-500">待收回代墊</div>
-              <div className="text-[13px] font-semibold text-amber-300 tabular-nums">
-                {Store.formatMoney(metrics.pendingReceivables, state.meta.baseCurrency)}
-              </div>
+            <div className="text-[28px] font-bold text-white tabular-nums tracking-tight leading-tight break-all">
+              {Store.formatMoney(metrics.totalNetWorth, state.meta.baseCurrency)}
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-2 pt-3 border-t border-white/[0.06] text-[12px]">
-            <div>
+          <div className="grid grid-cols-2 gap-3 pt-3 border-t border-white/[0.06] text-[12px]">
+            <div className="min-w-0">
               <div className="text-zinc-500 text-[11px]">可動用現金</div>
-              <div className="text-emerald-400 font-semibold tabular-nums mt-0.5">
+              <div className="text-emerald-400 font-semibold tabular-nums mt-0.5 whitespace-nowrap">
                 {Store.formatMoney(metrics.liquidCash, state.meta.baseCurrency)}
               </div>
             </div>
-            <div>
+            <div className="min-w-0 text-right">
               <div className="text-zinc-500 text-[11px]">鎖定與投資</div>
-              <div className="text-zinc-200 font-semibold tabular-nums mt-0.5">
+              <div className="text-zinc-200 font-semibold tabular-nums mt-0.5 whitespace-nowrap">
                 {Store.formatMoney(metrics.lockedAndInvestments, state.meta.baseCurrency)}
               </div>
             </div>
-            <div>
-              <div className="text-zinc-500 text-[11px]">信用待繳</div>
-              <div className="text-rose-400 font-semibold tabular-nums mt-0.5">
+            <div className="min-w-0">
+              <div className="text-zinc-500 text-[11px]">信用卡待繳</div>
+              <div className="text-rose-400 font-semibold tabular-nums mt-0.5 whitespace-nowrap">
                 {Store.formatMoney(metrics.cardDebt, state.meta.baseCurrency)}
+              </div>
+            </div>
+            <div className="min-w-0 text-right">
+              <div className="text-zinc-500 text-[11px]">待還借貸</div>
+              <div className="text-amber-300 font-semibold tabular-nums mt-0.5 whitespace-nowrap">
+                {Store.formatMoney(metrics.pendingPayables, state.meta.baseCurrency)}
               </div>
             </div>
           </div>
@@ -1049,6 +976,7 @@
     } = window.WealthUI;
     const Store = window.WealthStore;
     const { WalletView } = window.WealthWallet;
+    const { CreditCardsView } = window.WealthCards;
     const { LedgerView, TransactionEditorSheet } = window.WealthLedger;
 
     const state = useWealthStore();
@@ -1100,7 +1028,7 @@
         setAssetSubTab(key);
         return;
       }
-      if (key === 'EXPENSE' || key === 'INCOME' || key === 'TRANSFER' || key === 'RECEIVABLE') {
+      if (key === 'EXPENSE' || key === 'INCOME' || key === 'TRANSFER' || key === 'RECEIVABLE' || key === 'PAYABLE') {
         setEditorState({ open: true, initialType: key, editingTx: null, prefillToCardId: null });
       }
     }, []);
@@ -1196,12 +1124,7 @@
                 ]}
               />
               {assetSubTab === 'WALLET' && <WalletView state={state} showToast={showToast} />}
-              {assetSubTab === 'CARDS' && (
-                <CreditCardsTab
-                  state={state}
-                  onPayCard={(cardId) => setEditorState({ open: true, initialType: 'TRANSFER', editingTx: null, prefillToCardId: cardId })}
-                />
-              )}
+              {assetSubTab === 'CARDS' && <CreditCardsView state={state} showToast={showToast} />}
               {assetSubTab === 'WEALTH' && <InvestmentsTab state={state} />}
             </div>
           )}
@@ -1294,7 +1217,8 @@
             { key: 'EXPENSE', label: '記支出', icon: 'arrowUpRight', colorClass: 'text-rose-400' },
             { key: 'INCOME', label: '記收入', icon: 'arrowDownLeft', colorClass: 'text-emerald-400' },
             { key: 'TRANSFER', label: '帳戶轉帳', icon: 'swap', colorClass: 'text-sky-400' },
-            { key: 'RECEIVABLE', label: '應收代墊', icon: 'users', colorClass: 'text-amber-400' }
+            { key: 'RECEIVABLE', label: '應收代墊', icon: 'users', colorClass: 'text-amber-400' },
+            { key: 'PAYABLE', label: '借貸款項', icon: 'coins', colorClass: 'text-violet-400' }
           ]}
         />
 

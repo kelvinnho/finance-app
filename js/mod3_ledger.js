@@ -1004,7 +1004,8 @@
               {keypadKeys.flat().map((k) => {
                 const isConfirm = k === 'OK';
                 const isOp = k === '+' || k === '-' || k === '×' || k === '÷' || k === '=';
-                const isUtil = k === 'BACK' || k === 'C' || k === 'AC' || k === '%';
+                const isClear = k === 'AC' || k === 'C';
+                const isFunc = k === 'BACK' || k === '%';
                 return (
                   <button
                     key={k}
@@ -1021,9 +1022,11 @@
                         ? 'bg-white text-black font-bold text-[15px]'
                         : isOp
                         ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[20px]'
-                        : isUtil
-                        ? 'bg-white/[0.08] text-zinc-200 text-[15px]'
-                        : 'bg-[#1B1B20] text-white border border-white/[0.06] text-[19px]'
+                        : isClear
+                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[15px] font-bold'
+                        : isFunc
+                        ? 'bg-[#2C2D38] text-sky-200 border border-sky-400/20 text-[16px]'
+                        : 'bg-[#1A1A1F] text-white border border-white/[0.06] text-[19px]'
                     }`}
                   >
                     {k === 'BACK' ? '⌫' : k === 'OK' ? (editingTx ? '儲存' : '入帳') : k === '-' ? '−' : k}
