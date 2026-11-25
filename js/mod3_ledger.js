@@ -95,8 +95,9 @@
 
   // ---- Zero-Scroll Balanced Compact Transaction Editor (iPhone 14 Proportioned, Full 4x5 Calc, Portal z-[60]) ----
   function TransactionEditorSheet({ open, initialType, editingTx, prefillToCardId, state, onClose, showToast }) {
-    const { Icon, BottomSheet, useKeypad, evalCalcExpr, hasCalcOp, canClearEntry, applyCalcKey } = window.WealthUI;
+    const { Icon, BottomSheet, useKeypad, useConfirm, evalCalcExpr, hasCalcOp, canClearEntry, applyCalcKey } = window.WealthUI;
     const { openKeypad } = useKeypad();
+    const { confirmDeductions } = useConfirm();
     const Store = window.WealthStore;
 
     const allSources = useMemo(() => buildAccountOptions(state, true), [state]);
@@ -214,9 +215,12 @@
         setPoolAutoLinked(true);
 
         const allowCard = nextType === 'EXPENSE' || nextType === 'RECEIVABLE';
-        const initialFrom = allowCard && cardSources.length > 0 && !defaultBankKey
-          ? cardSources[0].key
-          : defaultBankKey;
+        const prefKey = Store.getDefaultExpenseSourceKey(state);
+        const initialFrom = allowCard && prefKey && allSources.some((s) => s.key === prefKey)
+          ? prefKey
+          : (!allowCard && prefKey && prefKey.startsWith('ACCOUNT::') && bankSources.some((b) => b.key === prefKey)
+              ? prefKey
+              : (allowCard && cardSources.length > 0 && !defaultBankKey ? cardSources[0].key : defaultBankKey));
         setFromKey(initialFrom);
         setAccountTab(initialFrom.startsWith('CARD::') ? 'CARD' : 'ACCOUNT');
 
@@ -230,7 +234,12 @@
         const todayD = Store.todayISO();
         setDate(todayD);
         setTime(Store.nowTimeHM());
-        setBillingBucket('UNBILLED');
+        if (initialFrom.startsWith('CARD::') && fromObj) {
+          const cardObj = state.cards.find((c) => c.id === fromObj.accountId);
+          setBillingBucket(Store.getAutoCardBillingBucket(cardObj, todayD));
+        } else {
+          setBillingBucket('UNBILLED');
+        }
         setBillingAuto(true);
         setCounterparty('');
         setNote('');
@@ -433,7 +442,7 @@
       setExpr((prev) => applyCalcKey(prev, k));
     };
 
-    const handleSave = () => {
+    const handleSave = async () => {
       const amt = Math.max(0, evalCalcExpr(expr));
       if (!Number.isFinite(amt) || amt <= 0) {
         showToast('請輸入大於 0 的金額');
@@ -449,6 +458,28 @@
           showToast('轉帳需要兩個不同的銀行或電子錢包帳戶');
           return;
         }
+      }
+
+      // Option 1A: Check if this bank deduction breaches locked reserve or overdrafts balance
+      const isBankOutflow = fromOpt.kind === 'ACCOUNT' && (txType === 'EXPENSE' || txType === 'RECEIVABLE' || txType === 'TRANSFER');
+      if (isBankOutflow) {
+        const simEvents = [];
+        // When editing an existing record, add back its previous deduction on bank account first
+        if (editingTx && editingTx.accountKind !== 'CARD' && editingTx.accountId) {
+          const prevAmt = Store.round2(editingTx.settledAmount != null ? editingTx.settledAmount : editingTx.amount);
+          if (editingTx.type === 'EXPENSE' || editingTx.type === 'RECEIVABLE') {
+            simEvents.push({ accountId: editingTx.accountId, balanceId: editingTx.balanceId, delta: prevAmt });
+          } else if (editingTx.type === 'TRANSFER') {
+            simEvents.push({ accountId: editingTx.accountId, balanceId: editingTx.balanceId, delta: Store.round2(editingTx.amount) });
+          }
+        }
+        const deductVal = txType === 'TRANSFER'
+          ? amt
+          : (isCrossCurrency ? Number(settledAmount || amt) : amt);
+        simEvents.push({ accountId: fromOpt.accountId, balanceId: fromOpt.balanceId, delta: -deductVal });
+
+        const ok = await confirmDeductions(simEvents);
+        if (!ok) return;
       }
 
       const finalTitle = title.trim() || (
@@ -1617,7 +1648,8 @@
 
   // ---- Salary Split Drawer (Dual Tabs: Execute & Full CRUD Management) ----
   function SplitRulesSheet({ open, state, onClose, showToast }) {
-    const { Icon, BottomSheet, NumericInput, SegmentedControl } = window.WealthUI;
+    const { Icon, BottomSheet, NumericInput, SegmentedControl, useConfirm } = window.WealthUI;
+    const { confirmDeductions } = useConfirm();
     const Store = window.WealthStore;
 
     const bankOpts = useMemo(() => buildAccountOptions(state, false), [state]);
@@ -1715,11 +1747,27 @@
 
     const selectedToRun = (state.splitRules || []).filter((r) => checkedMap[r.id]);
 
-    const handleRunBatch = () => {
+    const handleRunBatch = async () => {
       if (!selectedToRun.length) {
         showToast('請至少勾選一項分流規則');
         return;
       }
+      const simEvents = [];
+      selectedToRun.forEach((r) => {
+        const amt = Math.abs(Store.round2(amountMap[r.id] != null ? amountMap[r.id] : r.amount));
+        if (amt <= 0) return;
+        if (r.type === 'INCOME' && r.toAccountId) {
+          simEvents.push({ accountId: r.toAccountId, balanceId: r.toBalanceId, delta: amt });
+        } else if (r.type === 'EXPENSE' && r.fromAccountId) {
+          simEvents.push({ accountId: r.fromAccountId, balanceId: r.fromBalanceId, delta: -amt });
+        } else if (r.type === 'TRANSFER') {
+          if (r.fromAccountId) simEvents.push({ accountId: r.fromAccountId, balanceId: r.fromBalanceId, delta: -amt });
+          if (r.toAccountId) simEvents.push({ accountId: r.toAccountId, balanceId: r.toBalanceId, delta: amt });
+        }
+      });
+      const ok = await confirmDeductions(simEvents);
+      if (!ok) return;
+
       const count = Store.executeSplitRules(
         selectedToRun.map((r) => ({ ruleId: r.id, amount: amountMap[r.id] }))
       );
@@ -1996,7 +2044,8 @@
 
   // ---- Main Ledger View ----
   function LedgerView({ state, onEditTx, showToast }) {
-    const { Icon, BottomSheet, NumericInput } = window.WealthUI;
+    const { Icon, BottomSheet, NumericInput, useConfirm } = window.WealthUI;
+    const { confirmDeductions } = useConfirm();
     const Store = window.WealthStore;
 
     const now = new Date();
@@ -2155,10 +2204,14 @@
       setSettleTargetKey(match ? match.key : '');
     };
 
-    const confirmSettleLoan = () => {
+    const confirmSettleLoan = async () => {
       if (!settlingTx || !settleTargetKey) return;
       const picked = allAccounts.find((a) => a.key === settleTargetKey);
       if (!picked) return;
+      if (settlingTx.type === 'PAYABLE' && picked.kind === 'ACCOUNT') {
+        const ok = await confirmDeductions([{ accountId: picked.accountId, balanceId: picked.balanceId, delta: -Store.round2(settlingTx.amount) }]);
+        if (!ok) return;
+      }
       Store.settleLoan(settlingTx.id, picked.kind, picked.accountId, picked.balanceId);
       setSettlingTx(null);
       showToast(settlingTx.type === 'RECEIVABLE' ? '已確認收回並更新餘額' : '已確認還款並更新餘額');

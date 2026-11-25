@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 2 r5';
+  const APP_VERSION = 'Stage 2 r6';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -255,6 +255,7 @@
         onboardingDone: true,
         baseCurrency: base,
         privacyMode: false,
+        defaultExpenseSource: `ACCOUNT::${accId}::${balId}`,
         fxRates: buildFxMap(base)
       },
       pools,
@@ -306,6 +307,7 @@
         onboardingDone: true,
         baseCurrency: base,
         privacyMode: false,
+        defaultExpenseSource: 'CARD::card_1::',
         fxRates: buildFxMap(base)
       },
       pools,
@@ -429,7 +431,8 @@
           principal: 100000,
           currentValue: 101850,
           apr: 3.7,
-          maturityDate: '2027-02-15'
+          maturityDate: '2027-02-15',
+          linkedAccountId: 'acc_bank_high'
         },
         {
           id: 'inv_2',
@@ -770,6 +773,7 @@
           onboardingDone: true,
           baseCurrency: base,
           privacyMode: false,
+          defaultExpenseSource: null,
           fxRates: buildFxMap(base)
         },
         raw.meta || {},
@@ -782,7 +786,12 @@
         { last4: '', currency: base, creditLimit: 50000, statementDay: 15, dueDay: 5, unbilled: 0, billed: 0, theme: 'titanium', autoPayAccountId: null, autoPayBalanceId: null, note: '' },
         c
       )) : [],
-      investments: Array.isArray(raw.investments) ? raw.investments : [],
+      investments: Array.isArray(raw.investments) ? raw.investments.map((inv) => {
+        if (inv && inv.id === 'inv_1' && inv.type === 'FIXED_DEPOSIT' && inv.linkedAccountId === undefined && Array.isArray(raw.accounts) && raw.accounts.some((a) => a.id === 'acc_bank_high')) {
+          return Object.assign({}, inv, { linkedAccountId: 'acc_bank_high' });
+        }
+        return Object.assign({ linkedAccountId: null }, inv);
+      }) : [],
       transactions: Array.isArray(raw.transactions) ? raw.transactions : [],
       splitRules: Array.isArray(raw.splitRules) ? raw.splitRules : []
     };
@@ -1488,6 +1497,147 @@
     return { grandBase: plan.grandDebtBase, banks: plan.mainBanks };
   }
 
+  function getDefaultExpenseSourceKey(st) {
+    const s = st || state;
+    const saved = s.meta && s.meta.defaultExpenseSource;
+    if (saved) {
+      if (saved.startsWith('CARD::')) {
+        const cid = saved.split('::')[1];
+        if ((s.cards || []).some((c) => c.id === cid)) return saved;
+      } else if (saved.startsWith('ACCOUNT::')) {
+        const parts = saved.split('::');
+        const acc = (s.accounts || []).find((a) => a.id === parts[1]);
+        if (acc && (acc.balances || []).some((b) => b.id === parts[2])) return saved;
+      }
+    }
+    for (let i = 0; i < (s.accounts || []).length; i++) {
+      const a = s.accounts[i];
+      const defB = (a.balances || []).find((b) => b.isDefaultPayment);
+      if (defB) return `ACCOUNT::${a.id}::${defB.id}`;
+    }
+    if ((s.accounts || []).length && (s.accounts[0].balances || []).length) {
+      return `ACCOUNT::${s.accounts[0].id}::${s.accounts[0].balances[0].id}`;
+    }
+    if ((s.cards || []).length) {
+      return `CARD::${s.cards[0].id}::`;
+    }
+    return '';
+  }
+
+  function getAccountLinkedDeposits(accId, st) {
+    const s = st || state;
+    const items = (s.investments || []).filter(
+      (inv) => inv.type === 'FIXED_DEPOSIT' && inv.linkedAccountId === accId
+    );
+    let totalBase = 0;
+    const byCur = {};
+    items.forEach((inv) => {
+      const val = round2(inv.principal || inv.currentValue || 0);
+      const cur = inv.currency || s.meta.baseCurrency;
+      totalBase = round2(totalBase + convertToBase(val, cur, s));
+      byCur[cur] = round2((byCur[cur] || 0) + val);
+    });
+    return {
+      count: items.length,
+      items,
+      totalBase,
+      byCurrency: byCur
+    };
+  }
+
+  function checkAccountDeductions(events, st) {
+    // events: [{ accountId, balanceId, delta }]
+    // Negative delta = outflow/deduction, positive delta = inflow (e.g. inbound reimbursement before main pay)
+    const s = st || state;
+    if (!Array.isArray(events) || !events.length) {
+      return { hasRisk: false, highestSeverity: 'OK', warnings: [] };
+    }
+
+    const simMap = new Map();
+    const touchedOrder = [];
+
+    events.forEach((ev) => {
+      if (!ev || !ev.accountId) return;
+      const acc = (s.accounts || []).find((a) => a.id === ev.accountId);
+      if (!acc || !(acc.balances || []).length) return;
+      const bal = ev.balanceId
+        ? acc.balances.find((b) => b.id === ev.balanceId)
+        : acc.balances[0];
+      if (!bal) return;
+
+      const key = `${acc.id}::${bal.id}`;
+      if (!simMap.has(key)) {
+        const lockedTotal = round2(
+          (acc.allocations || [])
+            .filter((al) => al.currency === bal.currency && al.locked)
+            .reduce((sum, al) => sum + Number(al.amount || 0), 0)
+        );
+        const curBal = round2(bal.amount || 0);
+        simMap.set(key, {
+          key,
+          accountId: acc.id,
+          balanceId: bal.id,
+          accountLabel: acc.balances.length > 1 ? `${acc.name} (${bal.currency})` : acc.name,
+          currency: bal.currency,
+          initialBalance: curBal,
+          runningBalance: curBal,
+          totalOutflow: 0,
+          lockedTotal
+        });
+        touchedOrder.push(key);
+      }
+
+      const rec = simMap.get(key);
+      const d = round2(ev.delta || 0);
+      rec.runningBalance = round2(rec.runningBalance + d);
+      if (d < 0) rec.totalOutflow = round2(rec.totalOutflow + Math.abs(d));
+    });
+
+    const warnings = [];
+    touchedOrder.forEach((key) => {
+      const rec = simMap.get(key);
+      if (rec.totalOutflow <= 0 || rec.runningBalance >= rec.initialBalance) return;
+
+      const availableFree = Math.max(0, round2(rec.initialBalance - rec.lockedTotal));
+      if (rec.runningBalance < -0.005) {
+        warnings.push({
+          status: 'OVERDRAFT',
+          accountId: rec.accountId,
+          balanceId: rec.balanceId,
+          accountLabel: rec.accountLabel,
+          currency: rec.currency,
+          currentBalance: rec.initialBalance,
+          deductAmount: round2(rec.initialBalance - rec.runningBalance),
+          afterBalance: rec.runningBalance,
+          lockedTotal: rec.lockedTotal,
+          availableFree,
+          lockedDeficit: rec.lockedTotal > 0 ? round2(rec.lockedTotal - Math.max(0, rec.runningBalance)) : 0
+        });
+      } else if (rec.lockedTotal > 0 && rec.runningBalance < rec.lockedTotal - 0.005) {
+        warnings.push({
+          status: 'BREACH_LOCKED',
+          accountId: rec.accountId,
+          balanceId: rec.balanceId,
+          accountLabel: rec.accountLabel,
+          currency: rec.currency,
+          currentBalance: rec.initialBalance,
+          deductAmount: round2(rec.initialBalance - rec.runningBalance),
+          afterBalance: rec.runningBalance,
+          lockedTotal: rec.lockedTotal,
+          availableFree,
+          lockedDeficit: round2(rec.lockedTotal - rec.runningBalance)
+        });
+      }
+    });
+
+    const hasOverdraft = warnings.some((w) => w.status === 'OVERDRAFT');
+    return {
+      hasRisk: warnings.length > 0,
+      highestSeverity: hasOverdraft ? 'OVERDRAFT' : (warnings.length > 0 ? 'BREACH_LOCKED' : 'OK'),
+      warnings
+    };
+  }
+
   const WealthStore = {
     APP_VERSION,
     SCHEMA_VERSION,
@@ -1505,6 +1655,9 @@
     resolveEffectivePoolId,
     getPoolSettlementLabel,
     getSummaryMetrics,
+    getDefaultExpenseSourceKey,
+    getAccountLinkedDeposits,
+    checkAccountDeductions,
     getCreditCardCycle,
     getAutoCardBillingBucket,
     getCardPoolBreakdown,
@@ -1553,6 +1706,21 @@
     togglePrivacy() {
       const draft = cloneState();
       draft.meta.privacyMode = !draft.meta.privacyMode;
+      state = draft;
+      notify();
+    },
+
+    setDefaultExpenseSource(sourceKey) {
+      const draft = cloneState();
+      draft.meta.defaultExpenseSource = sourceKey || null;
+      if (sourceKey && sourceKey.startsWith('ACCOUNT::')) {
+        const parts = sourceKey.split('::');
+        draft.accounts.forEach((a) => {
+          (a.balances || []).forEach((b) => {
+            b.isDefaultPayment = (a.id === parts[1] && b.id === parts[2]);
+          });
+        });
+      }
       state = draft;
       notify();
     },
@@ -1610,6 +1778,12 @@
           c.autoPayBalanceId = null;
         }
       });
+      draft.investments.forEach((inv) => {
+        if (inv.linkedAccountId === accId) inv.linkedAccountId = null;
+      });
+      if (draft.meta.defaultExpenseSource && draft.meta.defaultExpenseSource.startsWith(`ACCOUNT::${accId}::`)) {
+        draft.meta.defaultExpenseSource = null;
+      }
       state = draft;
       notify();
     },
@@ -1792,6 +1966,9 @@
     deleteCard(cardId) {
       const draft = cloneState();
       draft.cards = draft.cards.filter((c) => c.id !== cardId);
+      if (draft.meta.defaultExpenseSource === `CARD::${cardId}::`) {
+        draft.meta.defaultExpenseSource = null;
+      }
       state = draft;
       notify();
     },

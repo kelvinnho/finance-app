@@ -1,4 +1,4 @@
-// mod1_wallet.js · Stage 2 r5
+// mod1_wallet.js · Stage 2 r6
 (function () {
   'use strict';
 
@@ -10,6 +10,8 @@
     { value: 'BROKER', label: '證券交割', icon: 'trend' },
     { value: 'CASH', label: '實體現金', icon: 'coins' }
   ];
+
+  const ALLOC_PALETTE = ['#FBBF24', '#38BDF8', '#A78BFA', '#FB7185', '#FB923C', '#60A5FA'];
 
   function CardAuraLayers({ theme }) {
     return (
@@ -29,13 +31,15 @@
     );
   }
 
-  function WalletView({ state, showToast, onFocusChange, resetSignal }) {
-    const { Icon, BottomSheet, NumericInput } = window.WealthUI;
+  function WalletView({ state, showToast, onFocusChange, resetSignal, onJumpToWealth }) {
+    const { Icon, BottomSheet, NumericInput, useConfirm } = window.WealthUI;
+    const { confirmDeductions } = useConfirm();
     const Store = window.WealthStore;
 
     const [focusedAccId, setFocusedAccId] = useState(null);
     const [selectedBalMap, setSelectedBalMap] = useState({});
     const [flipped, setFlipped] = useState(false);
+    const [editingAllocId, setEditingAllocId] = useState(null);
 
     // BottomSheet States
     const [addAccOpen, setAddAccOpen] = useState(false);
@@ -61,7 +65,13 @@
     const [addAllocOpen, setAddAllocOpen] = useState(false);
     const [allocDraft, setAllocDraft] = useState({ name: '', amount: 5000, locked: true, poolId: 'pool_reserve' });
 
-    const [editCardDraft, setEditCardDraft] = useState({ name: '', subtitle: '', type: 'BANK', theme: 'obsidian' });
+    const [editCardDraft, setEditCardDraft] = useState({
+      name: '',
+      subtitle: '',
+      type: 'BANK',
+      theme: 'obsidian',
+      poolId: 'pool_liquid'
+    });
 
     const metrics = useMemo(() => Store.getSummaryMetrics(state), [state]);
 
@@ -76,23 +86,27 @@
       return focusedAcc.balances.find((b) => b.id === pickedId) || focusedAcc.balances[0];
     }, [focusedAcc, selectedBalMap]);
 
-    const syncEditDraftFromAcc = (acc) => {
+    const syncEditDraftFromAcc = (acc, bal) => {
       if (!acc) return;
+      const targetBal = bal || (acc.balances && acc.balances[0]) || null;
       setEditCardDraft({
         name: acc.name,
         subtitle: acc.subtitle || '',
         type: acc.type || 'BANK',
-        theme: acc.theme || 'obsidian'
+        theme: acc.theme || 'obsidian',
+        poolId: (targetBal && targetBal.poolId) || (state.pools[0] && state.pools[0].id) || 'pool_liquid'
       });
     };
 
     useEffect(() => {
       if (focusedAcc) {
-        syncEditDraftFromAcc(focusedAcc);
+        syncEditDraftFromAcc(focusedAcc, activeBalance);
+        setEditingAllocId(null);
       } else {
         setFlipped(false);
+        setEditingAllocId(null);
       }
-    }, [focusedAcc]);
+    }, [focusedAcc, activeBalance && activeBalance.id]);
 
     const isAccFocused = Boolean(focusedAcc);
     useEffect(() => {
@@ -109,6 +123,7 @@
       if (resetSignal > 0) {
         setFocusedAccId(null);
         setFlipped(false);
+        setEditingAllocId(null);
       }
     }, [resetSignal]);
 
@@ -140,19 +155,23 @@
       setTopUpOpen(true);
     };
 
-    const handleConfirmTopUp = () => {
+    const handleConfirmTopUp = async () => {
       if (!focusedAcc || !activeBalance || !topUpDraft.fromKey) {
         showToast('請先選擇扣款銀行戶口');
         return;
       }
-      if (Number(topUpDraft.amount) <= 0) {
+      const amt = Number(topUpDraft.amount);
+      if (amt <= 0) {
         showToast('增值金額須大於 0');
         return;
       }
       const [fromAccId, fromBalId] = topUpDraft.fromKey.split('::');
-      Store.topUpEWallet(fromAccId, fromBalId, focusedAcc.id, activeBalance.id, Number(topUpDraft.amount));
+      const ok = await confirmDeductions([{ accountId: fromAccId, balanceId: fromBalId, delta: -amt }]);
+      if (!ok) return;
+
+      Store.topUpEWallet(fromAccId, fromBalId, focusedAcc.id, activeBalance.id, amt);
       setTopUpOpen(false);
-      showToast(`已增值 ${Store.formatMoney(topUpDraft.amount, activeBalance.currency)}`);
+      showToast(`已增值 ${Store.formatMoney(amt, activeBalance.currency)}`);
     };
 
     const handleCreateAccount = () => {
@@ -178,35 +197,71 @@
     const getThemeObj = (id) => Store.CARD_THEMES.find((t) => t.id === id) || Store.CARD_THEMES[0];
     const getTypeMeta = (t) => ACCOUNT_TYPES.find((x) => x.value === t) || ACCOUNT_TYPES[0];
     const getPoolObj = (id) => state.pools.find((x) => x.id === id) || null;
-    const poolName = (id) => {
-      const p = getPoolObj(id);
-      return p ? p.name : '未指定';
-    };
 
-    // Helper: compute Free / Locked / Goal split for any account + currency
-    const getBalanceSplit = (acc, bal) => {
-      if (!acc || !bal) return { total: 0, locked: 0, goal: 0, free: 0, lockedPct: 0, goalPct: 0, freePct: 100 };
-      const total = Math.max(0, Store.round2(bal.amount || 0));
-      const als = (acc.allocations || []).filter((al) => al.currency === bal.currency);
-      const locked = Store.round2(als.filter((a) => a.locked).reduce((s, x) => s + Number(x.amount || 0), 0));
-      const goal = Store.round2(als.filter((a) => !a.locked).reduce((s, x) => s + Number(x.amount || 0), 0));
-      const free = Math.max(0, Store.round2(total - locked - goal));
-      const denom = total > 0 ? total : 1;
-      const lockedPct = Math.min(100, Math.round((locked / denom) * 100));
-      const goalPct = Math.min(100 - lockedPct, Math.round((goal / denom) * 100));
-      const freePct = Math.max(0, 100 - lockedPct - goalPct);
-      return { total, locked, goal, free, lockedPct, goalPct, freePct };
-    };
-
-    // Allocations & Recent Transactions for focused account & currency
+    // Allocations & dynamic percentage segments for focused account & currency
     const activeAllocations = useMemo(() => {
       if (!focusedAcc || !activeBalance) return [];
       return (focusedAcc.allocations || []).filter((al) => al.currency === activeBalance.currency);
     }, [focusedAcc, activeBalance]);
 
-    const activeSplit = useMemo(() => getBalanceSplit(focusedAcc, activeBalance), [focusedAcc, activeBalance]);
-    const freeAmount = activeSplit.free;
+    const allocStats = useMemo(() => {
+      const total = activeBalance ? Store.round2(activeBalance.amount || 0) : 0;
+      const allocatedSum = Store.round2(activeAllocations.reduce((s, x) => s + Number(x.amount || 0), 0));
+      const lockedSum = Store.round2(activeAllocations.filter((x) => x.locked).reduce((s, x) => s + Number(x.amount || 0), 0));
+      const free = Math.max(0, Store.round2(total - allocatedSum));
+      const deficit = allocatedSum > total + 0.01 ? Store.round2(allocatedSum - Math.max(0, total)) : 0;
+      const lockedBreach = lockedSum > total + 0.01 ? Store.round2(lockedSum - Math.max(0, total)) : 0;
+      const denom = Math.max(total, allocatedSum, 1);
 
+      const segments = [];
+      if (free > 0 || activeAllocations.length === 0) {
+        const freePct = total > 0 ? Math.round((free / denom) * 100) : 0;
+        segments.push({
+          id: '__free__',
+          name: '自由餘額',
+          amount: free,
+          pct: freePct,
+          color: '#34D399',
+          locked: false,
+          isFree: true
+        });
+      }
+
+      activeAllocations.forEach((al, idx) => {
+        const amt = Math.max(0, Store.round2(al.amount || 0));
+        const pct = denom > 0 ? Math.round((amt / denom) * 100) : 0;
+        segments.push({
+          id: al.id,
+          name: al.name,
+          amount: amt,
+          pct,
+          color: ALLOC_PALETTE[idx % ALLOC_PALETTE.length],
+          locked: Boolean(al.locked),
+          isFree: false
+        });
+      });
+
+      // Normalize percentages to sum to 100% when total > 0
+      if (segments.length > 0 && (total > 0 || allocatedSum > 0)) {
+        const sumPct = segments.reduce((s, x) => s + x.pct, 0);
+        if (sumPct !== 100) {
+          const largest = segments.reduce((best, cur) => (cur.amount > best.amount ? cur : best), segments[0]);
+          largest.pct = Math.max(0, largest.pct + (100 - sumPct));
+        }
+      }
+
+      return { total, allocatedSum, lockedSum, free, deficit, lockedBreach, segments };
+    }, [activeBalance, activeAllocations]);
+
+    const freeAmount = allocStats.free;
+
+    // Linked Fixed Deposits (Option 2A Read-Only Integration)
+    const linkedDeposits = useMemo(() => {
+      if (!focusedAcc) return { count: 0, items: [], totalBase: 0, byCurrency: {} };
+      return Store.getAccountLinkedDeposits(focusedAcc.id, state);
+    }, [focusedAcc, state]);
+
+    // Recent transactions for focused account
     const accountTransactions = useMemo(() => {
       if (!focusedAcc) return [];
       return (state.transactions || [])
@@ -218,13 +273,13 @@
         .slice(0, 12);
     }, [focusedAcc, state.transactions]);
 
-    // Total wallet liquidity ratio for Overview summary bar
+    // Pure Liquid + Locked Wallet Summary (Option 2A: Never mixes fixed deposits/ETFs into Wallet card)
     const walletTotalBase = Store.round2(metrics.liquidCash + metrics.lockedWallet);
     const liquidPct = walletTotalBase > 0 ? Math.min(100, Math.max(0, Math.round((metrics.liquidCash / walletTotalBase) * 100))) : 100;
 
     return (
       <div className="space-y-4 pb-6">
-        {/* Top Summary Card (Luminous Glassmorphic Depth + Liquidity Ratio Bar) */}
+        {/* Top Summary Card (Pure Liquid Wallet vs Liquid Frozen Reserve — Zero Mixing with Investments) */}
         {!focusedAcc && (
           <div className="relative rounded-[22px] bg-[#13141A] border border-white/[0.11] p-4 space-y-3 overflow-hidden shadow-lg">
             <div
@@ -237,7 +292,7 @@
               <div className="flex items-center justify-between gap-2 mb-1">
                 <span className="text-[11.5px] font-medium text-emerald-300/90">活期與錢包可動用</span>
                 <span className="text-[10.5px] text-zinc-400 tabular-nums">
-                  {state.accounts.length} 張卡片 · 可用佔 {liquidPct}%
+                  {state.accounts.length} 張卡片 · 可用 {liquidPct}%
                 </span>
               </div>
               <div className="text-[30px] font-bold text-white tabular-nums tracking-tight leading-tight break-all">
@@ -245,7 +300,6 @@
               </div>
             </div>
 
-            {/* Visual Liquidity Bar */}
             <div className="relative h-1.5 rounded-full bg-white/[0.08] overflow-hidden flex">
               <div className="h-full bg-gradient-to-r from-emerald-400 to-teal-300" style={{ width: `${liquidPct}%` }} />
               <div className="h-full bg-amber-400/80" style={{ width: `${Math.max(0, 100 - liquidPct)}%` }} />
@@ -253,13 +307,13 @@
 
             <div className="relative pt-1 grid grid-cols-2 gap-3">
               <div className="min-w-0">
-                <div className="text-[11px] text-zinc-500">凍結與定存鎖定</div>
+                <div className="text-[11px] text-zinc-500">活期凍結底倉</div>
                 <div className="text-[14.5px] font-semibold text-amber-200 tabular-nums mt-0.5 whitespace-nowrap">
-                  {Store.formatMoney(metrics.lockedAndInvestments, state.meta.baseCurrency)}
+                  {Store.formatMoney(metrics.lockedWallet, state.meta.baseCurrency)}
                 </div>
               </div>
               <div className="min-w-0 text-right">
-                <div className="text-[11px] text-zinc-500">銀包總餘額（含凍結）</div>
+                <div className="text-[11px] text-zinc-500">銀包活期總計</div>
                 <div className="text-[14.5px] font-semibold text-white tabular-nums mt-0.5 whitespace-nowrap">
                   {Store.formatMoney(walletTotalBase, state.meta.baseCurrency)}
                 </div>
@@ -268,7 +322,7 @@
           </div>
         )}
 
-        {/* Mode A: Apple Wallet Luminous Stacked Card Pack (Rich At-A-Glance Card Info) */}
+        {/* Mode A: Clean Apple Wallet Stacked Card Pack (No Allocation Clutter — Full Name Breathing Room) */}
         {!focusedAcc && (
           <div className="space-y-4">
             {state.accounts.length === 0 ? (
@@ -280,8 +334,6 @@
                 {state.accounts.map((acc, idx) => {
                   const primaryBal = acc.balances[0] || { currency: state.meta.baseCurrency, amount: 0 };
                   const extraBals = acc.balances.slice(1);
-                  const split = getBalanceSplit(acc, primaryBal);
-                  const isDefault = (acc.balances || []).some((b) => b.isDefaultPayment);
                   const theme = getThemeObj(acc.theme);
                   const typeMeta = getTypeMeta(acc.type);
                   const pool = getPoolObj(primaryBal.poolId);
@@ -300,46 +352,35 @@
                       }}
                       className={`relative block w-full rounded-[24px] border border-white/20 shadow-[0_-12px_30px_rgba(0,0,0,0.6)] text-left transition-transform active:scale-[0.985] overflow-hidden ${
                         idx > 0 ? '-mt-12' : ''
-                      } ${isLast ? 'p-5 min-h-[176px]' : 'px-5 pt-4 pb-16 min-h-[146px]'}`}
+                      } ${isLast ? 'p-5 min-h-[164px]' : 'px-5 pt-4 pb-16 min-h-[142px]'}`}
                     >
                       <CardAuraLayers theme={theme} />
 
-                      {/* Card Top Row (Always Visible in Deck) */}
-                      <div className="relative flex items-start justify-between gap-2.5">
-                        <div className="flex items-start gap-2.5 min-w-0">
+                      {/* Clean Card Header: Full Account Name on Left, Primary Balance on Right (Zero Squeezed Text) */}
+                      <div className="relative flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-2.5 min-w-0 flex-1">
                           <div
                             className="w-8 h-8 rounded-xl bg-black/30 border border-white/20 flex items-center justify-center shrink-0 mt-0.5 shadow-inner"
                             style={{ color: theme.accent }}
                           >
                             <Icon name={typeMeta.icon} size={15} />
                           </div>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <span className="text-[16px] font-bold text-white truncate">{acc.name}</span>
-                              {isDefault && (
-                                <span className="px-1.5 py-0.5 rounded-md bg-amber-400/25 border border-amber-300/40 text-[9.5px] font-bold text-amber-200 shrink-0">
-                                  主戶
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-[11px] text-white/75 truncate mt-0.5 flex items-center gap-1.5">
-                              <span>{acc.balances.map((b) => b.currency).join(' / ')}</span>
-                              <span className="opacity-50">·</span>
-                              <span className="truncate">{acc.subtitle || typeMeta.label}</span>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[16px] font-bold text-white truncate leading-snug">{acc.name}</div>
+                            <div className="text-[11.5px] text-white/75 truncate mt-0.5">
+                              {acc.balances.map((b) => b.currency).join(' / ')} · {acc.subtitle || typeMeta.label}
                             </div>
                           </div>
                         </div>
 
                         <div className="text-right shrink-0">
-                          <div className="text-[18px] font-bold text-white tabular-nums tracking-tight whitespace-nowrap">
+                          <div className={`text-[18px] font-bold tabular-nums tracking-tight whitespace-nowrap ${
+                            primaryBal.amount < 0 ? 'text-rose-300' : 'text-white'
+                          }`}>
                             {Store.formatMoney(primaryBal.amount, primaryBal.currency)}
                           </div>
                           <div className="text-[10.5px] mt-0.5 whitespace-nowrap tabular-nums">
-                            {split.locked > 0 ? (
-                              <span className="text-amber-200 font-medium">
-                                可用 {Store.formatMoney(split.free, primaryBal.currency)} · 鎖 {Store.formatMoney(split.locked, primaryBal.currency)}
-                              </span>
-                            ) : extraBals.length > 0 ? (
+                            {extraBals.length > 0 ? (
                               <span className="text-sky-200 font-medium">
                                 ＋ {Store.formatMoney(extraBals[0].amount, extraBals[0].currency)}
                               </span>
@@ -357,37 +398,26 @@
                         </div>
                       </div>
 
-                      {/* Rich Bottom Strip for Front-Most Card */}
+                      {/* Clean Bottom Strip for Front-Most Card */}
                       {isLast && (
-                        <div className="relative mt-5 space-y-2.5">
-                          {(split.locked > 0 || split.goal > 0) && (
-                            <div className="space-y-1">
-                              <div className="h-1.5 rounded-full bg-black/40 overflow-hidden flex">
-                                <div className="h-full bg-emerald-400" style={{ width: `${split.freePct}%` }} />
-                                <div className="h-full bg-sky-400" style={{ width: `${split.goalPct}%` }} />
-                                <div className="h-full bg-amber-400" style={{ width: `${split.lockedPct}%` }} />
-                              </div>
-                            </div>
-                          )}
-                          <div className="pt-2.5 border-t border-white/15 flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="px-2 py-0.5 rounded-lg bg-black/35 border border-white/10 text-[11px] text-white/85">
-                                {typeMeta.label}
+                        <div className="relative mt-6 pt-3 border-t border-white/15 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="px-2 py-0.5 rounded-lg bg-black/35 border border-white/10 text-[11px] text-white/85">
+                              {typeMeta.label}
+                            </span>
+                            {pool && (
+                              <span className="px-2 py-0.5 rounded-lg bg-black/35 border border-white/10 text-[11px] text-white/85 inline-flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full" style={{ background: pool.color }} />
+                                {pool.name}
                               </span>
-                              {pool && (
-                                <span className="px-2 py-0.5 rounded-lg bg-black/35 border border-white/10 text-[11px] text-white/85 inline-flex items-center gap-1">
-                                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: pool.color }} />
-                                  {pool.name}
-                                </span>
-                              )}
-                              {extraBals.map((eb) => (
-                                <span key={eb.id} className="px-2 py-0.5 rounded-lg bg-black/35 border border-white/10 text-[11px] text-sky-200 tabular-nums">
-                                  {Store.formatMoney(eb.amount, eb.currency)}
-                                </span>
-                              ))}
-                            </div>
-                            <span className="text-[11px] text-white/70 shrink-0">展開 ›</span>
+                            )}
+                            {extraBals.map((eb) => (
+                              <span key={eb.id} className="px-2 py-0.5 rounded-lg bg-black/35 border border-white/10 text-[11px] text-sky-200 tabular-nums">
+                                {Store.formatMoney(eb.amount, eb.currency)}
+                              </span>
+                            ))}
                           </div>
+                          <span className="text-[11px] text-white/70 shrink-0">展開 ›</span>
                         </div>
                       )}
                     </button>
@@ -406,7 +436,7 @@
           </div>
         )}
 
-        {/* Mode B: Focused Luminous Apple Wallet Card + Slicing + Recent Activity */}
+        {/* Mode B: Focused Luminous Wallet Card + Dynamic % Strip + Overview-First Slicing */}
         {focusedAcc && activeBalance && (() => {
           const theme = getThemeObj(focusedAcc.theme);
           const typeMeta = getTypeMeta(focusedAcc.type);
@@ -427,7 +457,7 @@
                 <button
                   type="button"
                   onClick={() => {
-                    syncEditDraftFromAcc(focusedAcc);
+                    syncEditDraftFromAcc(focusedAcc, activeBalance);
                     setFlipped((prev) => !prev);
                   }}
                   className="px-3 py-1.5 rounded-full bg-[#1C1C22] border border-white/10 text-[12px] font-medium text-zinc-200 active:bg-white/15"
@@ -444,39 +474,41 @@
                 >
                   <CardAuraLayers theme={theme} />
 
-                  {/* Header */}
-                  <div className="relative flex items-start justify-between gap-2">
-                    <div className="flex items-start gap-3 min-w-0">
+                  {/* Row 1: Icon + Name + Integrated Pool Subtitle (No Default Button Clutter) */}
+                  <div className="relative flex items-start justify-between gap-2.5">
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
                       <div
                         className="w-10 h-10 rounded-2xl bg-black/30 border border-white/20 flex items-center justify-center shrink-0 shadow-inner"
                         style={{ color: theme.accent }}
                       >
                         <Icon name={typeMeta.icon} size={18} />
                       </div>
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="text-[18px] font-bold text-white truncate leading-tight">{focusedAcc.name}</div>
-                        <div className="text-[12px] text-white/70 mt-0.5 truncate">
-                          {typeMeta.label}{focusedAcc.subtitle ? ` · ${focusedAcc.subtitle}` : ''}
+                        <div className="text-[11.5px] text-white/75 mt-1 flex items-center gap-1.5 flex-wrap">
+                          <span>{focusedAcc.subtitle || typeMeta.label}</span>
+                          {pool && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/30 border border-white/15 text-[10.5px] text-white/90">
+                              <span className="w-1.5 h-1.5 rounded-full" style={{ background: pool.color }} />
+                              {pool.name}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        Store.setDefaultPaymentBalance(focusedAcc.id, activeBalance.id);
-                        showToast('已設為預設找數來源');
-                      }}
-                      className={`px-2.5 py-1 rounded-full text-[11px] font-semibold flex items-center gap-1 border shrink-0 whitespace-nowrap transition ${
-                        activeBalance.isDefaultPayment
-                          ? 'bg-amber-400/25 border-amber-300/50 text-amber-200'
-                          : 'bg-black/30 border-white/15 text-white/75 active:bg-black/45'
-                      }`}
-                    >
-                      <Icon name="star" size={12} /> {activeBalance.isDefaultPayment ? '預設找數' : '設為預設'}
-                    </button>
+
+                    {focusedAcc.type === 'EWALLET' && (
+                      <button
+                        type="button"
+                        onClick={openTopUpSheet}
+                        className="px-3 py-1.5 rounded-full bg-white text-black text-[12px] font-bold active:scale-95 transition shrink-0 whitespace-nowrap"
+                      >
+                        由銀行增值
+                      </button>
+                    )}
                   </div>
 
-                  {/* Multi-Currency Pills (Display Currency + Balance Preview) */}
+                  {/* Row 2: Pure Currency Selector Pills (Codes Only) */}
                   <div className="relative flex items-center gap-1.5 overflow-x-auto no-scrollbar" data-no-swipe="true">
                     {focusedAcc.balances.map((b) => {
                       const isSel = b.id === activeBalance.id;
@@ -485,15 +517,13 @@
                           key={b.id}
                           type="button"
                           onClick={() => setSelectedBalMap((prev) => Object.assign({}, prev, { [focusedAcc.id]: b.id }))}
-                          className={`px-3 py-1 rounded-full text-[12px] font-semibold transition shrink-0 tabular-nums ${
+                          className={`px-3 py-1 rounded-full text-[12px] font-semibold transition shrink-0 ${
                             isSel
                               ? 'bg-white text-black shadow-sm'
                               : 'bg-black/35 text-white/80 border border-white/15'
                           }`}
                         >
-                          {focusedAcc.balances.length > 1
-                            ? `${b.currency} · ${Store.formatMoney(b.amount, b.currency)}`
-                            : b.currency}
+                          {b.currency}
                         </button>
                       );
                     })}
@@ -501,7 +531,7 @@
                       type="button"
                       onClick={() => {
                         const unused = Store.CURRENCIES.find((c) => !focusedAcc.balances.some((b) => b.currency === c.code));
-                        setAddCurDraft({ currency: unused ? unused.code : 'USD', amount: 0, poolId: 'pool_liquid' });
+                        setAddCurDraft({ currency: unused ? unused.code : 'USD', amount: 0, poolId: activeBalance.poolId || 'pool_liquid' });
                         setAddCurOpen(true);
                       }}
                       className="px-2.5 py-1 rounded-full text-[12px] bg-black/25 text-white/75 border border-dashed border-white/30 shrink-0"
@@ -510,7 +540,7 @@
                     </button>
                   </div>
 
-                  {/* Hero Balance + Explicit Calibrate Trigger */}
+                  {/* Row 3: Hero Balance + Calibrate Button */}
                   <div className="relative flex items-end justify-between gap-2">
                     <button
                       type="button"
@@ -521,12 +551,14 @@
                       className="text-left min-w-0 flex-1 active:opacity-80"
                     >
                       <div className="text-[11px] text-white/65 mb-0.5">
-                        帳戶總餘額 ({activeBalance.currency})
+                        活期總餘額 ({activeBalance.currency})
                         {baseEq != null && (
                           <span className="ml-1.5 text-white/80 tabular-nums">≈ {Store.formatMoney(baseEq, state.meta.baseCurrency)}</span>
                         )}
                       </div>
-                      <div className="text-[31px] font-bold text-white tabular-nums tracking-tight leading-tight break-all">
+                      <div className={`text-[31px] font-bold tabular-nums tracking-tight leading-tight break-all ${
+                        activeBalance.amount < 0 ? 'text-rose-300' : 'text-white'
+                      }`}>
                         {Store.formatMoney(activeBalance.amount, activeBalance.currency)}
                       </div>
                     </button>
@@ -542,71 +574,47 @@
                     </button>
                   </div>
 
-                  {/* 3-Column Glassmorphic Free / Locked / Goal Breakdown + Proportional Bar */}
-                  <div className="relative space-y-2">
-                    <div className="grid grid-cols-3 gap-1.5">
-                      <div className="px-2.5 py-2 rounded-xl bg-black/30 border border-white/10">
-                        <div className="text-[10px] text-white/65">可動用自由</div>
-                        <div className="text-[13px] font-bold text-emerald-300 tabular-nums mt-0.5 truncate">
-                          {Store.formatMoney(activeSplit.free, activeBalance.currency)}
-                        </div>
+                  {/* Row 4: Dynamic Allocations Percentage Strip (Only % + Real Names, Hidden When 0 Allocations) */}
+                  {activeAllocations.length > 0 && (
+                    <div className="relative pt-1 space-y-2.5">
+                      <div className="h-2 rounded-full bg-black/40 overflow-hidden flex gap-[1.5px]">
+                        {allocStats.segments.map((seg) => (
+                          seg.pct > 0 && (
+                            <div
+                              key={seg.id}
+                              className="h-full transition-all first:rounded-l-full last:rounded-r-full"
+                              style={{ width: `${seg.pct}%`, background: seg.color }}
+                            />
+                          )
+                        ))}
                       </div>
-                      <div className="px-2.5 py-2 rounded-xl bg-black/30 border border-white/10">
-                        <div className="text-[10px] text-white/65 flex items-center gap-1">
-                          <Icon name="lock" size={9} className="text-amber-300" /> 凍結底倉
-                        </div>
-                        <div className="text-[13px] font-bold text-amber-300 tabular-nums mt-0.5 truncate">
-                          {Store.formatMoney(activeSplit.locked, activeBalance.currency)}
-                        </div>
+
+                      <div className="flex flex-wrap gap-1.5">
+                        {allocStats.segments.map((seg) => (
+                          <span
+                            key={seg.id}
+                            className="px-2.5 py-1 rounded-xl bg-black/35 border border-white/10 text-[11px] text-white/90 inline-flex items-center gap-1.5 tabular-nums"
+                          >
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: seg.color }} />
+                            {seg.locked && <Icon name="lock" size={10} className="text-amber-300 shrink-0" />}
+                            <span className="max-w-[110px] truncate">{seg.name}</span>
+                            <strong className="text-white font-bold">{seg.pct}%</strong>
+                          </span>
+                        ))}
                       </div>
-                      <div className="px-2.5 py-2 rounded-xl bg-black/30 border border-white/10">
-                        <div className="text-[10px] text-white/65">目標份額</div>
-                        <div className="text-[13px] font-bold text-sky-300 tabular-nums mt-0.5 truncate">
-                          {Store.formatMoney(activeSplit.goal, activeBalance.currency)}
+
+                      {allocStats.lockedBreach > 0 && (
+                        <div className="px-3 py-1.5 rounded-xl bg-amber-500/20 border border-amber-300/45 text-[11px] font-semibold text-amber-200 tabular-nums">
+                          ⚠ 已動用凍結底倉 {Store.formatMoney(allocStats.lockedBreach, activeBalance.currency)}
                         </div>
-                      </div>
+                      )}
                     </div>
-
-                    <div className="h-1.5 rounded-full bg-black/40 overflow-hidden flex">
-                      <div className="h-full bg-emerald-400 transition-all" style={{ width: `${activeSplit.freePct}%` }} />
-                      <div className="h-full bg-sky-400 transition-all" style={{ width: `${activeSplit.goalPct}%` }} />
-                      <div className="h-full bg-amber-400 transition-all" style={{ width: `${activeSplit.lockedPct}%` }} />
-                    </div>
-                  </div>
-
-                  {/* Bottom Pool & Action Footer */}
-                  <div className="relative pt-3 border-t border-white/15 flex items-center justify-between gap-2">
-                    <span className="px-2.5 py-1 rounded-xl bg-black/35 border border-white/10 text-[11.5px] text-white/90 inline-flex items-center gap-1.5">
-                      {pool && <span className="w-2 h-2 rounded-full" style={{ background: pool.color }} />}
-                      {pool ? pool.name : '未指定資金池'}
-                    </span>
-
-                    {focusedAcc.type === 'EWALLET' ? (
-                      <button
-                        type="button"
-                        onClick={openTopUpSheet}
-                        className="px-3.5 py-1.5 rounded-full bg-white text-black text-[12px] font-bold active:scale-95 transition"
-                      >
-                        由銀行增值
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAllocDraft({ name: '', amount: Math.min(5000, freeAmount || 5000), locked: true, poolId: 'pool_reserve' });
-                          setAddAllocOpen(true);
-                        }}
-                        className="px-3 py-1.5 rounded-full bg-white/15 border border-white/20 text-white text-[12px] font-semibold active:bg-white/25 transition"
-                      >
-                        + 切分份額
-                      </button>
-                    )}
-                  </div>
+                  )}
                 </div>
               ) : (
-                /* Card Back: Edit Settings */
+                /* Card Back: Edit Settings (Now Includes Funding Pool Selector!) */
                 <div className="rounded-[24px] p-5 bg-[#191920] border border-white/15 shadow-2xl space-y-3.5">
-                  <div className="text-[14px] font-semibold text-white">編輯帳戶卡片</div>
+                  <div className="text-[14.5px] font-semibold text-white">編輯帳戶卡片</div>
                   <div>
                     <label className="text-[11px] text-zinc-400 block mb-1">帳戶名稱</label>
                     <input
@@ -623,7 +631,7 @@
                         type="text"
                         value={editCardDraft.subtitle}
                         onChange={(e) => setEditCardDraft((p) => Object.assign({}, p, { subtitle: e.target.value }))}
-                        className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
+                        className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
                       />
                     </div>
                     <div>
@@ -631,11 +639,23 @@
                       <select
                         value={editCardDraft.type}
                         onChange={(e) => setEditCardDraft((p) => Object.assign({}, p, { type: e.target.value }))}
-                        className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
+                        className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
                       >
                         {ACCOUNT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                       </select>
                     </div>
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-emerald-300 font-medium block mb-1">
+                      歸屬資金池（{activeBalance.currency} 戶口）
+                    </label>
+                    <select
+                      value={editCardDraft.poolId}
+                      onChange={(e) => setEditCardDraft((p) => Object.assign({}, p, { poolId: e.target.value }))}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-emerald-400/30 text-[13.5px] text-white outline-none"
+                    >
+                      {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
                   </div>
                   <div>
                     <label className="text-[11px] text-zinc-400 block mb-1.5">卡面質感</label>
@@ -659,9 +679,15 @@
                     <button
                       type="button"
                       onClick={() => {
-                        Store.updateAccount(focusedAcc.id, editCardDraft);
+                        Store.updateAccount(focusedAcc.id, {
+                          name: editCardDraft.name,
+                          subtitle: editCardDraft.subtitle,
+                          type: editCardDraft.type,
+                          theme: editCardDraft.theme
+                        });
+                        Store.calibrateBalance(focusedAcc.id, activeBalance.id, null, editCardDraft.poolId);
                         setFlipped(false);
-                        showToast('卡片設定已儲存');
+                        showToast('卡片與資金池設定已儲存');
                       }}
                       className="flex-1 py-2.5 rounded-xl bg-white text-black text-[13px] font-semibold"
                     >
@@ -684,19 +710,51 @@
                 </div>
               )}
 
-              {/* Elevated Card Options Tray (Allocations + Recent Account Activity) */}
+              {/* Elevated Card Options Tray */}
               <div
                 className="rounded-[22px] bg-[#17171D] border border-white/[0.12] shadow-[0_10px_28px_rgba(0,0,0,0.45)] overflow-hidden"
                 style={{ borderTop: `2px solid ${theme.accent}88` }}
               >
                 <div className="p-4 space-y-4">
-                  {/* Allocations Slicing Section */}
-                  <div className="space-y-3">
+                  {/* Option 2A: Read-Only Linked Fixed Deposits Info Row */}
+                  {linkedDeposits.count > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onJumpToWealth) onJumpToWealth();
+                      }}
+                      className="w-full px-3.5 py-3 rounded-2xl bg-amber-500/10 border border-amber-400/25 flex items-center justify-between gap-2.5 text-left active:bg-amber-500/20 transition"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-xl bg-amber-400/20 text-amber-300 flex items-center justify-center shrink-0">
+                          <Icon name="lock" size={14} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-[12.5px] font-semibold text-amber-200 truncate">
+                            關聯定期存款（{linkedDeposits.count} 筆 · 不計入活期）
+                          </div>
+                          <div className="text-[11px] text-amber-100/70 truncate tabular-nums mt-0.5">
+                            {linkedDeposits.items[0].name}
+                            {linkedDeposits.items[0].maturityDate ? ` · 到期 ${linkedDeposits.items[0].maturityDate}` : ''}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0 flex items-center gap-1">
+                        <span className="text-[13.5px] font-bold text-amber-200 tabular-nums whitespace-nowrap">
+                          {Store.formatMoney(linkedDeposits.totalBase, state.meta.baseCurrency)}
+                        </span>
+                        <Icon name="chevronRight" size={15} className="text-amber-300/80 shrink-0" />
+                      </div>
+                    </button>
+                  )}
+
+                  {/* Allocations Section: Overview-First Compact List -> Tap to Edit */}
+                  <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <div>
                         <div className="text-[14.5px] font-semibold text-white">戶口份額切分 ({activeBalance.currency})</div>
                         <div className="text-[12px] text-zinc-400 mt-0.5 tabular-nums">
-                          自由餘額 {Store.formatMoney(freeAmount, activeBalance.currency)}
+                          自由餘額 <strong className="text-emerald-400 font-semibold">{Store.formatMoney(freeAmount, activeBalance.currency)}</strong>
                         </div>
                       </div>
                       <button
@@ -713,32 +771,75 @@
 
                     {activeAllocations.length === 0 ? (
                       <div className="py-4 px-3 rounded-2xl bg-[#111116] border border-white/[0.07] text-center text-[12px] text-zinc-400">
-                        此幣種目前全額為自由活期，可新增份額來劃分凍結底倉或專項目標。
+                        此幣種目前全額為自由活期，點右上「+ 份額」切分底倉或預留款項。
                       </div>
                     ) : (
-                      <div className="space-y-2.5">
-                        {activeAllocations.map((al) => {
+                      <div className="rounded-2xl bg-[#111116] border border-white/[0.09] divide-y divide-white/[0.06] overflow-hidden">
+                        {activeAllocations.map((al, idx) => {
+                          const segColor = ALLOC_PALETTE[idx % ALLOC_PALETTE.length];
+                          const isEditing = editingAllocId === al.id;
                           const maxForThis = Math.max(al.amount, Store.round2(al.amount + freeAmount));
                           return (
-                            <div key={al.id} className="p-3.5 rounded-2xl bg-[#111116] border border-white/[0.09] space-y-2.5">
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <button
-                                    type="button"
-                                    onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { locked: !al.locked })}
-                                    className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
-                                      al.locked ? 'bg-amber-400/20 text-amber-300' : 'bg-sky-400/15 text-sky-300'
-                                    }`}
-                                    title={al.locked ? '已凍結底倉' : '目標份額'}
-                                  >
-                                    <Icon name={al.locked ? 'lock' : 'unlock'} size={14} />
-                                  </button>
+                            <div key={al.id}>
+                              {/* Compact Overview Row (Highlights Real Name + Prominent Value) */}
+                              <button
+                                type="button"
+                                onClick={() => setEditingAllocId(isEditing ? null : al.id)}
+                                className={`w-full px-3.5 py-3 flex items-center justify-between gap-3 text-left transition ${
+                                  isEditing ? 'bg-white/[0.05]' : 'active:bg-white/[0.04]'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: segColor }} />
                                   <div className="min-w-0">
-                                    <div className="text-[13px] font-semibold text-white truncate">{al.name}</div>
-                                    <div className="text-[11px] text-zinc-500">{al.locked ? '凍結底倉' : '目標份額'}</div>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[14px] font-semibold text-white truncate">{al.name}</span>
+                                      {al.locked && (
+                                        <span className="px-1.5 py-0.5 rounded bg-amber-400/15 text-amber-300 text-[9.5px] font-semibold inline-flex items-center gap-0.5 shrink-0">
+                                          <Icon name="lock" size={9} /> 凍結
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
-                                <div className="flex items-center gap-1.5 shrink-0">
+
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span className="text-[15px] font-bold text-white tabular-nums whitespace-nowrap">
+                                    {Store.formatMoney(al.amount, activeBalance.currency)}
+                                  </span>
+                                  <Icon
+                                    name="chevronDown"
+                                    size={14}
+                                    className={`text-zinc-500 transition-transform ${isEditing ? 'rotate-180 text-white' : ''}`}
+                                  />
+                                </div>
+                              </button>
+
+                              {/* Expanded Inline Editor (Only Visible When Tapped) */}
+                              {isEditing && (
+                                <div className="px-3.5 pb-3.5 pt-2 bg-white/[0.03] border-t border-white/[0.06] space-y-3">
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      value={al.name}
+                                      onChange={(e) => Store.updateAllocation(focusedAcc.id, al.id, { name: e.target.value })}
+                                      placeholder="份額名稱"
+                                      className="flex-1 min-w-0 px-3 py-2 rounded-xl bg-black/60 border border-white/[0.12] text-[13px] text-white outline-none"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { locked: !al.locked })}
+                                      className={`px-2.5 py-2 rounded-xl border text-[11.5px] font-semibold flex items-center gap-1 shrink-0 whitespace-nowrap ${
+                                        al.locked
+                                          ? 'bg-amber-400/20 border-amber-300/40 text-amber-200'
+                                          : 'bg-white/[0.06] border-white/10 text-zinc-300'
+                                      }`}
+                                    >
+                                      <Icon name={al.locked ? 'lock' : 'unlock'} size={12} />
+                                      {al.locked ? '已凍結' : '非凍結'}
+                                    </button>
+                                  </div>
+
                                   <NumericInput
                                     size="sm"
                                     value={al.amount}
@@ -746,60 +847,63 @@
                                     label={`調整「${al.name}」份額`}
                                     quickAdds={[1000, 5000, 10000]}
                                     onChange={(val) => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.min(val, maxForThis) })}
-                                    className="!w-auto min-w-[110px]"
                                   />
-                                  <button
-                                    type="button"
-                                    onClick={() => Store.deleteAllocation(focusedAcc.id, al.id)}
-                                    className="w-7 h-7 rounded-lg bg-white/[0.05] text-zinc-400 flex items-center justify-center"
-                                  >
-                                    <Icon name="trash" size={14} />
-                                  </button>
-                                </div>
-                              </div>
 
-                              <div data-no-swipe="true">
-                                <input
-                                  type="range"
-                                  min={0}
-                                  max={Math.max(100, Math.round(maxForThis))}
-                                  step={100}
-                                  value={Math.min(al.amount, Math.max(100, Math.round(maxForThis)))}
-                                  onChange={(e) => Store.updateAllocation(focusedAcc.id, al.id, { amount: Number(e.target.value) })}
-                                  className="w-full accent-white h-1.5 bg-white/10 rounded-lg cursor-pointer"
-                                />
-                              </div>
+                                  <div data-no-swipe="true">
+                                    <input
+                                      type="range"
+                                      min={0}
+                                      max={Math.max(100, Math.round(maxForThis))}
+                                      step={100}
+                                      value={Math.min(al.amount, Math.max(100, Math.round(maxForThis)))}
+                                      onChange={(e) => Store.updateAllocation(focusedAcc.id, al.id, { amount: Number(e.target.value) })}
+                                      className="w-full accent-white h-1.5 bg-white/10 rounded-lg cursor-pointer"
+                                    />
+                                  </div>
 
-                              <div className="flex items-center justify-between gap-2 text-[11px]">
-                                <div className="flex gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.max(0, al.amount - 1000) })}
-                                    className="px-2.5 py-1 rounded-lg bg-white/[0.06] text-zinc-300 active:bg-white/15"
-                                  >
-                                    -1K
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.min(maxForThis, al.amount + 1000) })}
-                                    className="px-2.5 py-1 rounded-lg bg-white/[0.06] text-zinc-300 active:bg-white/15"
-                                  >
-                                    +1K
-                                  </button>
+                                  <div className="flex items-center justify-between gap-2 text-[11.5px]">
+                                    <div className="flex gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.max(0, al.amount - 1000) })}
+                                        className="px-2.5 py-1.5 rounded-lg bg-white/[0.08] text-zinc-200 active:bg-white/15"
+                                      >
+                                        -1K
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.min(maxForThis, al.amount + 1000) })}
+                                        className="px-2.5 py-1.5 rounded-lg bg-white/[0.08] text-zinc-200 active:bg-white/15"
+                                      >
+                                        +1K
+                                      </button>
+                                      {freeAmount > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            Store.absorbFreeAmount(focusedAcc.id, activeBalance.currency, al.id);
+                                            showToast('已吸納剩餘自由額');
+                                          }}
+                                          className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/25"
+                                        >
+                                          吸納自由額
+                                        </button>
+                                      )}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        Store.deleteAllocation(focusedAcc.id, al.id);
+                                        setEditingAllocId(null);
+                                        showToast('已刪除份額');
+                                      }}
+                                      className="px-2.5 py-1.5 rounded-lg bg-rose-500/15 text-rose-400 flex items-center gap-1"
+                                    >
+                                      <Icon name="trash" size={13} /> 刪除
+                                    </button>
+                                  </div>
                                 </div>
-                                {freeAmount > 0 && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      Store.absorbFreeAmount(focusedAcc.id, activeBalance.currency, al.id);
-                                      showToast('已吸納剩餘自由額');
-                                    }}
-                                    className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/25"
-                                  >
-                                    吸納自由額
-                                  </button>
-                                )}
-                              </div>
+                              )}
                             </div>
                           );
                         })}
@@ -1052,6 +1156,16 @@
                 onChange={(val) => setAddCurDraft((p) => Object.assign({}, p, { amount: val }))}
               />
             </div>
+            <div>
+              <label className="text-[12px] text-zinc-400 block mb-1.5">歸屬資金池</label>
+              <select
+                value={addCurDraft.poolId}
+                onChange={(e) => setAddCurDraft((p) => Object.assign({}, p, { poolId: e.target.value }))}
+                className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+              >
+                {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
           </div>
         </BottomSheet>
 
@@ -1160,7 +1274,7 @@
               onClick={() => setAllocDraft((p) => Object.assign({}, p, { locked: !p.locked }))}
               className="w-full px-4 py-3 rounded-xl bg-black/50 border border-white/[0.12] flex items-center justify-between"
             >
-              <span className="text-[13px] text-zinc-200">鎖定為「凍結底倉」（不計入日常可動用現金）</span>
+              <span className="text-[13px] text-zinc-200">鎖定為「凍結底倉」（動用時系統將提醒）</span>
               <span className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${allocDraft.locked ? 'bg-amber-400 text-black' : 'bg-white/10 text-zinc-400'}`}>
                 {allocDraft.locked ? '已鎖定' : '未鎖定'}
               </span>

@@ -915,6 +915,157 @@
     );
   }
 
+  // ---- Apple-Dark Confirmation Modal (Portal z-[95], Two-Tier Warning Support) ----
+  const ConfirmContext = createContext({ confirmAction: async () => true, confirmDeductions: async () => true });
+
+  function ConfirmProvider({ children }) {
+    const [dialog, setDialog] = useState(null);
+    const resolverRef = useRef(null);
+
+    const closeWith = useCallback((result) => {
+      const resFn = resolverRef.current;
+      resolverRef.current = null;
+      setDialog(null);
+      if (resFn) resFn(result);
+    }, []);
+
+    const confirmAction = useCallback((opts) => {
+      return new Promise((resolve) => {
+        resolverRef.current = resolve;
+        setDialog({
+          tone: (opts && opts.tone) || 'amber', // 'amber' | 'rose' | 'neutral'
+          title: (opts && opts.title) || '確認操作',
+          message: (opts && opts.message) || '',
+          details: (opts && opts.details) || [],
+          confirmLabel: (opts && opts.confirmLabel) || '繼續執行',
+          cancelLabel: (opts && opts.cancelLabel) || '取消'
+        });
+      });
+    }, []);
+
+    const confirmDeductions = useCallback((deductions) => {
+      const Store = window.WealthStore;
+      if (!Store || !Store.checkAccountDeductions) return Promise.resolve(true);
+      const res = Store.checkAccountDeductions(deductions);
+      if (!res || !res.hasRisk) return Promise.resolve(true);
+
+      const isOverdraft = res.highestSeverity === 'OVERDRAFT';
+      const details = res.warnings.map((w) => {
+        if (w.status === 'OVERDRAFT') {
+          return {
+            tone: 'rose',
+            title: `${w.accountLabel} · 餘額不足透支`,
+            line1: `目前餘額 ${Store.formatMoney(w.currentBalance, w.currency)}，本次扣款 ${Store.formatMoney(w.deductAmount, w.currency)}`,
+            line2: `入帳後將透支為 ${Store.formatMoney(w.afterBalance, w.currency)}`
+          };
+        }
+        return {
+          tone: 'amber',
+          title: `${w.accountLabel} · 將動用凍結底倉`,
+          line1: `可動用自由額 ${Store.formatMoney(w.availableFree, w.currency)}（凍結底倉 ${Store.formatMoney(w.lockedTotal, w.currency)}）`,
+          line2: `本次扣款 ${Store.formatMoney(w.deductAmount, w.currency)}，將動用凍結底倉 ${Store.formatMoney(w.lockedDeficit, w.currency)}`
+        };
+      });
+
+      return confirmAction({
+        tone: isOverdraft ? 'rose' : 'amber',
+        title: isOverdraft ? '帳戶餘額不足警告' : '動用凍結底倉提醒',
+        message: isOverdraft
+          ? '此操作會令帳戶餘額變為負數，是否仍要繼續入帳？'
+          : '此操作超過可動用自由額並將動用凍結底倉，是否仍要繼續入帳？',
+        details,
+        confirmLabel: '仍要繼續入帳',
+        cancelLabel: '返回檢查'
+      });
+    }, [confirmAction]);
+
+    return (
+      <ConfirmContext.Provider value={{ confirmAction, confirmDeductions }}>
+        {children}
+        {dialog && createPortal(
+          <div
+            onMouseDown={(e) => { if (e.target === e.currentTarget) closeWith(false); }}
+            onTouchStart={(e) => { if (e.target === e.currentTarget) closeWith(false); }}
+            className="fixed inset-0 z-[95] bg-black/75 backdrop-blur-sm flex items-center justify-center px-5 anim-fade-in"
+          >
+            <div className="w-full max-w-[360px] rounded-[24px] bg-[#18181F] border border-white/15 shadow-2xl overflow-hidden anim-pop-scale">
+              <div className="p-5 space-y-3.5">
+                <div className="flex items-start gap-3">
+                  <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 border ${
+                    dialog.tone === 'rose'
+                      ? 'bg-rose-500/20 border-rose-400/40 text-rose-300'
+                      : dialog.tone === 'amber'
+                      ? 'bg-amber-500/20 border-amber-400/40 text-amber-300'
+                      : 'bg-white/10 border-white/15 text-white'
+                  }`}>
+                    <Icon name={dialog.tone === 'amber' ? 'lock' : 'alert'} size={20} />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-[16.5px] font-bold text-white leading-snug">{dialog.title}</h3>
+                    {dialog.message && (
+                      <p className="text-[12.5px] text-zinc-400 mt-1 leading-relaxed">{dialog.message}</p>
+                    )}
+                  </div>
+                </div>
+
+                {Array.isArray(dialog.details) && dialog.details.length > 0 && (
+                  <div className="space-y-2 max-h-[42dvh] overflow-y-auto">
+                    {dialog.details.map((d, idx) => (
+                      <div
+                        key={idx}
+                        className={`p-3 rounded-xl border text-[12px] space-y-1 ${
+                          d.tone === 'rose'
+                            ? 'bg-rose-500/10 border-rose-400/30'
+                            : 'bg-amber-500/10 border-amber-400/30'
+                        }`}
+                      >
+                        <div className={`font-semibold ${d.tone === 'rose' ? 'text-rose-200' : 'text-amber-200'}`}>
+                          {d.title}
+                        </div>
+                        <div className="text-zinc-300 tabular-nums">{d.line1}</div>
+                        <div className={`font-semibold tabular-nums ${d.tone === 'rose' ? 'text-rose-300' : 'text-amber-300'}`}>
+                          {d.line2}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="pt-1 grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => closeWith(false)}
+                    className="py-3 rounded-2xl bg-white/10 text-zinc-200 text-[14px] font-semibold active:bg-white/15"
+                  >
+                    {dialog.cancelLabel}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => closeWith(true)}
+                    className={`py-3 rounded-2xl text-[14px] font-bold active:scale-[0.98] transition ${
+                      dialog.tone === 'rose'
+                        ? 'bg-rose-500 text-white'
+                        : dialog.tone === 'amber'
+                        ? 'bg-amber-400 text-black'
+                        : 'bg-white text-black'
+                    }`}
+                  >
+                    {dialog.confirmLabel}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+      </ConfirmContext.Provider>
+    );
+  }
+
+  function useConfirm() {
+    return useContext(ConfirmContext);
+  }
+
   // ---- Toast (Portal z-[100]) ----
   function Toast({ message }) {
     if (!message) return null;
@@ -995,6 +1146,8 @@
     canClearEntry,
     applyCalcKey,
     SegmentedControl,
+    ConfirmProvider,
+    useConfirm,
     Toast,
     EmergencyRecoveryBoundary
   };

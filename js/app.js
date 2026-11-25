@@ -782,8 +782,43 @@
 
     return (
       <div className="space-y-4 pb-6">
-        {/* Group 1: Ledger Categories & Attribution Pools (Core Cross-Account Rules) */}
+        {/* Group 1: Default Account, Categories & Attribution Pools */}
         <div className="rounded-2xl bg-[#111114] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
+          <div className="px-4 py-3.5 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[14px] font-medium text-white">預設記帳帳戶</div>
+              <div className="text-[11px] text-zinc-500">按 ＋ 記支出／應收時自動帶出的帳戶</div>
+            </div>
+            <select
+              value={Store.getDefaultExpenseSourceKey(state)}
+              onChange={(e) => {
+                Store.setDefaultExpenseSource(e.target.value);
+                showToast('已更新預設記帳帳戶');
+              }}
+              className="max-w-[165px] px-2.5 py-1.5 rounded-xl bg-black/60 border border-white/[0.12] text-[12.5px] font-semibold text-white outline-none truncate"
+            >
+              {state.cards.length > 0 && (
+                <optgroup label="信用卡">
+                  {state.cards.map((c) => (
+                    <option key={c.id} value={`CARD::${c.id}::`}>
+                      {c.name}{c.last4 ? ` (${c.last4})` : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {state.accounts.length > 0 && (
+                <optgroup label="銀行・電子錢包">
+                  {state.accounts.map((a) =>
+                    (a.balances || []).map((b) => (
+                      <option key={`${a.id}_${b.id}`} value={`ACCOUNT::${a.id}::${b.id}`}>
+                        {a.balances.length > 1 ? `${a.name} (${b.currency})` : a.name}
+                      </option>
+                    ))
+                  )}
+                </optgroup>
+              )}
+            </select>
+          </div>
           <button
             type="button"
             onClick={() => setCatMgrOpen(true)}
@@ -1170,6 +1205,10 @@
                   showToast={showToast}
                   onFocusChange={handleAssetFocusChange}
                   resetSignal={assetResetKey}
+                  onJumpToWealth={() => {
+                    setIsAssetDetailFocused(false);
+                    setAssetSubTab('WEALTH');
+                  }}
                 />
               )}
               {assetSubTab === 'CARDS' && (
@@ -1293,11 +1332,13 @@
   }
 
   function RootApp() {
-    const { EmergencyRecoveryBoundary, KeypadProvider } = window.WealthUI;
+    const { EmergencyRecoveryBoundary, KeypadProvider, ConfirmProvider } = window.WealthUI;
     return (
       <EmergencyRecoveryBoundary>
         <KeypadProvider>
-          <AppShell />
+          <ConfirmProvider>
+            <AppShell />
+          </ConfirmProvider>
         </KeypadProvider>
       </EmergencyRecoveryBoundary>
     );

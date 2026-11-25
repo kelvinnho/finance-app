@@ -1,4 +1,4 @@
-// mod2_cards.js · Stage 2 r5
+// mod2_cards.js · Stage 2 r6
 (function () {
   'use strict';
 
@@ -46,7 +46,8 @@
   }
 
   function CreditCardsView({ state, showToast, onFocusChange, resetSignal }) {
-    const { Icon, BottomSheet, NumericInput, SegmentedControl } = window.WealthUI;
+    const { Icon, BottomSheet, NumericInput, SegmentedControl, useConfirm } = window.WealthUI;
+    const { confirmDeductions } = useConfirm();
     const Store = window.WealthStore;
 
     const [focusedCardId, setFocusedCardId] = useState(null);
@@ -306,13 +307,25 @@
       showToast('信用卡與主找數戶口設定已儲存');
     };
 
+    const calcBankDeductAmt = (amtInCardCur, cardCur, bankAccId, bankBalId) => {
+      const opt = bankOptions.find((b) => b.accountId === bankAccId && (!bankBalId || b.balanceId === bankBalId));
+      if (!opt || !cardCur || opt.currency === cardCur) return Store.round2(amtInCardCur);
+      const inBase = Store.convertToBase(amtInCardCur, cardCur, state);
+      const rate = (state.meta.fxRates && state.meta.fxRates[opt.currency]) || 1;
+      return Store.round2(inBase / rate);
+    };
+
     // Execute a single card's single inbound reimbursement transfer (Source Bank -> Card Main Bank)
-    const handleSingleReimburse = (tr) => {
+    const handleSingleReimburse = async (tr) => {
       if (!focusedCard || !tr || tr.isDone) return;
       if (!tr.fromAccountId || !tr.toAccountId) {
         showToast('請先為資金池與信用卡綁定銀行戶口');
         return;
       }
+      const deductAmt = calcBankDeductAmt(tr.remainingAmount, focusedCard.currency, tr.fromAccountId, tr.fromBalanceId);
+      const ok = await confirmDeductions([{ accountId: tr.fromAccountId, balanceId: tr.fromBalanceId, delta: -deductAmt }]);
+      if (!ok) return;
+
       const cnt = Store.executeCardReimbursements([{
         cardId: focusedCard.id,
         cardName: focusedCard.name,
@@ -331,13 +344,29 @@
     };
 
     // Execute ALL pending inbound reimbursements for the focused card (Step 1 only, ready for autopay)
-    const handleReimburseAllForCard = () => {
+    const handleReimburseAllForCard = async () => {
       if (!focusedCard || !focusedPlan) return;
       const pending = focusedPlan.inboundTransfers.filter((tr) => !tr.isDone && tr.fromAccountId && tr.toAccountId);
       if (!pending.length) {
         showToast('本卡無待歸墊之跨行轉帳');
         return;
       }
+      const simEvents = [];
+      pending.forEach((tr) => {
+        simEvents.push({
+          accountId: tr.fromAccountId,
+          balanceId: tr.fromBalanceId,
+          delta: -calcBankDeductAmt(tr.remainingAmount, focusedCard.currency, tr.fromAccountId, tr.fromBalanceId)
+        });
+        simEvents.push({
+          accountId: tr.toAccountId,
+          balanceId: tr.toBalanceId,
+          delta: calcBankDeductAmt(tr.remainingAmount, focusedCard.currency, tr.toAccountId, tr.toBalanceId)
+        });
+      });
+      const ok = await confirmDeductions(simEvents);
+      if (!ok) return;
+
       const cnt = Store.executeCardReimbursements(
         pending.map((tr) => ({
           cardId: focusedCard.id,
@@ -358,7 +387,7 @@
     };
 
     // Execute a merged cross-card route from the Global Transfer Plan sheet
-    const handleExecuteGlobalRoute = (route) => {
+    const handleExecuteGlobalRoute = async (route) => {
       if (!route || route.isDone) return;
       const items = route.breakdown
         .filter((b) => !b.isDone && b.remainingAmount > 0)
@@ -374,14 +403,23 @@
           cardCurrency: b.currency,
           note: `為「${b.cardName}」歸墊（${b.pools.map((p) => p.name).join('、')}）`
         }));
+      const simEvents = items.map((it) => ({
+        accountId: it.fromAccountId,
+        balanceId: it.fromBalanceId,
+        delta: -calcBankDeductAmt(it.amountInCardCur, it.cardCurrency, it.fromAccountId, it.fromBalanceId)
+      }));
+      const ok = await confirmDeductions(simEvents);
+      if (!ok) return;
+
       const cnt = Store.executeCardReimbursements(items);
       if (cnt > 0) {
         showToast(`已從 ${route.fromShortName} 轉入 ${route.toLabel}（${cnt} 筆）`);
       }
     };
 
-    const handleExecuteAllGlobalRoutes = () => {
+    const handleExecuteAllGlobalRoutes = async () => {
       const items = [];
+      const simEvents = [];
       globalTransferPlan.routes.forEach((route) => {
         if (route.isDone) return;
         route.breakdown.forEach((b) => {
@@ -398,12 +436,25 @@
             cardCurrency: b.currency,
             note: `為「${b.cardName}」歸墊（${b.pools.map((p) => p.name).join('、')}）`
           });
+          simEvents.push({
+            accountId: route.fromAccountId,
+            balanceId: route.fromBalanceId,
+            delta: -calcBankDeductAmt(b.remainingAmount, b.currency, route.fromAccountId, route.fromBalanceId)
+          });
+          simEvents.push({
+            accountId: route.toAccountId,
+            balanceId: route.toBalanceId,
+            delta: calcBankDeductAmt(b.remainingAmount, b.currency, route.toAccountId, route.toBalanceId)
+          });
         });
       });
       if (!items.length) {
         showToast('目前無待執行之跨行歸墊轉帳');
         return;
       }
+      const ok = await confirmDeductions(simEvents);
+      if (!ok) return;
+
       const cnt = Store.executeCardReimbursements(items);
       if (cnt > 0) {
         showToast(`已一鍵完成全部 ${cnt} 筆跨戶歸墊轉帳`);
@@ -434,7 +485,7 @@
       setPayOpen(true);
     };
 
-    const handleConfirmPayment = () => {
+    const handleConfirmPayment = async () => {
       if (!focusedCard || !focusedPlan) return;
       if (payMode === 'DIRECT') {
         if (!directPayKey) {
@@ -446,6 +497,10 @@
           return;
         }
         const [accId, balId] = directPayKey.split('::');
+        const deductAmt = calcBankDeductAmt(Number(directPayAmount), focusedCard.currency, accId, balId);
+        const ok = await confirmDeductions([{ accountId: accId, balanceId: balId, delta: -deductAmt }]);
+        if (!ok) return;
+
         const cnt = Store.payCardBill(
           focusedCard.id,
           [{ fromAccountId: accId, fromBalanceId: balId, amount: Number(directPayAmount) }],
@@ -480,6 +535,29 @@
                 note: `為「${focusedCard.name}」歸墊（${tr.pools.map((p) => p.name).join('、')}）`
               }))
           : [];
+
+        // Simulate inbound reimbursements first, then main bank paying card
+        const simEvents = [];
+        reimbItems.forEach((it) => {
+          simEvents.push({
+            accountId: it.fromAccountId,
+            balanceId: it.fromBalanceId,
+            delta: -calcBankDeductAmt(it.amountInCardCur, it.cardCurrency, it.fromAccountId, it.fromBalanceId)
+          });
+          simEvents.push({
+            accountId: it.toAccountId,
+            balanceId: it.toBalanceId,
+            delta: calcBankDeductAmt(it.amountInCardCur, it.cardCurrency, it.toAccountId, it.toBalanceId)
+          });
+        });
+        simEvents.push({
+          accountId: focusedPlan.mainBank.accountId,
+          balanceId: focusedPlan.mainBank.balanceId,
+          delta: -calcBankDeductAmt(Number(directPayAmount), focusedCard.currency, focusedPlan.mainBank.accountId, focusedPlan.mainBank.balanceId)
+        });
+
+        const ok = await confirmDeductions(simEvents);
+        if (!ok) return;
 
         const res = Store.settleCardWithReimbursements(
           focusedCard.id,
