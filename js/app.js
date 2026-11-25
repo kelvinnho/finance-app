@@ -1015,10 +1015,15 @@
       }
     }, [activeTab, assetSubTab]);
 
+    const prevAssetFocusedRef = useRef(false);
     const handleAssetFocusChange = useCallback((focused) => {
-      setIsAssetDetailFocused(Boolean(focused));
-      if (mainScrollRef.current) {
-        mainScrollRef.current.scrollTop = 0;
+      const next = Boolean(focused);
+      setIsAssetDetailFocused(next);
+      if (next !== prevAssetFocusedRef.current) {
+        prevAssetFocusedRef.current = next;
+        if (mainScrollRef.current) {
+          mainScrollRef.current.scrollTop = 0;
+        }
       }
     }, []);
 

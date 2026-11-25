@@ -1,3 +1,4 @@
+// mod1_wallet.js · Stage 2 r4
 (function () {
   'use strict';
 
@@ -75,9 +76,10 @@
       }
     }, [focusedAcc]);
 
+    const isAccFocused = Boolean(focusedAcc);
     useEffect(() => {
-      if (onFocusChange) onFocusChange(Boolean(focusedAcc));
-    }, [focusedAcc, onFocusChange]);
+      if (onFocusChange) onFocusChange(isAccFocused);
+    }, [isAccFocused, onFocusChange]);
 
     useEffect(() => {
       return () => {
@@ -491,19 +493,11 @@
               </div>
             )}
 
-            {/* Elevated Connected Card Options Tray (Distinct from Black Canvas) */}
+            {/* Elevated Card Options Tray */}
             <div
-              className="rounded-[24px] bg-[#18181F] border border-white/[0.13] shadow-[0_10px_30px_rgba(0,0,0,0.45)] overflow-hidden"
+              className="rounded-[22px] bg-[#17171D] border border-white/[0.12] shadow-[0_10px_28px_rgba(0,0,0,0.45)] overflow-hidden"
               style={{ borderTop: `2px solid ${getThemeObj(focusedAcc.theme).accent}88` }}
             >
-              <div className="px-4 py-2.5 bg-white/[0.04] border-b border-white/[0.08] flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: getThemeObj(focusedAcc.theme).accent }} />
-                  <span className="text-[12px] font-semibold text-zinc-200 truncate">「{focusedAcc.name}」卡片專屬選項</span>
-                </div>
-                <span className="text-[11px] text-zinc-400 shrink-0 tabular-nums">{activeBalance.currency} 份額管理</span>
-              </div>
-
               <div className="p-4 space-y-3.5">
                 <div className="flex items-center justify-between gap-2">
                   <div>

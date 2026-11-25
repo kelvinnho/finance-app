@@ -1996,7 +1996,7 @@
 
   // ---- Main Ledger View ----
   function LedgerView({ state, onEditTx, showToast }) {
-    const { Icon, BottomSheet } = window.WealthUI;
+    const { Icon, BottomSheet, NumericInput } = window.WealthUI;
     const Store = window.WealthStore;
 
     const now = new Date();
@@ -2012,6 +2012,10 @@
 
     const [settlingTx, setSettlingTx] = useState(null);
     const [settleTargetKey, setSettleTargetKey] = useState('');
+
+    // Dedicated safe editor for Card Bill Payment (主戶找數) & Card Reimbursement (找數歸墊)
+    const [editingCardTx, setEditingCardTx] = useState(null);
+    const [cardTxDraft, setCardTxDraft] = useState({ amount: 0, date: '', time: '', note: '' });
 
     const allAccounts = useMemo(() => buildAccountOptions(state, true), [state]);
 
@@ -2160,13 +2164,48 @@
       showToast(settlingTx.type === 'RECEIVABLE' ? '已確認收回並更新餘額' : '已確認還款並更新餘額');
     };
 
+    const openCardSettlementEdit = (tx) => {
+      const cardAmt = tx.cardReimbursement
+        ? (tx.cardReimbursement.amountInCardCur != null ? tx.cardReimbursement.amountInCardCur : tx.settledAmount)
+        : (tx.settledAmount != null ? tx.settledAmount : tx.amount);
+      setCardTxDraft({
+        amount: cardAmt || 0,
+        date: tx.date || Store.todayISO(),
+        time: tx.time || Store.nowTimeHM(),
+        note: tx.note || ''
+      });
+      setEditingCardTx(tx);
+    };
+
+    const handleSaveCardSettlementEdit = () => {
+      if (!editingCardTx) return;
+      if (Number(cardTxDraft.amount) <= 0) {
+        showToast('金額須大於 0');
+        return;
+      }
+      Store.updateCardSettlementTx(editingCardTx.id, {
+        amount: Number(cardTxDraft.amount),
+        date: cardTxDraft.date,
+        time: cardTxDraft.time,
+        note: cardTxDraft.note
+      });
+      setEditingCardTx(null);
+      showToast(editingCardTx.cardReimbursement ? '已更新歸墊轉帳並同步餘額' : '已更新信用卡找數並同步餘額');
+    };
+
     const handleDeleteTx = (tx) => {
+      const isCardPay = tx.type === 'TRANSFER' && tx.toAccountKind === 'CARD';
+      const isReimb = Boolean(tx.cardReimbursement);
       const res = Store.deleteTransaction(tx.id);
       setExpandedTxId(null);
       if (res.mode === 'PAIRED_DELETE') {
         showToast('已成對刪除代墊／借貸與結清紀錄並回滾餘額');
       } else if (res.mode === 'REOPEN_LOAN') {
         showToast('已刪除結清紀錄，原單已回復為待收／待還狀態');
+      } else if (isCardPay) {
+        showToast('已撤銷找數並回滾銀行餘額與卡數');
+      } else if (isReimb) {
+        showToast('已撤銷歸墊轉帳並回復待轉狀態');
       } else {
         showToast('已刪除並回滾帳戶餘額');
       }
@@ -2537,6 +2576,19 @@
                                 </div>
                               )}
 
+                              {/* Card Payment Applied Breakdown (Billed vs Unbilled) */}
+                              {isCardPay && (tx.billedApplied > 0 || tx.unbilledApplied > 0) && (
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-zinc-500 shrink-0">抵扣明細</span>
+                                  <span className="text-emerald-300 font-medium tabular-nums text-right">
+                                    {[
+                                      tx.billedApplied > 0 ? `本期 ${Store.formatMoney(tx.billedApplied, tx.settledCurrency || tx.currency)}` : null,
+                                      tx.unbilledApplied > 0 ? `下期 ${Store.formatMoney(tx.unbilledApplied, tx.settledCurrency || tx.currency)}` : null
+                                    ].filter(Boolean).join(' · ')}
+                                  </span>
+                                </div>
+                              )}
+
                               {/* Reimbursement Target Card Info */}
                               {isReimb && (
                                 <div className="flex items-start justify-between gap-3">
@@ -2594,7 +2646,16 @@
                             )}
 
                             <div className="flex gap-2">
-                              {!isSettlement && (
+                              {!isSettlement && (isCardPay || isReimb) && (
+                                <button
+                                  type="button"
+                                  onClick={() => openCardSettlementEdit(tx)}
+                                  className="flex-1 py-2.5 rounded-xl bg-white/[0.10] text-white text-[12.5px] font-medium flex items-center justify-center gap-1"
+                                >
+                                  <Icon name="edit" size={14} /> 調整金額 / 備註
+                                </button>
+                              )}
+                              {!isSettlement && !isCardPay && !isReimb && (
                                 <button
                                   type="button"
                                   onClick={() => onEditTx(tx)}
@@ -2608,11 +2669,15 @@
                                 onClick={() => handleDeleteTx(tx)}
                                 className="flex-1 py-2.5 rounded-xl bg-rose-500/15 border border-rose-500/25 text-rose-400 text-[12.5px] font-medium flex items-center justify-center gap-1"
                               >
-                                <Icon name="trash" size={14} />
+                                <Icon name={isCardPay || isReimb ? 'undo' : 'trash'} size={14} />
                                 {isLoan && tx.isLoanSettled
                                   ? '成對刪除原單與結清'
                                   : isSettlement
                                   ? '刪除並回復原單待收'
+                                  : isCardPay
+                                  ? '撤銷找數'
+                                  : isReimb
+                                  ? '撤銷歸墊'
                                   : '刪除並回滾'}
                               </button>
                             </div>
@@ -2672,6 +2737,105 @@
               );
             })}
           </div>
+        </BottomSheet>
+
+        {/* Dedicated Safe Editor Sheet for Card Bill Payment / Reimbursement (Never misroutes to Transfer Editor) */}
+        <BottomSheet
+          open={Boolean(editingCardTx)}
+          title={editingCardTx && editingCardTx.cardReimbursement ? '調整跨戶歸墊轉帳' : '調整信用卡找數'}
+          subtitle={editingCardTx ? `${getAccountLabel(editingCardTx)} ➔ ${getToAccountLabel(editingCardTx) || ''}` : ''}
+          onClose={() => setEditingCardTx(null)}
+          footer={
+            <button
+              type="button"
+              onClick={handleSaveCardSettlementEdit}
+              className="w-full py-3.5 rounded-2xl bg-emerald-400 text-black text-[15px] font-bold active:scale-[0.99] transition"
+            >
+              儲存修改並同步餘額
+            </button>
+          }
+        >
+          {editingCardTx && (() => {
+            const editCur = editingCardTx.cardReimbursement
+              ? ((state.cards.find((c) => c.id === editingCardTx.cardReimbursement.cardId) || {}).currency || editingCardTx.settledCurrency || state.meta.baseCurrency)
+              : (editingCardTx.settledCurrency || editingCardTx.currency);
+            return (
+              <div className="space-y-4">
+                <div className="px-3.5 py-3 rounded-xl bg-black/50 border border-white/[0.08] flex items-center justify-between gap-2 text-[13px]">
+                  <span className="text-zinc-400 shrink-0">固定流向</span>
+                  <span className="font-semibold text-white truncate">
+                    {getAccountLabel(editingCardTx)} <span className="text-amber-400">➔</span> <span className="text-emerald-300">{getToAccountLabel(editingCardTx)}</span>
+                  </span>
+                </div>
+
+                <div>
+                  <label className="text-[12px] text-zinc-400 block mb-1.5">
+                    {editingCardTx.cardReimbursement ? '歸墊金額' : '找數金額'} ({editCur})
+                  </label>
+                  <NumericInput
+                    size="lg"
+                    value={cardTxDraft.amount}
+                    currency={editCur}
+                    label={editingCardTx.cardReimbursement ? `調整歸墊金額 (${editCur})` : `調整找數金額 (${editCur})`}
+                    onChange={(val) => setCardTxDraft((p) => Object.assign({}, p, { amount: val }))}
+                    className="!text-emerald-400"
+                  />
+                </div>
+
+                <div className="grid grid-cols-12 gap-2.5">
+                  <div className="col-span-7 min-w-0">
+                    <label className="text-[11.5px] text-zinc-400 block mb-1.5">日期</label>
+                    <div className="relative h-[46px] rounded-xl bg-black/60 border border-white/[0.12] px-3 flex items-center justify-between gap-2 overflow-hidden">
+                      <span className="text-[14.5px] font-semibold text-white tabular-nums truncate">
+                        {formatDisplayDate(cardTxDraft.date)}
+                      </span>
+                      <Icon name="calendar" size={16} className="text-zinc-400 shrink-0" />
+                      <input
+                        type="date"
+                        value={cardTxDraft.date}
+                        onChange={(e) => {
+                          if (e.target.value) setCardTxDraft((p) => Object.assign({}, p, { date: e.target.value }));
+                        }}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                  <div className="col-span-5 min-w-0">
+                    <label className="text-[11.5px] text-zinc-400 block mb-1.5">時間</label>
+                    <div className="relative h-[46px] rounded-xl bg-black/60 border border-white/[0.12] px-3 flex items-center justify-between gap-1.5 overflow-hidden">
+                      <span className="text-[14.5px] font-semibold text-white tabular-nums truncate">
+                        {cardTxDraft.time}
+                      </span>
+                      <span className="text-[11px] text-zinc-400 shrink-0">▾</span>
+                      <input
+                        type="time"
+                        value={cardTxDraft.time}
+                        onChange={(e) => {
+                          if (e.target.value) setCardTxDraft((p) => Object.assign({}, p, { time: e.target.value }));
+                        }}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[12px] text-zinc-400 block mb-1.5">備註</label>
+                  <input
+                    type="text"
+                    value={cardTxDraft.note}
+                    onChange={(e) => setCardTxDraft((p) => Object.assign({}, p, { note: e.target.value }))}
+                    placeholder="選填備註"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                  />
+                </div>
+
+                <p className="text-[11.5px] text-zinc-500">
+                  如需更換扣款戶口或取消本筆紀錄，請直接使用「撤銷」並於信用卡頁重新操作。
+                </p>
+              </div>
+            );
+          })()}
         </BottomSheet>
       </div>
     );

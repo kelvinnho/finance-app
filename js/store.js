@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 2 r3';
+  const APP_VERSION = 'Stage 2 r4';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -1887,6 +1887,63 @@
         payCount = this.payCardBill(cardId, [mainPayInfo], targetMode || (bucket === 'UNBILLED' ? 'UNBILLED_FIRST' : 'BILLED_FIRST'));
       }
       return { reimbCount, payCount };
+    },
+
+    updateCardSettlementTx(txId, patch) {
+      // Safely edits a card payment (toAccountKind === 'CARD') or card reimbursement (cardReimbursement)
+      // while preserving exact account/card links, cross-currency conversion, and billed/unbilled split.
+      const draft = cloneState();
+      const idx = draft.transactions.findIndex((t) => t.id === txId);
+      if (idx === -1) return null;
+      const oldTx = draft.transactions[idx];
+      const isCardPay = oldTx.type === 'TRANSFER' && oldTx.toAccountKind === 'CARD';
+      const isReimb = oldTx.type === 'TRANSFER' && Boolean(oldTx.cardReimbursement);
+      if (!isCardPay && !isReimb) return null;
+
+      applyTransactionEffect(draft, oldTx, -1);
+
+      const updated = Object.assign({}, oldTx);
+      if (patch.date) updated.date = patch.date;
+      if (patch.time) updated.time = patch.time;
+      if (patch.note != null) updated.note = String(patch.note).trim();
+
+      const nextAmt = patch.amount != null ? Math.abs(round2(patch.amount)) : null;
+      if (nextAmt != null && nextAmt > 0) {
+        if (isCardPay) {
+          const card = draft.cards.find((c) => c.id === updated.toAccountId);
+          const cardCur = (card && card.currency) || updated.settledCurrency || draft.meta.baseCurrency;
+          const bankDeduct = convertBetweenCurrencies(nextAmt, cardCur, updated.currency, draft);
+          updated.amount = bankDeduct;
+          updated.settledAmount = nextAmt;
+          updated.settledCurrency = cardCur;
+
+          const availBilled = card ? Math.max(0, round2(card.billed || 0)) : 0;
+          const availUnbilled = card ? Math.max(0, round2(card.unbilled || 0)) : 0;
+          if (updated.billingBucket === 'UNBILLED' && availUnbilled > 0 && availBilled === 0) {
+            updated.unbilledApplied = Math.min(nextAmt, availUnbilled);
+            updated.billedApplied = round2(nextAmt - updated.unbilledApplied);
+          } else {
+            updated.billedApplied = Math.min(nextAmt, availBilled);
+            updated.unbilledApplied = round2(nextAmt - updated.billedApplied);
+          }
+        } else if (isReimb) {
+          const card = draft.cards.find((c) => c.id === updated.cardReimbursement.cardId);
+          const cardCur = (card && card.currency) || updated.settledCurrency || draft.meta.baseCurrency;
+          const fromAmt = convertBetweenCurrencies(nextAmt, cardCur, updated.currency, draft);
+          const toAmt = convertBetweenCurrencies(nextAmt, cardCur, updated.settledCurrency, draft);
+          updated.amount = fromAmt;
+          updated.settledAmount = toAmt;
+          updated.cardReimbursement = Object.assign({}, updated.cardReimbursement, {
+            amountInCardCur: nextAmt
+          });
+        }
+      }
+
+      applyTransactionEffect(draft, updated, 1);
+      draft.transactions[idx] = updated;
+      state = draft;
+      notify();
+      return updated;
     },
 
     // ---- Pools Management (Cross-Account Settlement Attribution) ----
