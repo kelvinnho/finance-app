@@ -39,19 +39,6 @@
     return `${Number(parts[1])}/${Number(parts[2])}`;
   }
 
-  function safeEvalExpr(expr) {
-    const cleaned = String(expr || '').replace(/[^0-9.+\-]/g, '');
-    if (!cleaned) return 0;
-    const tokens = cleaned.match(/[+\-]?[0-9]*\.?[0-9]+/g);
-    if (!tokens) return 0;
-    let total = 0;
-    for (let i = 0; i < tokens.length; i++) {
-      const n = parseFloat(tokens[i]);
-      if (Number.isFinite(n)) total += n;
-    }
-    return Math.max(0, Math.round(total * 100) / 100);
-  }
-
   function buildAccountOptions(state, includeCards) {
     const Store = window.WealthStore;
     const list = [];
@@ -100,9 +87,9 @@
     return list;
   }
 
-  // ---- Zero-Scroll Compact Transaction Editor (iPhone 14 Single-Screen Fit, Portal z-[60]) ----
+  // ---- Zero-Scroll Balanced Compact Transaction Editor (iPhone 14 Proportioned, Full 4x5 Calc, Portal z-[60]) ----
   function TransactionEditorSheet({ open, initialType, editingTx, prefillToCardId, state, onClose, showToast }) {
-    const { Icon, BottomSheet, useKeypad } = window.WealthUI;
+    const { Icon, BottomSheet, useKeypad, evalCalcExpr, hasCalcOp, canClearEntry, applyCalcKey } = window.WealthUI;
     const { openKeypad } = useKeypad();
     const Store = window.WealthStore;
 
@@ -143,15 +130,14 @@
 
     // Dynamic Bottom Panel: KEYPAD | CATEGORY | ACCOUNT | POOL | BILLING | CURRENCY | DATETIME | NOTE
     const [panel, setPanel] = useState('KEYPAD');
-    const [accountTab, setAccountTab] = useState('CARD'); // CARD | ACCOUNT
-    const [transferSlot, setTransferSlot] = useState('FROM'); // FROM | TO
+    const [accountTab, setAccountTab] = useState('CARD');
+    const [transferSlot, setTransferSlot] = useState('FROM');
 
     // Quick add sub-category mini-sheet
     const [quickSubOpen, setQuickSubOpen] = useState(false);
     const [quickSubName, setQuickSubName] = useState('');
     const [quickSubPool, setQuickSubPool] = useState('');
 
-    // Initialize state on open
     useEffect(() => {
       if (!open) return;
       setPanel('KEYPAD');
@@ -282,15 +268,15 @@
       [isCardSelected, state.cards, fromOpt]
     );
 
-    // Auto-calculate card billing bucket whenever card or date changes while in auto mode
     useEffect(() => {
       if (isCardSelected && selectedCardObj && billingAuto) {
         setBillingBucket(Store.getAutoCardBillingBucket(selectedCardObj, date));
       }
     }, [isCardSelected, selectedCardObj, date, billingAuto]);
 
-    const numericAmount = useMemo(() => safeEvalExpr(expr), [expr]);
-    const hasOperator = /[+\-]/.test(expr.slice(1));
+    const numericAmount = useMemo(() => Math.max(0, evalCalcExpr(expr)), [expr, evalCalcExpr]);
+    const hasOperator = hasCalcOp(expr);
+    const showClearEntry = canClearEntry(expr);
 
     const targetSettlementCurrency = txType === 'TRANSFER'
       ? (toOpt ? toOpt.currency : currency)
@@ -332,12 +318,10 @@
 
     if (!open) return null;
 
-    // ---- Handlers ----
     const handleTypeSwitch = (nextType) => {
       setTxType(nextType);
       setManualSettled(false);
 
-      // Ensure valid account for types that disallow credit cards
       const nextAllowsCard = nextType === 'EXPENSE' || nextType === 'RECEIVABLE';
       if (!nextAllowsCard && fromKey.startsWith('CARD::')) {
         const fallback = defaultBankKey || (bankSources[0] ? bankSources[0].key : '');
@@ -398,9 +382,7 @@
     const handlePickAccount = (opt) => {
       if (txType === 'TRANSFER') {
         if (transferSlot === 'FROM') {
-          if (opt.key === toKey) {
-            setToKey(fromKey);
-          }
+          if (opt.key === toKey) setToKey(fromKey);
           setFromKey(opt.key);
           setCurrency(opt.currency);
         } else {
@@ -440,47 +422,12 @@
     };
 
     const handleKeyPress = (k) => {
-      if (k === 'C') {
-        setExpr('0');
-        setManualSettled(false);
-        return;
-      }
-      if (k === 'BACK') {
-        setExpr((prev) => (prev.length <= 1 ? '0' : prev.slice(0, -1)));
-        setManualSettled(false);
-        return;
-      }
-      if (k === '=') {
-        setExpr(String(safeEvalExpr(expr)));
-        return;
-      }
-      if (k === '+' || k === '-') {
-        setExpr((prev) => {
-          if (!prev || prev === '0') return '0';
-          if (/[+\-]$/.test(prev)) return prev.slice(0, -1) + k;
-          return prev + k;
-        });
-        return;
-      }
-      if (k === '.') {
-        setExpr((prev) => {
-          const parts = prev.split(/[+\-]/);
-          const last = parts[parts.length - 1] || '';
-          if (last.includes('.')) return prev;
-          return prev + '.';
-        });
-        return;
-      }
       setManualSettled(false);
-      setExpr((prev) => {
-        if (prev === '0') return k;
-        if (prev.length >= 18) return prev;
-        return prev + k;
-      });
+      setExpr((prev) => applyCalcKey(prev, k));
     };
 
     const handleSave = () => {
-      const amt = safeEvalExpr(expr);
+      const amt = Math.max(0, evalCalcExpr(expr));
       if (!Number.isFinite(amt) || amt <= 0) {
         showToast('請輸入大於 0 的金額');
         setPanel('KEYPAD');
@@ -551,7 +498,7 @@
         setPanel('ACCOUNT');
       } else {
         if (allowCardsForType) {
-          setAccountTab(fromOpt && fromOpt.kind === 'CARD' ? 'CARD' : (cardSources.length > 0 && panel !== 'ACCOUNT' ? (fromOpt && fromOpt.kind === 'CARD' ? 'CARD' : 'ACCOUNT') : 'ACCOUNT'));
+          setAccountTab(fromOpt && fromOpt.kind === 'CARD' ? 'CARD' : 'ACCOUNT');
         } else {
           setAccountTab('ACCOUNT');
         }
@@ -568,10 +515,11 @@
       : (isCardSelected ? '信用卡' : '付款帳戶');
 
     const keypadKeys = [
-      ['7', '8', '9', 'BACK'],
-      ['4', '5', '6', '+'],
-      ['1', '2', '3', '-'],
-      ['C', '0', '.', hasOperator ? '=' : 'OK']
+      [showClearEntry ? 'C' : 'AC', 'BACK', '%', '÷'],
+      ['7', '8', '9', '×'],
+      ['4', '5', '6', '-'],
+      ['1', '2', '3', '+'],
+      ['00', '0', '.', hasOperator ? '=' : 'OK']
     ];
 
     const sym = Store.getCurrencySymbol(currency);
@@ -584,27 +532,27 @@
       >
         {/* Top Action Bar & 5-Type Selector */}
         <div className="shrink-0 safe-top bg-[#0B0B0D] border-b border-white/[0.08]">
-          <div className="px-4 h-10 flex items-center justify-between">
+          <div className="px-4 h-11 flex items-center justify-between">
             <button
               type="button"
               onClick={onClose}
-              className="text-[14px] text-zinc-400 active:text-white py-1 pr-3"
+              className="text-[15px] text-zinc-400 active:text-white py-1 pr-3"
             >
               取消
             </button>
-            <span className="text-[15px] font-semibold text-white">
+            <span className="text-[16px] font-semibold text-white">
               {editingTx ? '編輯紀錄' : '記一筆'}
             </span>
             <button
               type="button"
               onClick={handleSave}
-              className="text-[14px] font-bold text-emerald-400 active:opacity-70 py-1 pl-3"
+              className="text-[15px] font-bold text-emerald-400 active:opacity-70 py-1 pl-3"
             >
               儲存
             </button>
           </div>
 
-          <div className="px-3.5 pb-2.5 pt-0.5">
+          <div className="px-3.5 pb-3 pt-0.5">
             <div className="p-1 rounded-2xl bg-[#16161A] border border-white/[0.08] grid grid-cols-5 gap-1">
               {TX_TYPES.map((t) => {
                 const active = txType === t.value;
@@ -613,7 +561,7 @@
                     key={t.value}
                     type="button"
                     onClick={() => handleTypeSwitch(t.value)}
-                    className={`py-1.5 rounded-xl text-[12px] font-semibold transition whitespace-nowrap ${
+                    className={`py-2 rounded-xl text-[13.5px] font-semibold transition whitespace-nowrap ${
                       active ? 'bg-white text-black shadow-sm' : 'text-zinc-400'
                     }`}
                   >
@@ -625,369 +573,365 @@
           </div>
         </div>
 
-        {/* Upper Compact Grid Section (Zero Scroll) */}
-        <div className="shrink-0 px-3.5 pt-2.5 pb-2 space-y-2 max-w-[480px] w-full mx-auto">
-          {txType === 'TRANSFER' ? (
-            /* === TRANSFER Dedicated Dual-Card Flow Layout (No Pool, No Credit Cards) === */
-            <div className="space-y-2">
-              <div className="relative grid grid-cols-2 gap-2.5 items-stretch">
-                {/* FROM Card */}
-                <button
-                  type="button"
-                  onClick={() => openAccountPanel('FROM')}
-                  className={`p-3 rounded-2xl border text-left transition flex flex-col justify-between min-h-[76px] ${
-                    panel === 'ACCOUNT' && transferSlot === 'FROM'
-                      ? 'bg-[#1D1D24] border-white'
-                      : 'bg-[#141417] border-white/[0.09] active:bg-white/[0.06]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="text-[10px] font-semibold tracking-wider text-rose-400">轉出 FROM</span>
-                    <span className="text-[10px] text-zinc-500">點擊切換</span>
-                  </div>
-                  <div className="text-[14px] font-bold text-white truncate mt-1 pr-3">
-                    {fromOpt ? fromOpt.label : '選擇帳戶'}
-                  </div>
-                  <div className="text-[11px] text-zinc-400 tabular-nums truncate mt-0.5">
-                    {fromOpt ? (
-                      numericAmount > 0
-                        ? `餘額 ➔ ${Store.formatMoney(Store.round2(fromOpt.amount - numericAmount), fromOpt.currency)}`
-                        : `餘額 ${Store.formatMoney(fromOpt.amount, fromOpt.currency)}`
-                    ) : '-'}
-                  </div>
-                </button>
+        {/* Balanced Middle Section: Spacious Upper Grid + Docked Amount Bar */}
+        <div className="flex-1 min-h-0 flex flex-col justify-between overflow-y-auto px-3.5 pt-3.5 pb-3 max-w-[480px] w-full mx-auto">
+          <div className="space-y-2.5">
+            {txType === 'TRANSFER' ? (
+              /* === TRANSFER Dedicated Dual-Card Flow Layout === */
+              <div className="space-y-2.5">
+                <div className="relative grid grid-cols-2 gap-3 items-stretch">
+                  <button
+                    type="button"
+                    onClick={() => openAccountPanel('FROM')}
+                    className={`p-3.5 rounded-2xl border text-left transition flex flex-col justify-between min-h-[96px] ${
+                      panel === 'ACCOUNT' && transferSlot === 'FROM'
+                        ? 'bg-[#1D1D24] border-white'
+                        : 'bg-[#141417] border-white/[0.09] active:bg-white/[0.06]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[11px] font-semibold tracking-wider text-rose-400">轉出 FROM</span>
+                      <span className="text-[11px] text-zinc-500">切換</span>
+                    </div>
+                    <div className="text-[16px] font-bold text-white truncate mt-1.5 pr-3">
+                      {fromOpt ? fromOpt.label : '選擇帳戶'}
+                    </div>
+                    <div className="text-[12.5px] text-zinc-400 tabular-nums truncate mt-1">
+                      {fromOpt ? (
+                        numericAmount > 0
+                          ? `➔ ${Store.formatMoney(Store.round2(fromOpt.amount - numericAmount), fromOpt.currency)}`
+                          : `餘額 ${Store.formatMoney(fromOpt.amount, fromOpt.currency)}`
+                      ) : '-'}
+                    </div>
+                  </button>
 
-                {/* TO Card */}
-                <button
-                  type="button"
-                  onClick={() => openAccountPanel('TO')}
-                  className={`p-3 rounded-2xl border text-left transition flex flex-col justify-between min-h-[76px] pl-4 ${
-                    panel === 'ACCOUNT' && transferSlot === 'TO'
-                      ? 'bg-[#14251F] border-emerald-400'
-                      : 'bg-[#141417] border-white/[0.09] active:bg-white/[0.06]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="text-[10px] font-semibold tracking-wider text-emerald-400">轉入 TO</span>
-                    <span className="text-[10px] text-zinc-500">點擊切換</span>
-                  </div>
-                  <div className="text-[14px] font-bold text-white truncate mt-1">
-                    {toOpt ? toOpt.label : '選擇帳戶'}
-                  </div>
-                  <div className="text-[11px] text-zinc-400 tabular-nums truncate mt-0.5">
-                    {toOpt ? (
-                      numericAmount > 0
-                        ? `餘額 ➔ ${Store.formatMoney(Store.round2(toOpt.amount + (isCrossCurrency ? settledAmount : numericAmount)), toOpt.currency)}`
-                        : `餘額 ${Store.formatMoney(toOpt.amount, toOpt.currency)}`
-                    ) : '-'}
-                  </div>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => openAccountPanel('TO')}
+                    className={`p-3.5 rounded-2xl border text-left transition flex flex-col justify-between min-h-[96px] pl-4 ${
+                      panel === 'ACCOUNT' && transferSlot === 'TO'
+                        ? 'bg-[#14251F] border-emerald-400'
+                        : 'bg-[#141417] border-white/[0.09] active:bg-white/[0.06]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[11px] font-semibold tracking-wider text-emerald-400">轉入 TO</span>
+                      <span className="text-[11px] text-zinc-500">切換</span>
+                    </div>
+                    <div className="text-[16px] font-bold text-white truncate mt-1.5">
+                      {toOpt ? toOpt.label : '選擇帳戶'}
+                    </div>
+                    <div className="text-[12.5px] text-zinc-400 tabular-nums truncate mt-1">
+                      {toOpt ? (
+                        numericAmount > 0
+                          ? `➔ ${Store.formatMoney(Store.round2(toOpt.amount + (isCrossCurrency ? settledAmount : numericAmount)), toOpt.currency)}`
+                          : `餘額 ${Store.formatMoney(toOpt.amount, toOpt.currency)}`
+                      ) : '-'}
+                    </div>
+                  </button>
 
-                {/* Floating Center Swap Button */}
-                <button
-                  type="button"
-                  onClick={handleSwapTransfer}
-                  aria-label="對調轉出與轉入帳戶"
-                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-[#24242B] border-2 border-[#0B0B0D] text-white shadow-xl flex items-center justify-center active:scale-90 transition z-10"
-                >
-                  <Icon name="swap" size={16} />
-                </button>
-              </div>
+                  <button
+                    type="button"
+                    onClick={handleSwapTransfer}
+                    aria-label="對調轉出與轉入帳戶"
+                    className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-[#24242B] border-2 border-[#0B0B0D] text-white shadow-xl flex items-center justify-center active:scale-90 transition z-10"
+                  >
+                    <Icon name="swap" size={18} />
+                  </button>
+                </div>
 
-              {/* Compact 1-Row Date + Note for Transfer */}
-              <div className="rounded-2xl bg-[#141417] border border-white/[0.09] grid grid-cols-2 divide-x divide-white/[0.08] overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => togglePanel('DATETIME')}
-                  className={`h-[44px] px-3 flex items-center justify-between gap-1.5 text-left transition ${panel === 'DATETIME' ? activeCellClass : ''}`}
-                >
-                  <span className="text-[12px] font-medium text-emerald-300 tabular-nums truncate">
-                    {formatShortDate(date)} · {time}
-                  </span>
-                  <Icon name="calendar" size={14} className="text-zinc-400 shrink-0" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => togglePanel('NOTE')}
-                  className={`h-[44px] px-3 flex items-center justify-between gap-1.5 text-left transition ${panel === 'NOTE' ? activeCellClass : ''}`}
-                >
-                  <span className={`text-[12px] truncate ${note || title ? 'text-white font-medium' : 'text-zinc-500'}`}>
-                    {note || title || '轉帳備註'}
-                  </span>
-                  <span className="text-[10px] text-zinc-500 shrink-0">▾</span>
-                </button>
-              </div>
-            </div>
-          ) : (
-            /* === EXPENSE / INCOME / RECEIVABLE / PAYABLE Compact Info Grid === */
-            <div className="rounded-2xl bg-[#141417] border border-white/[0.09] divide-y divide-white/[0.08] overflow-hidden">
-              {/* Row 1: Major Category | Date & Time */}
-              <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
-                <button
-                  type="button"
-                  onClick={() => togglePanel('CATEGORY')}
-                  className={`h-[46px] px-3 flex items-center gap-2 text-left transition min-w-0 ${panel === 'CATEGORY' ? activeCellClass : ''}`}
-                >
-                  <span className="shrink-0" style={{ color: selectedCat ? selectedCat.color : '#9CA3AF' }}>
-                    <Icon name={selectedCat ? selectedCat.icon : 'tag'} size={17} />
-                  </span>
-                  <span className="text-[14px] font-semibold text-white truncate flex-1">
-                    {selectedCat ? selectedCat.name : '選擇分類'}
-                  </span>
-                  <span className="text-[10px] text-zinc-500 shrink-0">▾</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => togglePanel('DATETIME')}
-                  className={`h-[46px] px-3 flex items-center justify-between gap-1.5 text-left transition min-w-0 ${panel === 'DATETIME' ? activeCellClass : ''}`}
-                >
-                  <span className="text-[13px] font-medium text-emerald-300 tabular-nums truncate">
-                    {formatShortDate(date)} · {time}
-                  </span>
-                  <Icon name="calendar" size={15} className="text-zinc-400 shrink-0" />
-                </button>
-              </div>
-
-              {/* Row 2: Sub-Category | Note (or Counterparty for Receivable/Payable) */}
-              <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
-                <button
-                  type="button"
-                  onClick={() => togglePanel('CATEGORY')}
-                  className={`h-[46px] px-3 flex items-center gap-1.5 text-left transition min-w-0 ${panel === 'CATEGORY' ? activeCellClass : ''}`}
-                >
-                  <span className="text-zinc-500 text-[12px] shrink-0">↳</span>
-                  <span className={`text-[13px] truncate flex-1 ${selectedSub ? 'text-white font-medium' : 'text-zinc-400'}`}>
-                    {selectedSub ? selectedSub.name : '點選小類'}
-                  </span>
-                  <span className="text-[10px] text-zinc-500 shrink-0">▾</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => togglePanel('NOTE')}
-                  className={`h-[46px] px-3 flex items-center justify-between gap-1.5 text-left transition min-w-0 ${panel === 'NOTE' ? activeCellClass : ''}`}
-                >
-                  {txType === 'RECEIVABLE' || txType === 'PAYABLE' ? (
-                    <span className={`text-[12px] truncate ${counterparty ? 'text-amber-300 font-semibold' : 'text-amber-400/75'}`}>
-                      {counterparty
-                        ? `${txType === 'RECEIVABLE' ? '待收' : '待還'}·${counterparty}`
-                        : (txType === 'RECEIVABLE' ? '代墊對象 / 備註' : '借款對象 / 備註')}
+                <div className="rounded-2xl bg-[#141417] border border-white/[0.09] grid grid-cols-2 divide-x divide-white/[0.08] overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => togglePanel('DATETIME')}
+                    className={`h-[54px] px-3.5 flex items-center justify-between gap-2 text-left transition ${panel === 'DATETIME' ? activeCellClass : ''}`}
+                  >
+                    <span className="text-[14.5px] font-semibold text-emerald-300 tabular-nums truncate">
+                      {formatShortDate(date)} · {time}
                     </span>
+                    <Icon name="calendar" size={16} className="text-zinc-400 shrink-0" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => togglePanel('NOTE')}
+                    className={`h-[54px] px-3.5 flex items-center justify-between gap-2 text-left transition ${panel === 'NOTE' ? activeCellClass : ''}`}
+                  >
+                    <span className={`text-[14px] truncate ${note || title ? 'text-white font-medium' : 'text-zinc-500'}`}>
+                      {note || title || '轉帳備註'}
+                    </span>
+                    <span className="text-[11px] text-zinc-500 shrink-0">▾</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* === EXPENSE / INCOME / RECEIVABLE / PAYABLE Larger & Clearer Info Grid === */
+              <div className="rounded-2xl bg-[#141417] border border-white/[0.09] divide-y divide-white/[0.08] overflow-hidden">
+                {/* Row 1: Major Category | Date & Time */}
+                <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
+                  <button
+                    type="button"
+                    onClick={() => togglePanel('CATEGORY')}
+                    className={`h-[58px] px-3.5 flex items-center gap-2.5 text-left transition min-w-0 ${panel === 'CATEGORY' ? activeCellClass : ''}`}
+                  >
+                    <span className="shrink-0" style={{ color: selectedCat ? selectedCat.color : '#9CA3AF' }}>
+                      <Icon name={selectedCat ? selectedCat.icon : 'tag'} size={19} />
+                    </span>
+                    <span className="text-[16px] font-semibold text-white truncate flex-1">
+                      {selectedCat ? selectedCat.name : '選擇分類'}
+                    </span>
+                    <span className="text-[11px] text-zinc-500 shrink-0">▾</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => togglePanel('DATETIME')}
+                    className={`h-[58px] px-3.5 flex items-center justify-between gap-2 text-left transition min-w-0 ${panel === 'DATETIME' ? activeCellClass : ''}`}
+                  >
+                    <span className="text-[15px] font-semibold text-emerald-300 tabular-nums truncate">
+                      {formatShortDate(date)} · {time}
+                    </span>
+                    <Icon name="calendar" size={16} className="text-zinc-400 shrink-0" />
+                  </button>
+                </div>
+
+                {/* Row 2: Sub-Category | Note (or Counterparty) */}
+                <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
+                  <button
+                    type="button"
+                    onClick={() => togglePanel('CATEGORY')}
+                    className={`h-[58px] px-3.5 flex items-center gap-2 text-left transition min-w-0 ${panel === 'CATEGORY' ? activeCellClass : ''}`}
+                  >
+                    <span className="text-zinc-500 text-[14px] shrink-0">↳</span>
+                    <span className={`text-[15px] truncate flex-1 ${selectedSub ? 'text-white font-medium' : 'text-zinc-400'}`}>
+                      {selectedSub ? selectedSub.name : '點選小類'}
+                    </span>
+                    <span className="text-[11px] text-zinc-500 shrink-0">▾</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => togglePanel('NOTE')}
+                    className={`h-[58px] px-3.5 flex items-center justify-between gap-2 text-left transition min-w-0 ${panel === 'NOTE' ? activeCellClass : ''}`}
+                  >
+                    {txType === 'RECEIVABLE' || txType === 'PAYABLE' ? (
+                      <span className={`text-[14px] truncate ${counterparty ? 'text-amber-300 font-semibold' : 'text-amber-400/80'}`}>
+                        {counterparty
+                          ? `${txType === 'RECEIVABLE' ? '待收' : '待還'}·${counterparty}`
+                          : (txType === 'RECEIVABLE' ? '代墊對象 / 備註' : '借款對象 / 備註')}
+                      </span>
+                    ) : (
+                      <span className={`text-[14px] truncate ${(note || (title && title !== (selectedSub && selectedSub.name))) ? 'text-white font-medium' : 'text-zinc-500'}`}>
+                        {note || (title && title !== (selectedSub && selectedSub.name) ? title : '備註 / 自訂名')}
+                      </span>
+                    )}
+                    <span className="text-[11px] text-zinc-500 shrink-0">▾</span>
+                  </button>
+                </div>
+
+                {/* Row 3: EXPENSE / RECEIVABLE / PAYABLE */}
+                {showPoolForType && (
+                  isCardSelected ? (
+                    <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
+                      <button
+                        type="button"
+                        onClick={() => togglePanel('POOL')}
+                        className={`h-[58px] px-3.5 flex items-center gap-2 text-left transition min-w-0 ${panel === 'POOL' ? activeCellClass : ''}`}
+                      >
+                        <span className="text-zinc-500 text-[14px] shrink-0">↳</span>
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ background: selectedPoolObj ? selectedPoolObj.color : '#34D399' }}
+                        />
+                        <span className="text-[15px] font-semibold text-white truncate flex-1">
+                          {selectedPoolObj ? selectedPoolObj.name : '資金池'}
+                        </span>
+                        <span className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${
+                          poolAutoLinked ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
+                        }`}>
+                          {poolAutoLinked ? '自動' : '手動'}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => togglePanel('BILLING')}
+                        className={`h-[58px] px-3.5 flex items-center justify-between gap-2 text-left transition min-w-0 ${panel === 'BILLING' ? activeCellClass : ''}`}
+                      >
+                        <span className={`text-[14px] font-semibold truncate ${
+                          billingBucket === 'BILLED' ? 'text-amber-300' : 'text-sky-300'
+                        }`}>
+                          {billingBucket === 'BILLED' ? '本期應繳' : '未出帳下期'}
+                        </span>
+                        <span className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${
+                          billingAuto ? 'bg-white/10 text-zinc-300' : 'bg-amber-500/20 text-amber-300'
+                        }`}>
+                          {billingAuto ? '自動' : '手動'}
+                        </span>
+                      </button>
+                    </div>
                   ) : (
-                    <span className={`text-[12px] truncate ${(note || (title && title !== (selectedSub && selectedSub.name))) ? 'text-white font-medium' : 'text-zinc-500'}`}>
-                      {note || (title && title !== (selectedSub && selectedSub.name) ? title : '備註 / 自訂名')}
-                    </span>
-                  )}
-                  <span className="text-[10px] text-zinc-500 shrink-0">▾</span>
-                </button>
-              </div>
-
-              {/* Row 3: Only for EXPENSE / RECEIVABLE / PAYABLE (INCOME is strictly 2 rows!) */}
-              {showPoolForType && (
-                isCardSelected ? (
-                  /* Credit Card Selected: Left = Pool | Right = Auto/Manual Billing Bucket */
-                  <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
                     <button
                       type="button"
                       onClick={() => togglePanel('POOL')}
-                      className={`h-[46px] px-3 flex items-center gap-1.5 text-left transition min-w-0 ${panel === 'POOL' ? activeCellClass : ''}`}
+                      className={`w-full h-[58px] px-3.5 flex items-center justify-between gap-2 text-left transition ${panel === 'POOL' ? activeCellClass : ''}`}
                     >
-                      <span className="text-zinc-500 text-[12px] shrink-0">↳</span>
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ background: selectedPoolObj ? selectedPoolObj.color : '#34D399' }}
-                      />
-                      <span className="text-[13px] font-medium text-white truncate flex-1">
-                        {selectedPoolObj ? selectedPoolObj.name : '資金池'}
-                      </span>
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded shrink-0 ${
-                        poolAutoLinked ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
-                      }`}>
-                        {poolAutoLinked ? '自動' : '手動'}
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => togglePanel('BILLING')}
-                      className={`h-[46px] px-3 flex items-center justify-between gap-1.5 text-left transition min-w-0 ${panel === 'BILLING' ? activeCellClass : ''}`}
-                    >
-                      <span className={`text-[12px] font-semibold truncate ${
-                        billingBucket === 'BILLED' ? 'text-amber-300' : 'text-sky-300'
-                      }`}>
-                        {billingBucket === 'BILLED' ? '本期應繳' : '未出帳下期'}
-                      </span>
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded shrink-0 ${
-                        billingAuto ? 'bg-white/10 text-zinc-300' : 'bg-amber-500/20 text-amber-300'
-                      }`}>
-                        {billingAuto ? '自動' : '手動'}
-                      </span>
-                    </button>
-                  </div>
-                ) : (
-                  /* Bank / E-Wallet Selected: Merged Full-Width Pool Row (Zero Redundancy) */
-                  <button
-                    type="button"
-                    onClick={() => togglePanel('POOL')}
-                    className={`w-full h-[46px] px-3 flex items-center justify-between gap-2 text-left transition ${panel === 'POOL' ? activeCellClass : ''}`}
-                  >
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="text-zinc-500 text-[12px] shrink-0">↳</span>
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ background: selectedPoolObj ? selectedPoolObj.color : '#34D399' }}
-                      />
-                      <span className="text-[13px] font-medium text-white truncate">
-                        {selectedPoolObj ? selectedPoolObj.name : '歸屬資金池'}
-                      </span>
-                      {poolAutoLinked && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 shrink-0">
-                          自動
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-zinc-500 text-[14px] shrink-0">↳</span>
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ background: selectedPoolObj ? selectedPoolObj.color : '#34D399' }}
+                        />
+                        <span className="text-[15px] font-semibold text-white truncate">
+                          {selectedPoolObj ? selectedPoolObj.name : '歸屬資金池'}
                         </span>
-                      )}
-                    </div>
-                    <span className={`text-[11px] font-medium truncate shrink-0 max-w-[55%] ${
-                      isCrossPoolBank ? 'text-amber-300' : 'text-zinc-500'
-                    }`}>
-                      {isCrossPoolBank
-                        ? `跨池墊付 · ${settlementAccLabel}歸墊 ▾`
-                        : '本戶直扣 ▾'}
-                    </span>
-                  </button>
-                )
-              )}
-            </div>
-          )}
-
-          {/* Contextual Slim Status Strip (Only when truly informative: Card Settlement / Income After-Balance / Cross-Currency) */}
-          {isCardSelected && (
-            <div className="px-3 py-1.5 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-between gap-2 text-[11px]">
-              <span className="text-zinc-400 truncate">
-                刷 <strong className="text-zinc-200">{fromOpt ? fromOpt.shortLabel : ''}</strong> ➔ 歸屬 <strong className="text-zinc-200">{selectedPoolObj ? selectedPoolObj.name : ''}</strong>
-              </span>
-              <span className={`font-semibold whitespace-nowrap shrink-0 ${settlementAccLabel ? 'text-emerald-300' : 'text-zinc-500'}`}>
-                {settlementAccLabel ? `${settlementAccLabel}找數` : '未綁定找數戶'}
-              </span>
-            </div>
-          )}
-
-          {txType === 'INCOME' && fromOpt && (
-            <div className="px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-400/20 flex items-center justify-between gap-2 text-[11px]">
-              <span className="text-emerald-200/80 truncate">
-                入帳：<strong className="text-white">{fromOpt.label}</strong>
-              </span>
-              <span className="text-emerald-300 font-semibold tabular-nums whitespace-nowrap shrink-0">
-                入帳後 {Store.formatMoney(Store.round2(fromOpt.amount + (isCrossCurrency ? settledAmount : numericAmount)), fromOpt.currency)}
-              </span>
-            </div>
-          )}
-
-          {isCrossCurrency && (
-            <button
-              type="button"
-              onClick={() => openKeypad({
-                value: settledAmount,
-                currency: targetSettlementCurrency,
-                label: `調整實扣／實收金額 (${targetSettlementCurrency})`,
-                onConfirm: (val) => {
-                  setSettledAmount(val);
-                  setManualSettled(true);
-                }
-              })}
-              className="w-full px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-400/30 flex items-center justify-between gap-2 text-[11px] text-amber-200"
-            >
-              <span className="truncate">跨幣種折算 ({currency} ➔ {targetSettlementCurrency})</span>
-              <span className="font-bold tabular-nums whitespace-nowrap shrink-0">
-                實算 {Store.formatMoney(settledAmount, targetSettlementCurrency)} · 微調
-              </span>
-            </button>
-          )}
-
-          {/* Unified Amount & Account Strip (MOZE / Reference Style) */}
-          <div className="h-[58px] rounded-2xl bg-[#16161B] border border-white/[0.12] flex items-stretch overflow-hidden shadow-lg">
-            {/* Left Colored Account Block (Hidden in Transfer because Dual Cards are right above) */}
-            {txType !== 'TRANSFER' && (
-              <button
-                type="button"
-                onClick={() => openAccountPanel()}
-                className="min-w-[104px] max-w-[128px] px-2.5 flex flex-col justify-center text-left border-r border-white/[0.1] active:opacity-80 transition shrink-0"
-                style={{ background: fromOpt ? fromOpt.bg : '#1E1F24' }}
-              >
-                <span className="text-[9px] text-white/65 leading-none">{accountRoleLabel}</span>
-                <div className="flex items-center gap-1 mt-1 min-w-0">
-                  <span className="text-[12px] font-bold text-white truncate">
-                    {fromOpt ? fromOpt.shortLabel : '選帳戶'}
-                  </span>
-                  <span className="text-[10px] text-white/70 shrink-0">▾</span>
-                </div>
-              </button>
+                        {poolAutoLinked && (
+                          <span className="text-[10.5px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 shrink-0">
+                            自動
+                          </span>
+                        )}
+                      </div>
+                      <span className={`text-[13px] font-medium truncate shrink-0 max-w-[55%] ${
+                        isCrossPoolBank ? 'text-amber-300' : 'text-zinc-400'
+                      }`}>
+                        {isCrossPoolBank
+                          ? `跨池墊付 · ${settlementAccLabel}歸墊 ▾`
+                          : '本戶直扣 ▾'}
+                      </span>
+                    </button>
+                  )
+                )}
+              </div>
             )}
 
-            {/* Currency Pill */}
-            <button
-              type="button"
-              onClick={() => togglePanel('CURRENCY')}
-              className={`px-2.5 flex flex-col items-center justify-center border-r border-white/[0.08] shrink-0 transition ${
-                panel === 'CURRENCY' ? 'bg-white/15' : 'active:bg-white/10'
-              }`}
-            >
-              <span className="text-[11px] font-bold text-zinc-200 leading-none">{currency}</span>
-              <span className="text-[9px] text-zinc-500 mt-0.5 leading-none">{sym} ▾</span>
-            </button>
-
-            {/* Amount Display (Tap to bring back Keypad) */}
-            <button
-              type="button"
-              onClick={() => setPanel('KEYPAD')}
-              className="flex-1 px-3 flex flex-col items-end justify-center min-w-0 text-right"
-            >
-              <div className={`text-[24px] font-bold tabular-nums tracking-tight leading-none truncate w-full ${
-                txType === 'INCOME' ? 'text-emerald-400' : 'text-white'
-              }`}>
-                {expr}
+            {/* Contextual Status Strips */}
+            {isCardSelected && (
+              <div className="px-3.5 py-2 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-between gap-2 text-[12.5px]">
+                <span className="text-zinc-400 truncate">
+                  刷 <strong className="text-zinc-100">{fromOpt ? fromOpt.shortLabel : ''}</strong> ➔ 歸屬 <strong className="text-zinc-100">{selectedPoolObj ? selectedPoolObj.name : ''}</strong>
+                </span>
+                <span className={`font-semibold whitespace-nowrap shrink-0 ${settlementAccLabel ? 'text-emerald-300' : 'text-zinc-500'}`}>
+                  {settlementAccLabel ? `${settlementAccLabel}找數` : '未綁定找數戶'}
+                </span>
               </div>
-              {hasOperator && (
-                <div className="text-[11px] text-emerald-400 tabular-nums leading-none mt-1">
-                  = {sym} {numericAmount.toLocaleString('en-US')}
-                </div>
-              )}
-            </button>
+            )}
 
-            {/* Quick Save / Evaluate Button */}
-            <button
-              type="button"
-              onClick={() => {
-                if (hasOperator) {
-                  handleKeyPress('=');
-                } else {
-                  handleSave();
-                }
-              }}
-              className={`w-[58px] shrink-0 flex items-center justify-center font-bold text-[19px] active:opacity-80 transition ${
-                hasOperator
-                  ? 'bg-amber-400 text-black'
-                  : 'bg-emerald-400 text-black'
-              }`}
-              aria-label={hasOperator ? '計算結果' : '儲存'}
-            >
-              {hasOperator ? '=' : <Icon name="check" size={22} strokeWidth={2.6} />}
-            </button>
+            {txType === 'INCOME' && fromOpt && (
+              <div className="px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-400/20 flex items-center justify-between gap-2 text-[12.5px]">
+                <span className="text-emerald-200/85 truncate">
+                  入帳：<strong className="text-white">{fromOpt.label}</strong>
+                </span>
+                <span className="text-emerald-300 font-semibold tabular-nums whitespace-nowrap shrink-0">
+                  入帳後 {Store.formatMoney(Store.round2(fromOpt.amount + (isCrossCurrency ? settledAmount : numericAmount)), fromOpt.currency)}
+                </span>
+              </div>
+            )}
+
+            {isCrossCurrency && (
+              <button
+                type="button"
+                onClick={() => openKeypad({
+                  value: settledAmount,
+                  currency: targetSettlementCurrency,
+                  label: `調整實扣／實收金額 (${targetSettlementCurrency})`,
+                  onConfirm: (val) => {
+                    setSettledAmount(val);
+                    setManualSettled(true);
+                  }
+                })}
+                className="w-full px-3.5 py-2 rounded-xl bg-amber-500/15 border border-amber-400/30 flex items-center justify-between gap-2 text-[12.5px] text-amber-200"
+              >
+                <span className="truncate">跨幣種折算 ({currency} ➔ {targetSettlementCurrency})</span>
+                <span className="font-bold tabular-nums whitespace-nowrap shrink-0">
+                  實算 {Store.formatMoney(settledAmount, targetSettlementCurrency)} · 微調
+                </span>
+              </button>
+            )}
+          </div>
+
+          {/* Docked Unified Amount & Account Strip (Flush Above Keypad) */}
+          <div className="pt-3">
+            <div className="h-[68px] rounded-2xl bg-[#16161B] border border-white/[0.12] flex items-stretch overflow-hidden shadow-lg">
+              {txType !== 'TRANSFER' && (
+                <button
+                  type="button"
+                  onClick={() => openAccountPanel()}
+                  className="min-w-[116px] max-w-[148px] px-3 flex flex-col justify-center text-left border-r border-white/[0.1] active:opacity-80 transition shrink-0"
+                  style={{ background: fromOpt ? fromOpt.bg : '#1E1F24' }}
+                >
+                  <span className="text-[10.5px] text-white/70 leading-none">{accountRoleLabel}</span>
+                  <div className="flex items-center gap-1 mt-1.5 min-w-0">
+                    <span className="text-[14px] font-bold text-white truncate">
+                      {fromOpt ? fromOpt.shortLabel : '選帳戶'}
+                    </span>
+                    <span className="text-[11px] text-white/70 shrink-0">▾</span>
+                  </div>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => togglePanel('CURRENCY')}
+                className={`px-3 flex flex-col items-center justify-center border-r border-white/[0.08] shrink-0 transition ${
+                  panel === 'CURRENCY' ? 'bg-white/15' : 'active:bg-white/10'
+                }`}
+              >
+                <span className="text-[13px] font-bold text-zinc-100 leading-none">{currency}</span>
+                <span className="text-[10.5px] text-zinc-400 mt-1 leading-none">{sym} ▾</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPanel('KEYPAD')}
+                className="flex-1 px-3.5 flex flex-col items-end justify-center min-w-0 text-right"
+              >
+                <div className={`font-bold tabular-nums tracking-tight leading-none truncate w-full ${
+                  expr.length > 11 ? 'text-[22px]' : 'text-[28px]'
+                } ${
+                  txType === 'INCOME' ? 'text-emerald-400' : 'text-white'
+                }`}>
+                  {expr}
+                </div>
+                {hasOperator && (
+                  <div className="text-[12px] text-emerald-400 tabular-nums leading-none mt-1.5">
+                    = {sym} {numericAmount.toLocaleString('en-US')}
+                  </div>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (hasOperator) {
+                    handleKeyPress('=');
+                  } else {
+                    handleSave();
+                  }
+                }}
+                className={`w-[64px] shrink-0 flex items-center justify-center font-bold text-[22px] active:opacity-80 transition ${
+                  hasOperator
+                    ? 'bg-amber-400 text-black'
+                    : 'bg-emerald-400 text-black'
+                }`}
+                aria-label={hasOperator ? '計算結果' : '儲存'}
+              >
+                {hasOperator ? '=' : <Icon name="check" size={24} strokeWidth={2.6} />}
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Dynamic Bottom Operation Area (Fills Remaining Physical Height — Zero Page Scroll) */}
+        {/* Sleek Proportioned Bottom Operation Area (No Oversized Stretched Keys) */}
         <div
-          className="flex-1 min-h-0 flex flex-col bg-[#111114] border-t border-white/[0.08] max-w-[480px] w-full mx-auto"
-          style={{ paddingBottom: 'max(14px, calc(env(safe-area-inset-bottom) + 6px))' }}
+          className="shrink-0 flex flex-col bg-[#111114] border-t border-white/[0.08] max-w-[480px] w-full mx-auto"
+          style={{ paddingBottom: 'max(14px, calc(env(safe-area-inset-bottom) + 4px))' }}
         >
-          {/* PANEL 1: Built-In 4x4 Adaptive Calculator Keypad */}
+          {/* PANEL 1: Full 4x5 Compact Standard Calculator (AC/C, ⌫, %, ÷, ×, −, +, 00, =/入帳) */}
           {panel === 'KEYPAD' && (
-            <div className="flex-1 min-h-0 p-3 grid grid-cols-4 grid-rows-4 gap-2">
+            <div className="p-2.5 grid grid-cols-4 gap-2">
               {keypadKeys.flat().map((k) => {
                 const isConfirm = k === 'OK';
-                const isOp = k === '+' || k === '-' || k === '=';
-                const isUtil = k === 'BACK' || k === 'C';
+                const isOp = k === '+' || k === '-' || k === '×' || k === '÷' || k === '=';
+                const isUtil = k === 'BACK' || k === 'C' || k === 'AC' || k === '%';
                 return (
                   <button
                     key={k}
@@ -999,17 +943,17 @@
                         handleKeyPress(k);
                       }
                     }}
-                    className={`min-h-0 rounded-2xl text-[20px] font-semibold flex items-center justify-center transition active:scale-95 tabular-nums ${
+                    className={`h-[48px] rounded-2xl font-semibold flex items-center justify-center transition active:scale-95 tabular-nums ${
                       isConfirm
-                        ? 'bg-white text-black font-bold text-[16px]'
+                        ? 'bg-white text-black font-bold text-[15px]'
                         : isOp
-                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[20px]'
                         : isUtil
-                        ? 'bg-white/[0.06] text-zinc-300'
-                        : 'bg-[#1B1B20] text-white border border-white/[0.06]'
+                        ? 'bg-white/[0.08] text-zinc-200 text-[15px]'
+                        : 'bg-[#1B1B20] text-white border border-white/[0.06] text-[19px]'
                     }`}
                   >
-                    {k === 'BACK' ? '⌫' : k === 'OK' ? (editingTx ? '儲存' : '入帳') : k}
+                    {k === 'BACK' ? '⌫' : k === 'OK' ? (editingTx ? '儲存' : '入帳') : k === '-' ? '−' : k}
                   </button>
                 );
               })}
@@ -1018,19 +962,18 @@
 
           {/* PANEL 2: Split 2-Column Category -> Preset Sub-Categories Selector */}
           {panel === 'CATEGORY' && (
-            <div className="flex-1 min-h-0 flex flex-col">
+            <div className="h-[304px] flex flex-col">
               <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between">
-                <span className="text-[11px] font-medium text-zinc-400">左選大類別 · 右點小類別即套用</span>
+                <span className="text-[12px] font-medium text-zinc-400">左選大類別 · 右點小類別即套用</span>
                 <button
                   type="button"
                   onClick={() => setPanel('KEYPAD')}
-                  className="text-[12px] font-semibold text-emerald-400"
+                  className="text-[12.5px] font-semibold text-emerald-400"
                 >
                   返回鍵盤
                 </button>
               </div>
               <div className="flex-1 min-h-0 grid grid-cols-12 divide-x divide-white/[0.06]">
-                {/* Left Column: Major Categories */}
                 <div className="col-span-5 overflow-y-auto overscroll-contain p-2 space-y-1">
                   {filteredCats.map((cat) => {
                     const sel = selectedCat && cat.id === selectedCat.id;
@@ -1044,15 +987,14 @@
                         }`}
                       >
                         <span className="shrink-0" style={{ color: sel ? '#000000' : cat.color }}>
-                          <Icon name={cat.icon} size={15} />
+                          <Icon name={cat.icon} size={16} />
                         </span>
-                        <span className="text-[13px] truncate">{cat.name}</span>
+                        <span className="text-[13.5px] truncate">{cat.name}</span>
                       </button>
                     );
                   })}
                 </div>
 
-                {/* Right Column: Sub-Categories */}
                 <div className="col-span-7 overflow-y-auto overscroll-contain p-2.5">
                   <div className="flex flex-wrap gap-1.5">
                     {activeSubs.map((sub) => {
@@ -1065,7 +1007,7 @@
                           key={sub.id}
                           type="button"
                           onClick={() => handleSelectSubcategory(sub)}
-                          className={`px-3 py-2 rounded-xl text-[13px] font-medium border flex items-center gap-1.5 transition ${
+                          className={`px-3 py-2 rounded-xl text-[13.5px] font-medium border flex items-center gap-1.5 transition ${
                             sel
                               ? 'bg-emerald-400 text-black border-emerald-300 font-semibold'
                               : 'bg-black/45 text-zinc-200 border-white/[0.08] active:bg-white/15'
@@ -1089,7 +1031,7 @@
                         setQuickSubPool('');
                         setQuickSubOpen(true);
                       }}
-                      className="px-3 py-2 rounded-xl text-[12px] text-zinc-400 border border-dashed border-white/20 active:bg-white/10"
+                      className="px-3 py-2 rounded-xl text-[13px] text-zinc-400 border border-dashed border-white/20 active:bg-white/10"
                     >
                       + 自訂小類
                     </button>
@@ -1101,14 +1043,14 @@
 
           {/* PANEL 3: Separated Multi-Card / Bank-EWallet Account Selector */}
           {panel === 'ACCOUNT' && (
-            <div className="flex-1 min-h-0 flex flex-col">
+            <div className="h-[304px] flex flex-col">
               <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between gap-2">
                 {txType === 'TRANSFER' ? (
                   <div className="p-0.5 rounded-xl bg-black/60 border border-white/[0.08] flex gap-0.5">
                     <button
                       type="button"
                       onClick={() => setTransferSlot('FROM')}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
+                      className={`px-2.5 py-1 rounded-lg text-[12px] font-semibold ${
                         transferSlot === 'FROM' ? 'bg-white text-black' : 'text-zinc-400'
                       }`}
                     >
@@ -1117,7 +1059,7 @@
                     <button
                       type="button"
                       onClick={() => setTransferSlot('TO')}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
+                      className={`px-2.5 py-1 rounded-lg text-[12px] font-semibold ${
                         transferSlot === 'TO' ? 'bg-emerald-400 text-black' : 'text-zinc-400'
                       }`}
                     >
@@ -1129,7 +1071,7 @@
                     <button
                       type="button"
                       onClick={() => setAccountTab('CARD')}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
+                      className={`px-2.5 py-1 rounded-lg text-[12px] font-semibold ${
                         accountTab === 'CARD' ? 'bg-white text-black' : 'text-zinc-400'
                       }`}
                     >
@@ -1138,7 +1080,7 @@
                     <button
                       type="button"
                       onClick={() => setAccountTab('ACCOUNT')}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
+                      className={`px-2.5 py-1 rounded-lg text-[12px] font-semibold ${
                         accountTab === 'ACCOUNT' ? 'bg-white text-black' : 'text-zinc-400'
                       }`}
                     >
@@ -1146,7 +1088,7 @@
                     </button>
                   </div>
                 ) : (
-                  <span className="text-[12px] font-medium text-zinc-400">
+                  <span className="text-[12.5px] font-medium text-zinc-400">
                     選擇銀行・電子錢包 ({bankSources.length})
                   </span>
                 )}
@@ -1154,7 +1096,7 @@
                 <button
                   type="button"
                   onClick={() => setPanel('KEYPAD')}
-                  className="text-[12px] font-semibold text-emerald-400 shrink-0"
+                  className="text-[12.5px] font-semibold text-emerald-400 shrink-0"
                 >
                   返回鍵盤
                 </button>
@@ -1171,7 +1113,7 @@
 
                   if (list.length === 0) {
                     return (
-                      <div className="py-10 text-center text-[13px] text-zinc-500">
+                      <div className="py-10 text-center text-[13.5px] text-zinc-500">
                         {accountTab === 'CARD' && allowCardsForType
                           ? '尚未建立信用卡，請切換至「銀行・錢包」或於資產頁設定。'
                           : '尚無可用銀行或電子錢包帳戶。'}
@@ -1206,15 +1148,15 @@
                                   className="w-2 h-2 rounded-full shrink-0"
                                   style={{ background: sel ? '#000000' : opt.accent }}
                                 />
-                                <span className="text-[13px] font-semibold truncate">{opt.label}</span>
+                                <span className="text-[13.5px] font-semibold truncate">{opt.label}</span>
                               </div>
                               {isOpposite && (
-                                <span className="text-[9px] px-1 py-0.5 rounded bg-white/10 text-zinc-400 shrink-0">
+                                <span className="text-[9.5px] px-1 py-0.5 rounded bg-white/10 text-zinc-400 shrink-0">
                                   對調
                                 </span>
                               )}
                             </div>
-                            <div className={`text-[11px] tabular-nums truncate mt-1 ${sel ? 'text-black/70' : 'text-zinc-400'}`}>
+                            <div className={`text-[11.5px] tabular-nums truncate mt-1 ${sel ? 'text-black/70' : 'text-zinc-400'}`}>
                               {opt.kind === 'CARD'
                                 ? `${opt.sublabel} · ${Store.formatMoney(-opt.amount, opt.currency)}`
                                 : Store.formatMoney(opt.amount, opt.currency)}
@@ -1229,11 +1171,11 @@
             </div>
           )}
 
-          {/* PANEL 4: Funding Pool Selector (EXPENSE / RECEIVABLE / PAYABLE) */}
+          {/* PANEL 4: Funding Pool Selector */}
           {panel === 'POOL' && showPoolForType && (
-            <div className="flex-1 min-h-0 flex flex-col">
+            <div className="h-[304px] flex flex-col">
               <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between gap-2">
-                <span className="text-[12px] font-medium text-zinc-400">選擇歸屬資金池（交叉找數依據）</span>
+                <span className="text-[12.5px] font-medium text-zinc-400">選擇歸屬資金池（交叉找數依據）</span>
                 <div className="flex items-center gap-2.5">
                   {!poolAutoLinked && (
                     <button
@@ -1244,7 +1186,7 @@
                         setPoolAutoLinked(true);
                         setPanel('KEYPAD');
                       }}
-                      className="text-[11px] text-amber-300 font-medium"
+                      className="text-[11.5px] text-amber-300 font-medium"
                     >
                       還原分類預設
                     </button>
@@ -1252,7 +1194,7 @@
                   <button
                     type="button"
                     onClick={() => setPanel('KEYPAD')}
-                    className="text-[12px] font-semibold text-emerald-400"
+                    className="text-[12.5px] font-semibold text-emerald-400"
                   >
                     完成
                   </button>
@@ -1279,15 +1221,15 @@
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: p.color }} />
-                          <span className="text-[14px] font-semibold truncate">{p.name}</span>
+                          <span className="text-[14.5px] font-semibold truncate">{p.name}</span>
                         </div>
                         {p.note && (
-                          <div className={`text-[11px] truncate mt-0.5 ${sel ? 'text-black/65' : 'text-zinc-500'}`}>
+                          <div className={`text-[11.5px] truncate mt-0.5 ${sel ? 'text-black/65' : 'text-zinc-500'}`}>
                             {p.note}
                           </div>
                         )}
                       </div>
-                      <span className={`text-[11px] font-medium whitespace-nowrap shrink-0 ${
+                      <span className={`text-[12px] font-medium whitespace-nowrap shrink-0 ${
                         sel ? 'text-black/80' : (sLabel ? 'text-emerald-300' : 'text-zinc-500')
                       }`}>
                         {sLabel ? `${sLabel}找數` : '未綁定戶口'}
@@ -1301,12 +1243,12 @@
 
           {/* PANEL 5: Credit Card Billing Bucket Selector */}
           {panel === 'BILLING' && isCardSelected && (
-            <div className="flex-1 min-h-0 flex flex-col">
+            <div className="h-[304px] flex flex-col">
               <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between">
-                <span className="text-[12px] font-medium text-zinc-400">
+                <span className="text-[12.5px] font-medium text-zinc-400">
                   {selectedCardObj ? `${selectedCardObj.name} · 每月 ${selectedCardObj.statementDay || 15} 日截數` : '帳期歸分'}
                 </span>
-                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12px] font-semibold text-emerald-400">
+                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12.5px] font-semibold text-emerald-400">
                   完成
                 </button>
               </div>
@@ -1325,8 +1267,8 @@
                         : 'bg-black/45 border-white/[0.08] text-zinc-300'
                     }`}
                   >
-                    <div className="text-[15px] font-bold">未出帳下期</div>
-                    <div className="text-[11px] text-zinc-400 mt-1">截數日後簽帳，併入下期帳單</div>
+                    <div className="text-[15.5px] font-bold">未出帳下期</div>
+                    <div className="text-[12px] text-zinc-400 mt-1">截數日後簽帳，併入下期帳單</div>
                   </button>
                   <button
                     type="button"
@@ -1341,8 +1283,8 @@
                         : 'bg-black/45 border-white/[0.08] text-zinc-300'
                     }`}
                   >
-                    <div className="text-[15px] font-bold">本期應繳</div>
-                    <div className="text-[11px] text-zinc-400 mt-1">截數日當日或之前，計入本期帳單</div>
+                    <div className="text-[15.5px] font-bold">本期應繳</div>
+                    <div className="text-[12px] text-zinc-400 mt-1">截數日當日或之前，計入本期帳單</div>
                   </button>
                 </div>
 
@@ -1354,7 +1296,7 @@
                       setBillingBucket(Store.getAutoCardBillingBucket(selectedCardObj, date));
                       setPanel('KEYPAD');
                     }}
-                    className="w-full py-2.5 rounded-xl bg-white/[0.08] text-[12px] font-semibold text-emerald-300"
+                    className="w-full py-2.5 rounded-xl bg-white/[0.08] text-[12.5px] font-semibold text-emerald-300"
                   >
                     重設為依交易日期（{date}）自動歸分
                   </button>
@@ -1365,10 +1307,10 @@
 
           {/* PANEL 6: Currency Picker */}
           {panel === 'CURRENCY' && (
-            <div className="flex-1 min-h-0 flex flex-col">
+            <div className="h-[304px] flex flex-col">
               <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between">
-                <span className="text-[12px] font-medium text-zinc-400">選擇交易幣種</span>
-                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12px] font-semibold text-emerald-400">
+                <span className="text-[12.5px] font-medium text-zinc-400">選擇交易幣種</span>
+                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12.5px] font-semibold text-emerald-400">
                   返回鍵盤
                 </button>
               </div>
@@ -1389,7 +1331,7 @@
                       }`}
                     >
                       <div className="text-[15px] font-bold">{c.code}</div>
-                      <div className={`text-[11px] mt-0.5 ${sel ? 'text-black/70' : 'text-zinc-400'}`}>
+                      <div className={`text-[11.5px] mt-0.5 ${sel ? 'text-black/70' : 'text-zinc-400'}`}>
                         {c.name} ({c.symbol})
                       </div>
                     </button>
@@ -1401,10 +1343,10 @@
 
           {/* PANEL 7: Date & Time Quick Picker */}
           {panel === 'DATETIME' && (
-            <div className="flex-1 min-h-0 flex flex-col">
+            <div className="h-[304px] flex flex-col">
               <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between">
-                <span className="text-[12px] font-medium text-zinc-400">交易日期與時間</span>
-                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12px] font-semibold text-emerald-400">
+                <span className="text-[12.5px] font-medium text-zinc-400">交易日期與時間</span>
+                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12.5px] font-semibold text-emerald-400">
                   完成
                 </button>
               </div>
@@ -1422,7 +1364,7 @@
                         setDate(q.iso);
                         if (isCardSelected) setBillingAuto(true);
                       }}
-                      className={`py-2.5 rounded-xl text-[13px] font-semibold border transition ${
+                      className={`py-2.5 rounded-xl text-[13.5px] font-semibold border transition ${
                         date === q.iso ? 'bg-white text-black border-white' : 'bg-black/45 text-zinc-200 border-white/[0.08]'
                       }`}
                     >
@@ -1432,7 +1374,7 @@
                 </div>
                 <div className="grid grid-cols-2 gap-2.5">
                   <div>
-                    <label className="text-[11px] text-zinc-400 block mb-1">自訂日期</label>
+                    <label className="text-[11.5px] text-zinc-400 block mb-1">自訂日期</label>
                     <input
                       type="date"
                       value={date}
@@ -1444,7 +1386,7 @@
                     />
                   </div>
                   <div>
-                    <label className="text-[11px] text-zinc-400 block mb-1">時間</label>
+                    <label className="text-[11.5px] text-zinc-400 block mb-1">時間</label>
                     <input
                       type="time"
                       value={time}
@@ -1459,19 +1401,19 @@
 
           {/* PANEL 8: Note / Custom Title / Counterparty */}
           {panel === 'NOTE' && (
-            <div className="flex-1 min-h-0 flex flex-col">
+            <div className="h-[304px] flex flex-col">
               <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between">
-                <span className="text-[12px] font-medium text-zinc-400">
+                <span className="text-[12.5px] font-medium text-zinc-400">
                   {txType === 'RECEIVABLE' || txType === 'PAYABLE' ? '對象與備註' : '備註與自訂標題'}
                 </span>
-                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12px] font-semibold text-emerald-400">
+                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12.5px] font-semibold text-emerald-400">
                   完成
                 </button>
               </div>
               <div className="flex-1 min-h-0 overflow-y-auto p-3.5 space-y-2.5">
                 {(txType === 'RECEIVABLE' || txType === 'PAYABLE') && (
                   <div>
-                    <label className="text-[11px] text-amber-300 block mb-1">
+                    <label className="text-[11.5px] text-amber-300 block mb-1">
                       {txType === 'RECEIVABLE' ? '代墊對象（待收回）' : '借款對象（待償還）'}
                     </label>
                     <input
@@ -1484,7 +1426,7 @@
                   </div>
                 )}
                 <div>
-                  <label className="text-[11px] text-zinc-400 block mb-1">備註說明（選填）</label>
+                  <label className="text-[11.5px] text-zinc-400 block mb-1">備註說明（選填）</label>
                   <input
                     type="text"
                     placeholder="輸入備註內容…"
@@ -1495,7 +1437,7 @@
                 </div>
                 {txType !== 'TRANSFER' && (
                   <div>
-                    <label className="text-[11px] text-zinc-400 block mb-1">
+                    <label className="text-[11.5px] text-zinc-400 block mb-1">
                       自訂項目標題（留空自動帶入：{selectedSub ? selectedSub.name : (selectedCat ? selectedCat.name : '類別名')}）
                     </label>
                     <input

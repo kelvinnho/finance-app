@@ -575,83 +575,172 @@
     );
   }
 
-  // ---- Unified Apple-Dark Numeric Calculator Keypad (Context + Portal z-[90]) ----
+  // ---- Unified Apple-Dark Full Calculator Engine & Keypad (Context + Portal z-[90]) ----
   const KeypadContext = createContext({ openKeypad: () => {} });
 
-  function safeEvalAddSub(expr) {
-    const cleaned = String(expr || '').replace(/[^0-9.+\-]/g, '');
-    if (!cleaned) return 0;
-    const tokens = cleaned.match(/[+\-]?[0-9]*\.?[0-9]+/g);
-    if (!tokens) return 0;
-    let total = 0;
-    for (let i = 0; i < tokens.length; i++) {
-      const n = parseFloat(tokens[i]);
-      if (Number.isFinite(n)) total += n;
+  function evalCalcExpr(expr) {
+    const normalized = String(expr || '')
+      .replace(/×/g, '*')
+      .replace(/÷/g, '/')
+      .replace(/−/g, '-')
+      .replace(/[^0-9.+\-*/%]/g, '')
+      .replace(/[+\-*/]+$/, '');
+    if (!normalized) return 0;
+
+    const rawTokens = normalized.match(/(?:\d+\.?\d*|\.\d+)%?|[+\-*/]/g);
+    if (!rawTokens || !rawTokens.length) return 0;
+
+    const items = [];
+    for (let i = 0; i < rawTokens.length; i++) {
+      const tk = rawTokens[i];
+      if (tk === '+' || tk === '-' || tk === '*' || tk === '/') {
+        if (items.length === 0 && tk === '-' && i + 1 < rawTokens.length) {
+          const nxt = rawTokens[i + 1];
+          const isPct = nxt.endsWith('%');
+          const numStr = isPct ? nxt.slice(0, -1) : nxt;
+          const v = parseFloat(numStr);
+          items.push({ type: 'num', val: Number.isFinite(v) ? -v : 0, pct: isPct });
+          i++;
+          continue;
+        }
+        if (items.length > 0 && items[items.length - 1].type === 'num') {
+          items.push({ type: 'op', val: tk });
+        }
+      } else {
+        const isPct = tk.endsWith('%');
+        const numStr = isPct ? tk.slice(0, -1) : tk;
+        const v = parseFloat(numStr);
+        items.push({ type: 'num', val: Number.isFinite(v) ? v : 0, pct: isPct });
+      }
     }
-    return Math.round(total * 100) / 100;
+
+    if (items.length > 0 && items[items.length - 1].type === 'op') items.pop();
+    if (!items.length) return 0;
+
+    // Pass 1: Multiplication & Division precedence
+    const pass1 = [items[0]];
+    for (let i = 1; i < items.length; i += 2) {
+      const op = items[i].val;
+      const rhs = items[i + 1];
+      if (!rhs) break;
+      if (op === '*' || op === '/') {
+        const lhs = pass1.pop();
+        const lval = lhs.pct ? lhs.val / 100 : lhs.val;
+        const rval = rhs.pct ? rhs.val / 100 : rhs.val;
+        const res = op === '*' ? (lval * rval) : (Math.abs(rval) > 1e-12 ? lval / rval : 0);
+        pass1.push({ type: 'num', val: res, pct: false });
+      } else {
+        pass1.push({ type: 'op', val: op });
+        pass1.push(rhs);
+      }
+    }
+
+    // Pass 2: Addition & Subtraction (supports A + B% = A + A*(B/100) for service charge / discounts)
+    const first = pass1[0];
+    let acc = first.pct ? first.val / 100 : first.val;
+    for (let i = 1; i < pass1.length; i += 2) {
+      const op = pass1[i].val;
+      const rhs = pass1[i + 1];
+      if (!rhs) break;
+      const delta = rhs.pct ? (acc * (rhs.val / 100)) : rhs.val;
+      acc = op === '+' ? acc + delta : acc - delta;
+    }
+
+    if (!Number.isFinite(acc)) return 0;
+    return Math.round(acc * 100) / 100;
+  }
+
+  function hasCalcOp(expr) {
+    const s = String(expr || '');
+    return /[+\-×÷*/%]/.test(s.slice(1)) || s.endsWith('%');
+  }
+
+  function canClearEntry(expr) {
+    // True when an operator is followed by a non-empty current operand (e.g. "168+45")
+    return /[+\-×÷][0-9.]+%?$/.test(String(expr || ''));
+  }
+
+  function applyCalcKey(prevRaw, key) {
+    const prev = String(prevRaw || '0');
+    if (key === 'AC') return '0';
+    if (key === 'C') {
+      if (canClearEntry(prev)) {
+        const stripped = prev.replace(/[0-9.]+%?$/, '');
+        return stripped || '0';
+      }
+      return '0';
+    }
+    if (key === 'BACK') {
+      return prev.length <= 1 ? '0' : prev.slice(0, -1);
+    }
+    if (key === '=') {
+      const res = Math.max(0, evalCalcExpr(prev));
+      return String(res);
+    }
+    if (key === '+' || key === '-' || key === '×' || key === '÷') {
+      if (!prev || prev === '0') return '0';
+      if (/[+\-×÷]$/.test(prev)) return prev.slice(0, -1) + key;
+      if (prev.endsWith('.')) return prev.slice(0, -1) + key;
+      return prev + key;
+    }
+    if (key === '%') {
+      if (!prev || prev === '0') return '0';
+      if (/[+\-×÷.%]$/.test(prev)) return prev;
+      return prev + '%';
+    }
+    if (key === '.') {
+      if (prev.endsWith('%')) return prev;
+      const parts = prev.split(/[+\-×÷]/);
+      const last = parts[parts.length - 1] || '';
+      if (last.includes('.')) return prev;
+      if (last === '') return prev + '0.';
+      return prev + '.';
+    }
+    if (key === '00') {
+      if (prev.endsWith('%') || prev.length >= 20) return prev;
+      const parts = prev.split(/[+\-×÷]/);
+      const last = parts[parts.length - 1] || '';
+      if (last === '' || last === '0') return last === '' ? prev + '0' : prev;
+      return prev + '00';
+    }
+    // Digits 0-9
+    if (prev.endsWith('%') || prev.length >= 22) return prev;
+    if (prev === '0') return key;
+    const parts = prev.split(/[+\-×÷]/);
+    const last = parts[parts.length - 1] || '';
+    if (last === '0') return prev.slice(0, -1) + key;
+    return prev + key;
   }
 
   function NumericKeypadPanel({ expr, setExpr, label, currency, quickAdds, onConfirm, onCancel }) {
-    const hasOperator = /[+\-]/.test(expr.slice(1));
-    const previewVal = safeEvalAddSub(expr);
+    const hasOperator = hasCalcOp(expr);
+    const showC = canClearEntry(expr);
+    const previewVal = Math.max(0, evalCalcExpr(expr));
     const sym = currency ? window.WealthStore.getCurrencySymbol(currency) : '';
 
     const press = (k) => {
-      if (k === 'C') {
-        setExpr('0');
-        return;
-      }
-      if (k === 'BACK') {
-        setExpr((prev) => (prev.length <= 1 ? '0' : prev.slice(0, -1)));
-        return;
-      }
-      if (k === '=') {
-        const res = safeEvalAddSub(expr);
-        setExpr(String(Math.max(0, res)));
-        return;
-      }
-      if (k === '+' || k === '-') {
-        setExpr((prev) => {
-          if (!prev || prev === '0') return '0';
-          if (/[+\-]$/.test(prev)) return prev.slice(0, -1) + k;
-          return prev + k;
-        });
-        return;
-      }
-      if (k === '.') {
-        setExpr((prev) => {
-          const parts = prev.split(/[+\-]/);
-          const last = parts[parts.length - 1] || '';
-          if (last.includes('.')) return prev;
-          return prev + '.';
-        });
-        return;
-      }
-      setExpr((prev) => {
-        if (prev === '0') return k;
-        if (prev.length >= 18) return prev;
-        return prev + k;
-      });
+      setExpr((prev) => applyCalcKey(prev, k));
     };
 
     const addQuick = (delta) => {
-      const next = Math.max(0, Math.round((safeEvalAddSub(expr) + delta) * 100) / 100);
+      const next = Math.max(0, Math.round((evalCalcExpr(expr) + delta) * 100) / 100);
       setExpr(String(next));
     };
 
     const keys = [
-      ['7', '8', '9', 'BACK'],
-      ['4', '5', '6', '+'],
-      ['1', '2', '3', '-'],
-      ['C', '0', '.', hasOperator ? '=' : 'OK']
+      [showC ? 'C' : 'AC', 'BACK', '%', '÷'],
+      ['7', '8', '9', '×'],
+      ['4', '5', '6', '-'],
+      ['1', '2', '3', '+'],
+      ['00', '0', '.', hasOperator ? '=' : 'OK']
     ];
 
     return (
       <div className="bg-[#121215] border-t border-white/15 rounded-t-[24px] w-full max-w-[480px] overflow-hidden shadow-2xl anim-sheet-up">
         <div className="px-5 pt-3.5 pb-2.5 flex items-center justify-between border-b border-white/[0.08]">
           <div className="min-w-0">
-            <div className="text-[11px] text-zinc-400">{label || '輸入金額'}</div>
-            <div className="text-[26px] font-bold text-white tabular-nums tracking-tight truncate">
+            <div className="text-[12px] text-zinc-400">{label || '輸入金額'}</div>
+            <div className={`font-bold text-white tabular-nums tracking-tight truncate ${expr.length > 13 ? 'text-[22px]' : 'text-[28px]'}`}>
               {sym && <span className="text-[16px] text-zinc-400 mr-1.5 font-medium">{sym}</span>}
               {expr}
             </div>
@@ -669,7 +758,7 @@
         </div>
 
         {Array.isArray(quickAdds) && quickAdds.length > 0 && (
-          <div className="px-4 pt-2.5 flex gap-2">
+          <div className="px-3.5 pt-2.5 flex gap-2">
             {quickAdds.map((n) => (
               <button
                 key={n}
@@ -684,35 +773,35 @@
         )}
 
         <div
-          className="p-3.5 grid grid-cols-4 gap-2"
-          style={{ paddingBottom: 'max(18px, calc(env(safe-area-inset-bottom) + 8px))' }}
+          className="p-3 grid grid-cols-4 gap-2"
+          style={{ paddingBottom: 'max(16px, calc(env(safe-area-inset-bottom) + 6px))' }}
         >
           {keys.flat().map((k) => {
             const isConfirm = k === 'OK';
-            const isOp = k === '+' || k === '-' || k === '=';
-            const isUtil = k === 'BACK' || k === 'C';
+            const isOp = k === '+' || k === '-' || k === '×' || k === '÷' || k === '=';
+            const isUtil = k === 'BACK' || k === 'C' || k === 'AC' || k === '%';
             return (
               <button
                 key={k}
                 type="button"
                 onClick={() => {
                   if (isConfirm) {
-                    onConfirm(Math.max(0, safeEvalAddSub(expr)));
+                    onConfirm(Math.max(0, evalCalcExpr(expr)));
                   } else {
                     press(k);
                   }
                 }}
-                className={`h-[52px] rounded-2xl text-[18px] font-semibold flex items-center justify-center transition active:scale-95 tabular-nums ${
+                className={`h-[48px] rounded-2xl font-semibold flex items-center justify-center transition active:scale-95 tabular-nums ${
                   isConfirm
-                    ? 'bg-white text-black font-bold'
+                    ? 'bg-white text-black font-bold text-[15px]'
                     : isOp
-                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[20px]'
                     : isUtil
-                    ? 'bg-white/[0.06] text-zinc-300'
-                    : 'bg-[#1D1D22] text-white border border-white/[0.06]'
+                    ? 'bg-white/[0.08] text-zinc-200 text-[15px]'
+                    : 'bg-[#1D1D22] text-white border border-white/[0.06] text-[19px]'
                 }`}
               >
-                {k === 'BACK' ? '⌫' : k === 'OK' ? '確認' : k}
+                {k === 'BACK' ? '⌫' : k === 'OK' ? '確認' : k === '-' ? '−' : k}
               </button>
             );
           })}
@@ -898,6 +987,10 @@
     KeypadProvider,
     useKeypad,
     NumericInput,
+    evalCalcExpr,
+    hasCalcOp,
+    canClearEntry,
+    applyCalcKey,
     SegmentedControl,
     Toast,
     EmergencyRecoveryBoundary
