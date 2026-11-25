@@ -22,9 +22,34 @@
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
 
+  function shiftDaysISO(deltaDays) {
+    const d = new Date();
+    d.setDate(d.getDate() + deltaDays);
+    return fmtYMD(d);
+  }
+
   function formatGroupDate(iso) {
     const d = parseYMD(iso);
     return `${d.getMonth() + 1}月${d.getDate()}日 · 星期${WEEKDAYS[d.getDay()]}`;
+  }
+
+  function formatShortDate(iso) {
+    const parts = String(iso || '').split('-');
+    if (parts.length !== 3) return iso || '';
+    return `${Number(parts[1])}/${Number(parts[2])}`;
+  }
+
+  function safeEvalExpr(expr) {
+    const cleaned = String(expr || '').replace(/[^0-9.+\-]/g, '');
+    if (!cleaned) return 0;
+    const tokens = cleaned.match(/[+\-]?[0-9]*\.?[0-9]+/g);
+    if (!tokens) return 0;
+    let total = 0;
+    for (let i = 0; i < tokens.length; i++) {
+      const n = parseFloat(tokens[i]);
+      if (Number.isFinite(n)) total += n;
+    }
+    return Math.max(0, Math.round(total * 100) / 100);
   }
 
   function buildAccountOptions(state, includeCards) {
@@ -43,8 +68,11 @@
           amount: bal.amount,
           poolId: bal.poolId,
           accent: th.accent,
+          bg: th.bg,
           label: acc.balances.length > 1 ? `${acc.name} (${bal.currency})` : acc.name,
-          sublabel: acc.subtitle || bal.currency
+          shortLabel: acc.name,
+          sublabel: acc.subtitle || bal.currency,
+          statementDay: null
         });
       });
     });
@@ -58,232 +86,211 @@
           accountId: c.id,
           balanceId: null,
           currency: c.currency,
-          amount: -(c.unbilled || 0),
+          amount: -((c.unbilled || 0) + (c.billed || 0)),
           poolId: null,
           accent: th.accent,
+          bg: th.bg,
           label: c.name,
-          sublabel: `尾號 ${c.last4 || '****'}`
+          shortLabel: c.name,
+          sublabel: `尾號 ${c.last4 || '****'} · ${c.statementDay || 15}日截`,
+          statementDay: c.statementDay || 15
         });
       });
     }
     return list;
   }
 
-  // ---- Separated Payment Picker: Credit Cards vs Bank/E-Wallet (2-Col Multi-Card Grid) ----
-  function PaymentSourcePicker({ label, allowCards, options, selectedKey, onSelect, accentTone = 'white', rightAction }) {
-    const Store = window.WealthStore;
-    const cards = useMemo(() => options.filter((o) => o.kind === 'CARD'), [options]);
-    const banks = useMemo(() => options.filter((o) => o.kind === 'ACCOUNT'), [options]);
-
-    const selectedOpt = options.find((o) => o.key === selectedKey) || null;
-    const [tab, setTab] = useState(() => (selectedOpt && selectedOpt.kind === 'CARD' && allowCards ? 'CARD' : 'ACCOUNT'));
-    const [showAll, setShowAll] = useState(false);
-
-    useEffect(() => {
-      if (!allowCards) {
-        setTab('ACCOUNT');
-      } else if (selectedOpt) {
-        setTab(selectedOpt.kind === 'CARD' ? 'CARD' : 'ACCOUNT');
-      }
-    }, [selectedKey, allowCards]);
-
-    const list = tab === 'CARD' && allowCards ? cards : banks;
-    const visibleList = showAll || list.length <= 6 ? list : list.slice(0, 6);
-
-    return (
-      <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-3.5 space-y-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[12px] font-medium text-zinc-400">{label}</span>
-          <div className="flex items-center gap-2">
-            {rightAction}
-            {allowCards && (
-              <div className="p-0.5 rounded-xl bg-black/60 border border-white/[0.08] flex items-center gap-0.5">
-                <button
-                  type="button"
-                  onClick={() => { setTab('CARD'); setShowAll(false); }}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition whitespace-nowrap ${
-                    tab === 'CARD' ? 'bg-white text-black' : 'text-zinc-400'
-                  }`}
-                >
-                  信用卡 ({cards.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setTab('ACCOUNT'); setShowAll(false); }}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition whitespace-nowrap ${
-                    tab === 'ACCOUNT' ? 'bg-white text-black' : 'text-zinc-400'
-                  }`}
-                >
-                  銀行・錢包 ({banks.length})
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {list.length === 0 ? (
-          <div className="py-4 text-center text-[12px] text-zinc-500">
-            {tab === 'CARD' ? '尚未新增信用卡，可切換至「銀行・錢包」或於資產頁設定' : '尚無銀行／錢包帳戶'}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <div className="grid grid-cols-2 gap-2">
-              {visibleList.map((opt) => {
-                const sel = opt.key === selectedKey;
-                const activeClass = accentTone === 'emerald'
-                  ? 'bg-emerald-400 text-black border-emerald-300'
-                  : 'bg-white text-black border-white';
-                return (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    onClick={() => onSelect(opt)}
-                    className={`px-3 py-2.5 rounded-xl border text-left transition relative overflow-hidden ${
-                      sel ? activeClass : 'bg-black/45 text-zinc-100 border-white/[0.08] active:bg-white/10'
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ background: sel ? '#000000' : opt.accent }}
-                      />
-                      <span className="text-[13px] font-semibold truncate">{opt.label}</span>
-                    </div>
-                    <div className={`text-[11px] tabular-nums truncate mt-1 ${sel ? 'text-black/70' : 'text-zinc-400'}`}>
-                      {opt.kind === 'CARD'
-                        ? `${opt.sublabel} · 待繳 ${Store.formatMoney(-opt.amount, opt.currency)}`
-                        : Store.formatMoney(opt.amount, opt.currency)}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {list.length > 6 && (
-              <button
-                type="button"
-                onClick={() => setShowAll(!showAll)}
-                className="w-full py-1.5 rounded-xl bg-white/[0.05] text-[11px] text-zinc-300 font-medium"
-              >
-                {showAll ? '收合列表' : `顯示全部 ${list.length} 個選項`}
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // ---- Full-Screen Transaction Editor (Portal z-[60], 3 Major Upgrades) ----
+  // ---- Zero-Scroll Compact Transaction Editor (iPhone 14 Single-Screen Fit, Portal z-[60]) ----
   function TransactionEditorSheet({ open, initialType, editingTx, prefillToCardId, state, onClose, showToast }) {
-    const { Icon, NumericInput, BottomSheet } = window.WealthUI;
+    const { Icon, BottomSheet, useKeypad } = window.WealthUI;
+    const { openKeypad } = useKeypad();
     const Store = window.WealthStore;
 
     const allSources = useMemo(() => buildAccountOptions(state, true), [state]);
     const bankSources = useMemo(() => buildAccountOptions(state, false), [state]);
+    const cardSources = useMemo(() => allSources.filter((s) => s.kind === 'CARD'), [allSources]);
 
-    const defaultSource = useMemo(() => {
+    const defaultBankKey = useMemo(() => {
       for (let i = 0; i < state.accounts.length; i++) {
         const a = state.accounts[i];
         const defB = (a.balances || []).find((b) => b.isDefaultPayment);
         if (defB) return `ACCOUNT::${a.id}::${defB.id}`;
       }
-      return allSources[0] ? allSources[0].key : '';
-    }, [state.accounts, allSources]);
+      return bankSources[0] ? bankSources[0].key : '';
+    }, [state.accounts, bankSources]);
 
     const [txType, setTxType] = useState('EXPENSE');
-    const [amount, setAmount] = useState(0);
+    const [expr, setExpr] = useState('0');
     const [currency, setCurrency] = useState(state.meta.baseCurrency);
     const [settledAmount, setSettledAmount] = useState(0);
-    const [title, setTitle] = useState('');
+    const [manualSettled, setManualSettled] = useState(false);
+
     const [categoryId, setCategoryId] = useState('');
     const [subCategoryId, setSubCategoryId] = useState('');
+    const [title, setTitle] = useState('');
     const [fromKey, setFromKey] = useState('');
     const [toKey, setToKey] = useState('');
     const [poolId, setPoolId] = useState((state.pools[0] && state.pools[0].id) || 'pool_liquid');
     const [poolAutoLinked, setPoolAutoLinked] = useState(true);
+
+    const [billingBucket, setBillingBucket] = useState('UNBILLED');
+    const [billingAuto, setBillingAuto] = useState(true);
+
     const [counterparty, setCounterparty] = useState('');
     const [date, setDate] = useState(Store.todayISO());
     const [time, setTime] = useState(Store.nowTimeHM());
     const [note, setNote] = useState('');
+
+    // Dynamic Bottom Panel: KEYPAD | CATEGORY | ACCOUNT | POOL | BILLING | CURRENCY | DATETIME | NOTE
+    const [panel, setPanel] = useState('KEYPAD');
+    const [accountTab, setAccountTab] = useState('CARD'); // CARD | ACCOUNT
+    const [transferSlot, setTransferSlot] = useState('FROM'); // FROM | TO
 
     // Quick add sub-category mini-sheet
     const [quickSubOpen, setQuickSubOpen] = useState(false);
     const [quickSubName, setQuickSubName] = useState('');
     const [quickSubPool, setQuickSubPool] = useState('');
 
+    // Initialize state on open
     useEffect(() => {
       if (!open) return;
+      setPanel('KEYPAD');
+      setManualSettled(false);
+
       if (editingTx) {
         const nextType = editingTx.type === 'LOAN_SETTLEMENT' ? 'INCOME' : editingTx.type;
         setTxType(nextType);
-        setAmount(editingTx.amount || 0);
+        setExpr(String(editingTx.amount || 0));
         setCurrency(editingTx.currency || state.meta.baseCurrency);
         setSettledAmount(editingTx.settledAmount != null ? editingTx.settledAmount : (editingTx.amount || 0));
         setTitle(editingTx.title || '');
         setCategoryId(editingTx.categoryId || '');
         setSubCategoryId(editingTx.subCategoryId || '');
-        setFromKey(
-          editingTx.accountKind === 'CARD'
-            ? `CARD::${editingTx.accountId}::`
-            : `ACCOUNT::${editingTx.accountId}::${editingTx.balanceId || ''}`
-        );
-        setToKey(
-          editingTx.toAccountId
-            ? (editingTx.toAccountKind === 'CARD'
-                ? `CARD::${editingTx.toAccountId}::`
-                : `ACCOUNT::${editingTx.toAccountId}::${editingTx.toBalanceId || ''}`)
-            : ''
-        );
+
+        const fKey = editingTx.accountKind === 'CARD'
+          ? `CARD::${editingTx.accountId}::`
+          : `ACCOUNT::${editingTx.accountId}::${editingTx.balanceId || ''}`;
+        setFromKey(fKey);
+        setAccountTab(editingTx.accountKind === 'CARD' ? 'CARD' : 'ACCOUNT');
+
+        if (editingTx.toAccountId) {
+          const tKey = editingTx.toAccountKind === 'CARD'
+            ? `CARD::${editingTx.toAccountId}::`
+            : `ACCOUNT::${editingTx.toAccountId}::${editingTx.toBalanceId || ''}`;
+          setToKey(tKey);
+        } else {
+          const alt = bankSources.find((b) => b.key !== fKey);
+          setToKey(alt ? alt.key : fKey);
+        }
+
         const effPool = Store.resolveEffectivePoolId(editingTx.categoryId, editingTx.subCategoryId, state);
         setPoolId(editingTx.poolId || effPool);
         setPoolAutoLinked(!editingTx.poolId || editingTx.poolId === effPool);
-        setCounterparty(editingTx.counterparty || '');
-        setDate(editingTx.date || Store.todayISO());
+
+        const txD = editingTx.date || Store.todayISO();
+        setDate(txD);
         setTime(editingTx.time || Store.nowTimeHM());
+
+        if (editingTx.accountKind === 'CARD') {
+          const cardObj = state.cards.find((c) => c.id === editingTx.accountId);
+          const autoB = Store.getAutoCardBillingBucket(cardObj, txD);
+          const curB = editingTx.billingBucket || autoB;
+          setBillingBucket(curB);
+          setBillingAuto(curB === autoB);
+        } else {
+          setBillingBucket('UNBILLED');
+          setBillingAuto(true);
+        }
+
+        setCounterparty(editingTx.counterparty || '');
         setNote(editingTx.note || '');
       } else {
-        const nextType = prefillToCardId ? 'TRANSFER' : (initialType || 'EXPENSE');
+        const nextType = initialType || 'EXPENSE';
         setTxType(nextType);
-        setAmount(0);
-        setCurrency(state.meta.baseCurrency);
-        setSettledAmount(0);
-        setTitle(prefillToCardId ? '信用卡找數還款' : '');
+        setExpr('0');
+        setTitle('');
         const cats = state.categories.filter((c) => c.type === (nextType === 'INCOME' ? 'INCOME' : 'EXPENSE'));
         const firstCat = cats[0] || null;
         const firstSub = firstCat && Array.isArray(firstCat.subcategories) && firstCat.subcategories[0] ? firstCat.subcategories[0] : null;
         setCategoryId(firstCat ? firstCat.id : '');
         setSubCategoryId(firstSub ? firstSub.id : '');
+
         const effPool = firstCat
           ? Store.resolveEffectivePoolId(firstCat.id, firstSub ? firstSub.id : null, state)
           : ((state.pools[0] && state.pools[0].id) || 'pool_liquid');
         setPoolId(effPool);
         setPoolAutoLinked(true);
-        setFromKey(defaultSource);
-        if (prefillToCardId) {
-          setToKey(`CARD::${prefillToCardId}::`);
-        } else {
-          const alt = allSources.find((s) => s.key !== defaultSource);
-          setToKey(alt ? alt.key : defaultSource);
-        }
-        setCounterparty('');
-        setDate(Store.todayISO());
+
+        const allowCard = nextType === 'EXPENSE' || nextType === 'RECEIVABLE';
+        const initialFrom = allowCard && cardSources.length > 0 && !defaultBankKey
+          ? cardSources[0].key
+          : defaultBankKey;
+        setFromKey(initialFrom);
+        setAccountTab(initialFrom.startsWith('CARD::') ? 'CARD' : 'ACCOUNT');
+
+        const fromObj = allSources.find((s) => s.key === initialFrom);
+        setCurrency(fromObj ? fromObj.currency : state.meta.baseCurrency);
+        setSettledAmount(0);
+
+        const altBank = bankSources.find((b) => b.key !== initialFrom);
+        setToKey(altBank ? altBank.key : initialFrom);
+
+        const todayD = Store.todayISO();
+        setDate(todayD);
         setTime(Store.nowTimeHM());
+        setBillingBucket('UNBILLED');
+        setBillingAuto(true);
+        setCounterparty('');
         setNote('');
       }
     }, [open, editingTx, initialType, prefillToCardId]);
+
+    const allowCardsForType = txType === 'EXPENSE' || txType === 'RECEIVABLE';
+    const showPoolForType = txType === 'EXPENSE' || txType === 'RECEIVABLE' || txType === 'PAYABLE';
 
     const filteredCats = useMemo(() => {
       const targetType = txType === 'INCOME' ? 'INCOME' : 'EXPENSE';
       return state.categories.filter((c) => c.type === targetType);
     }, [state.categories, txType]);
 
-    const selectedCat = useMemo(() => filteredCats.find((c) => c.id === categoryId) || filteredCats[0] || null, [filteredCats, categoryId]);
-    const activeSubs = useMemo(() => (selectedCat && Array.isArray(selectedCat.subcategories) ? selectedCat.subcategories : []), [selectedCat]);
-    const selectedSub = useMemo(() => activeSubs.find((s) => s.id === subCategoryId) || null, [activeSubs, subCategoryId]);
+    const selectedCat = useMemo(
+      () => filteredCats.find((c) => c.id === categoryId) || filteredCats[0] || null,
+      [filteredCats, categoryId]
+    );
+    const activeSubs = useMemo(
+      () => (selectedCat && Array.isArray(selectedCat.subcategories) ? selectedCat.subcategories : []),
+      [selectedCat]
+    );
+    const selectedSub = useMemo(
+      () => activeSubs.find((s) => s.id === subCategoryId) || null,
+      [activeSubs, subCategoryId]
+    );
 
-    const fromOpt = useMemo(() => allSources.find((s) => s.key === fromKey) || allSources[0] || null, [allSources, fromKey]);
-    const toOpt = useMemo(() => allSources.find((s) => s.key === toKey) || allSources[1] || allSources[0] || null, [allSources, toKey]);
+    const eligibleSources = allowCardsForType ? allSources : bankSources;
+    const fromOpt = useMemo(
+      () => eligibleSources.find((s) => s.key === fromKey) || eligibleSources[0] || null,
+      [eligibleSources, fromKey]
+    );
+    const toOpt = useMemo(
+      () => bankSources.find((s) => s.key === toKey) || bankSources.find((s) => fromOpt && s.key !== fromOpt.key) || bankSources[0] || null,
+      [bankSources, toKey, fromOpt]
+    );
+
+    const isCardSelected = Boolean(allowCardsForType && fromOpt && fromOpt.kind === 'CARD');
+    const selectedCardObj = useMemo(
+      () => (isCardSelected ? state.cards.find((c) => c.id === fromOpt.accountId) || null : null),
+      [isCardSelected, state.cards, fromOpt]
+    );
+
+    // Auto-calculate card billing bucket whenever card or date changes while in auto mode
+    useEffect(() => {
+      if (isCardSelected && selectedCardObj && billingAuto) {
+        setBillingBucket(Store.getAutoCardBillingBucket(selectedCardObj, date));
+      }
+    }, [isCardSelected, selectedCardObj, date, billingAuto]);
+
+    const numericAmount = useMemo(() => safeEvalExpr(expr), [expr]);
+    const hasOperator = /[+\-]/.test(expr.slice(1));
 
     const targetSettlementCurrency = txType === 'TRANSFER'
       ? (toOpt ? toOpt.currency : currency)
@@ -292,34 +299,77 @@
 
     useEffect(() => {
       if (!isCrossCurrency) {
-        setSettledAmount(amount);
-      } else if (amount > 0) {
-        const inBase = Store.convertToBase(amount, currency, state);
-        const targetRate = (state.meta.fxRates && state.meta.fxRates[targetSettlementCurrency]) || 1;
-        setSettledAmount(Store.round2(inBase / targetRate));
-      } else {
-        setSettledAmount(0);
+        setSettledAmount(numericAmount);
+        setManualSettled(false);
+      } else if (!manualSettled) {
+        if (numericAmount > 0) {
+          const inBase = Store.convertToBase(numericAmount, currency, state);
+          const targetRate = (state.meta.fxRates && state.meta.fxRates[targetSettlementCurrency]) || 1;
+          setSettledAmount(Store.round2(inBase / targetRate));
+        } else {
+          setSettledAmount(0);
+        }
       }
-    }, [amount, currency, targetSettlementCurrency, isCrossCurrency]);
+    }, [numericAmount, currency, targetSettlementCurrency, isCrossCurrency, manualSettled]);
 
-    const selectedPoolObj = useMemo(() => state.pools.find((p) => p.id === poolId) || state.pools[0] || null, [state.pools, poolId]);
-    const settlementAccLabel = useMemo(() => Store.getPoolSettlementLabel(poolId, state), [poolId, state]);
+    const selectedPoolObj = useMemo(
+      () => state.pools.find((p) => p.id === poolId) || state.pools[0] || null,
+      [state.pools, poolId]
+    );
+    const settlementAccLabel = useMemo(
+      () => Store.getPoolSettlementLabel(poolId, state),
+      [poolId, state]
+    );
+
+    const isCrossPoolBank = Boolean(
+      showPoolForType &&
+      fromOpt &&
+      fromOpt.kind === 'ACCOUNT' &&
+      selectedPoolObj &&
+      selectedPoolObj.settlementAccountId &&
+      selectedPoolObj.settlementAccountId !== fromOpt.accountId
+    );
 
     if (!open) return null;
 
+    // ---- Handlers ----
     const handleTypeSwitch = (nextType) => {
       setTxType(nextType);
-      if (nextType !== 'TRANSFER') {
+      setManualSettled(false);
+
+      // Ensure valid account for types that disallow credit cards
+      const nextAllowsCard = nextType === 'EXPENSE' || nextType === 'RECEIVABLE';
+      if (!nextAllowsCard && fromKey.startsWith('CARD::')) {
+        const fallback = defaultBankKey || (bankSources[0] ? bankSources[0].key : '');
+        setFromKey(fallback);
+        setAccountTab('ACCOUNT');
+        const obj = bankSources.find((b) => b.key === fallback);
+        if (obj) setCurrency(obj.currency);
+      }
+
+      if (nextType === 'TRANSFER') {
+        const fKey = fromKey.startsWith('CARD::') ? defaultBankKey : fromKey;
+        const safeFrom = bankSources.some((b) => b.key === fKey) ? fKey : (bankSources[0] ? bankSources[0].key : '');
+        const safeTo = bankSources.some((b) => b.key === toKey && b.key !== safeFrom)
+          ? toKey
+          : (bankSources.find((b) => b.key !== safeFrom) || bankSources[0] || { key: '' }).key;
+        setFromKey(safeFrom);
+        setToKey(safeTo);
+        if (panel === 'CATEGORY' || panel === 'POOL' || panel === 'BILLING') setPanel('KEYPAD');
+      } else {
         const cats = state.categories.filter((c) => c.type === (nextType === 'INCOME' ? 'INCOME' : 'EXPENSE'));
         const nextCat = cats.find((c) => c.id === categoryId) || cats[0] || null;
         if (nextCat) {
           setCategoryId(nextCat.id);
           const firstSub = (nextCat.subcategories || [])[0] || null;
           setSubCategoryId(firstSub ? firstSub.id : '');
-          const effPool = Store.resolveEffectivePoolId(nextCat.id, firstSub ? firstSub.id : null, state);
-          setPoolId(effPool);
-          setPoolAutoLinked(true);
+          if (nextType !== 'INCOME') {
+            const effPool = Store.resolveEffectivePoolId(nextCat.id, firstSub ? firstSub.id : null, state);
+            setPoolId(effPool);
+            setPoolAutoLinked(true);
+          }
         }
+        if (nextType === 'INCOME' && (panel === 'POOL' || panel === 'BILLING')) setPanel('KEYPAD');
       }
     };
 
@@ -327,43 +377,129 @@
       setCategoryId(cat.id);
       const firstSub = (cat.subcategories || [])[0] || null;
       setSubCategoryId(firstSub ? firstSub.id : '');
-      const effPool = Store.resolveEffectivePoolId(cat.id, firstSub ? firstSub.id : null, state);
-      setPoolId(effPool);
-      setPoolAutoLinked(true);
+      if (showPoolForType) {
+        const effPool = Store.resolveEffectivePoolId(cat.id, firstSub ? firstSub.id : null, state);
+        setPoolId(effPool);
+        setPoolAutoLinked(true);
+      }
     };
 
     const handleSelectSubcategory = (sub) => {
       setSubCategoryId(sub.id);
       setTitle(sub.name);
-      const effPool = Store.resolveEffectivePoolId(selectedCat ? selectedCat.id : categoryId, sub.id, state);
-      setPoolId(effPool);
-      setPoolAutoLinked(true);
+      if (showPoolForType) {
+        const effPool = Store.resolveEffectivePoolId(selectedCat ? selectedCat.id : categoryId, sub.id, state);
+        setPoolId(effPool);
+        setPoolAutoLinked(true);
+      }
+      setPanel('KEYPAD');
     };
 
-    const handleManualPoolSelect = (pid) => {
-      setPoolId(pid);
-      const effPool = Store.resolveEffectivePoolId(selectedCat ? selectedCat.id : categoryId, subCategoryId, state);
-      setPoolAutoLinked(pid === effPool);
+    const handlePickAccount = (opt) => {
+      if (txType === 'TRANSFER') {
+        if (transferSlot === 'FROM') {
+          if (opt.key === toKey) {
+            setToKey(fromKey);
+          }
+          setFromKey(opt.key);
+          setCurrency(opt.currency);
+        } else {
+          if (opt.key === fromKey) {
+            setFromKey(toKey);
+            const swappedFrom = bankSources.find((b) => b.key === toKey);
+            if (swappedFrom) setCurrency(swappedFrom.currency);
+          }
+          setToKey(opt.key);
+        }
+        setManualSettled(false);
+        setPanel('KEYPAD');
+        return;
+      }
+
+      setFromKey(opt.key);
+      setCurrency(opt.currency);
+      setManualSettled(false);
+      if (opt.kind === 'CARD') {
+        const cardObj = state.cards.find((c) => c.id === opt.accountId);
+        setBillingAuto(true);
+        setBillingBucket(Store.getAutoCardBillingBucket(cardObj, date));
+      } else if (panel === 'BILLING') {
+        setPanel('KEYPAD');
+      }
+      setPanel('KEYPAD');
+    };
+
+    const handleSwapTransfer = () => {
+      if (!fromOpt || !toOpt || fromOpt.key === toOpt.key) return;
+      const prevFrom = fromOpt.key;
+      const prevTo = toOpt.key;
+      setFromKey(prevTo);
+      setToKey(prevFrom);
+      setCurrency(toOpt.currency);
+      setManualSettled(false);
+    };
+
+    const handleKeyPress = (k) => {
+      if (k === 'C') {
+        setExpr('0');
+        setManualSettled(false);
+        return;
+      }
+      if (k === 'BACK') {
+        setExpr((prev) => (prev.length <= 1 ? '0' : prev.slice(0, -1)));
+        setManualSettled(false);
+        return;
+      }
+      if (k === '=') {
+        setExpr(String(safeEvalExpr(expr)));
+        return;
+      }
+      if (k === '+' || k === '-') {
+        setExpr((prev) => {
+          if (!prev || prev === '0') return '0';
+          if (/[+\-]$/.test(prev)) return prev.slice(0, -1) + k;
+          return prev + k;
+        });
+        return;
+      }
+      if (k === '.') {
+        setExpr((prev) => {
+          const parts = prev.split(/[+\-]/);
+          const last = parts[parts.length - 1] || '';
+          if (last.includes('.')) return prev;
+          return prev + '.';
+        });
+        return;
+      }
+      setManualSettled(false);
+      setExpr((prev) => {
+        if (prev === '0') return k;
+        if (prev.length >= 18) return prev;
+        return prev + k;
+      });
     };
 
     const handleSave = () => {
-      const amt = Number(amount);
+      const amt = safeEvalExpr(expr);
       if (!Number.isFinite(amt) || amt <= 0) {
         showToast('請輸入大於 0 的金額');
+        setPanel('KEYPAD');
         return;
       }
       if (!fromOpt) {
         showToast('請先在資產頁建立帳戶');
         return;
       }
-      if (txType === 'TRANSFER' && (!toOpt || fromOpt.key === toOpt.key)) {
-        showToast('轉出與轉入帳戶不可相同');
-        return;
+      if (txType === 'TRANSFER') {
+        if (bankSources.length < 2 || !toOpt || fromOpt.key === toOpt.key) {
+          showToast('轉帳需要兩個不同的銀行或電子錢包帳戶');
+          return;
+        }
       }
 
       const finalTitle = title.trim() || (
         txType === 'TRANSFER'
-          ? `${fromOpt.label} ➔ ${toOpt ? toOpt.label : ''}`
+          ? `${fromOpt.shortLabel} ➔ ${toOpt ? toOpt.shortLabel : ''}`
           : txType === 'RECEIVABLE'
           ? `代墊 · ${counterparty.trim() || (selectedSub ? selectedSub.name : (selectedCat ? selectedCat.name : '應收款項'))}`
           : txType === 'PAYABLE'
@@ -381,13 +517,14 @@
         accountKind: fromOpt.kind,
         accountId: fromOpt.accountId,
         balanceId: fromOpt.balanceId,
-        toAccountKind: txType === 'TRANSFER' && toOpt ? toOpt.kind : null,
+        toAccountKind: txType === 'TRANSFER' && toOpt ? 'ACCOUNT' : null,
         toAccountId: txType === 'TRANSFER' && toOpt ? toOpt.accountId : null,
         toBalanceId: txType === 'TRANSFER' && toOpt ? toOpt.balanceId : null,
         categoryId: txType === 'TRANSFER' ? null : (selectedCat ? selectedCat.id : null),
         subCategoryId: txType === 'TRANSFER' ? null : (selectedSub ? selectedSub.id : null),
         subCategoryName: txType === 'TRANSFER' ? '' : (selectedSub ? selectedSub.name : ''),
-        poolId,
+        poolId: showPoolForType ? poolId : null,
+        billingBucket: isCardSelected ? billingBucket : null,
         counterparty: (txType === 'RECEIVABLE' || txType === 'PAYABLE') ? counterparty.trim() : '',
         date,
         time,
@@ -404,34 +541,70 @@
       onClose();
     };
 
-    const isCrossSettlementCard = fromOpt && fromOpt.kind === 'CARD' && txType !== 'TRANSFER';
-    const isCrossAccountBank = fromOpt && fromOpt.kind === 'ACCOUNT' && selectedPoolObj && selectedPoolObj.settlementAccountId && selectedPoolObj.settlementAccountId !== fromOpt.accountId && txType !== 'TRANSFER';
+    const togglePanel = (target) => {
+      setPanel((cur) => (cur === target ? 'KEYPAD' : target));
+    };
+
+    const openAccountPanel = (slot) => {
+      if (txType === 'TRANSFER') {
+        setTransferSlot(slot || 'FROM');
+        setPanel('ACCOUNT');
+      } else {
+        if (allowCardsForType) {
+          setAccountTab(fromOpt && fromOpt.kind === 'CARD' ? 'CARD' : (cardSources.length > 0 && panel !== 'ACCOUNT' ? (fromOpt && fromOpt.kind === 'CARD' ? 'CARD' : 'ACCOUNT') : 'ACCOUNT'));
+        } else {
+          setAccountTab('ACCOUNT');
+        }
+        togglePanel('ACCOUNT');
+      }
+    };
+
+    const accountRoleLabel = txType === 'INCOME'
+      ? '入帳帳戶'
+      : txType === 'RECEIVABLE'
+      ? '代墊付款'
+      : txType === 'PAYABLE'
+      ? '借款入帳'
+      : (isCardSelected ? '信用卡' : '付款帳戶');
+
+    const keypadKeys = [
+      ['7', '8', '9', 'BACK'],
+      ['4', '5', '6', '+'],
+      ['1', '2', '3', '-'],
+      ['C', '0', '.', hasOperator ? '=' : 'OK']
+    ];
+
+    const sym = Store.getCurrencySymbol(currency);
+    const activeCellClass = 'bg-white/[0.08]';
 
     return createPortal(
-      <div className="fixed inset-0 z-[60] bg-[#0B0B0D] flex flex-col anim-sheet-up">
-        {/* Clean 2-Row Top Header */}
+      <div
+        className="fixed inset-0 z-[60] bg-[#0B0B0D] flex flex-col overflow-hidden anim-sheet-up"
+        style={{ height: 'var(--app-height, 100dvh)' }}
+      >
+        {/* Top Action Bar & 5-Type Selector */}
         <div className="shrink-0 safe-top bg-[#0B0B0D] border-b border-white/[0.08]">
-          <div className="px-4 h-11 flex items-center justify-between">
+          <div className="px-4 h-10 flex items-center justify-between">
             <button
               type="button"
               onClick={onClose}
-              className="text-[15px] text-zinc-400 active:text-white py-1 pr-3"
+              className="text-[14px] text-zinc-400 active:text-white py-1 pr-3"
             >
               取消
             </button>
-            <span className="text-[16px] font-semibold text-white">
+            <span className="text-[15px] font-semibold text-white">
               {editingTx ? '編輯紀錄' : '記一筆'}
             </span>
             <button
               type="button"
               onClick={handleSave}
-              className="text-[15px] font-bold text-emerald-400 active:opacity-70 py-1 pl-3"
+              className="text-[14px] font-bold text-emerald-400 active:opacity-70 py-1 pl-3"
             >
               儲存
             </button>
           </div>
 
-          <div className="px-4 pb-3 pt-1">
+          <div className="px-3.5 pb-2.5 pt-0.5">
             <div className="p-1 rounded-2xl bg-[#16161A] border border-white/[0.08] grid grid-cols-5 gap-1">
               {TX_TYPES.map((t) => {
                 const active = txType === t.value;
@@ -440,7 +613,7 @@
                     key={t.value}
                     type="button"
                     onClick={() => handleTypeSwitch(t.value)}
-                    className={`py-1.5 rounded-xl text-[13px] font-semibold transition whitespace-nowrap ${
+                    className={`py-1.5 rounded-xl text-[12px] font-semibold transition whitespace-nowrap ${
                       active ? 'bg-white text-black shadow-sm' : 'text-zinc-400'
                     }`}
                   >
@@ -452,317 +625,894 @@
           </div>
         </div>
 
-        {/* Scrollable Form Body */}
-        <div className="flex-1 overflow-y-auto overscroll-contain px-4 py-3.5 space-y-3.5">
-          {/* 1. Amount & Currency */}
-          <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-3.5 space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[12px] text-zinc-400">交易金額</span>
-              <select
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value)}
-                className="px-2.5 py-1 rounded-lg bg-black/60 border border-white/[0.12] text-[12px] font-semibold text-white outline-none"
-              >
-                {Store.CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
-              </select>
-            </div>
-            <NumericInput
-              size="lg"
-              value={amount}
-              currency={currency}
-              label={`輸入${TX_TYPES.find((x) => x.value === txType)?.label || ''}金額`}
-              quickAdds={[50, 100, 500, 1000]}
-              onChange={(val) => setAmount(val)}
-            />
-            {isCrossCurrency && (
-              <div className="pt-2 border-t border-white/[0.06] space-y-1.5">
-                <div className="text-[11px] text-amber-300">
-                  跨幣種實扣／實收折算（帳戶幣種：{targetSettlementCurrency}）
-                </div>
-                <NumericInput
-                  size="sm"
-                  value={settledAmount}
-                  currency={targetSettlementCurrency}
-                  label={`實扣金額 (${targetSettlementCurrency})`}
-                  onChange={(val) => setSettledAmount(val)}
-                />
-              </div>
-            )}
-          </div>
-
-          {/* 2. Major Category -> Preset Sub-Categories (Instant Tap, Auto-links Pool) */}
-          {txType !== 'TRANSFER' && (
-            <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-3.5 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[12px] font-medium text-zinc-400">大類別 ➔ 小類別快選</span>
-                <span className="text-[11px] text-zinc-500">可於「設定」自訂</span>
-              </div>
-
-              {/* Major Categories Horizontal Track */}
-              <div className="flex gap-2 overflow-x-auto no-scrollbar pb-0.5" data-no-swipe="true">
-                {filteredCats.map((cat) => {
-                  const sel = selectedCat && cat.id === selectedCat.id;
-                  return (
-                    <button
-                      key={cat.id}
-                      type="button"
-                      onClick={() => handleSelectCategory(cat)}
-                      className={`shrink-0 px-3 py-2 rounded-xl border flex items-center gap-1.5 transition ${
-                        sel
-                          ? 'bg-white text-black border-white font-semibold'
-                          : 'bg-black/45 text-zinc-200 border-white/[0.08]'
-                      }`}
-                    >
-                      <span style={{ color: sel ? '#000000' : cat.color }}>
-                        <Icon name={cat.icon} size={15} />
-                      </span>
-                      <span className="text-[13px] whitespace-nowrap">{cat.name}</span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Preset Sub-Categories Chips for Selected Major Category */}
-              <div className="pt-2.5 border-t border-white/[0.06] space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-zinc-400">
-                    {selectedCat ? `${selectedCat.name} · 點選小類別自動帶入` : '小類別'}
-                  </span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {activeSubs.map((sub) => {
-                    const sel = sub.id === subCategoryId;
-                    const overridePool = sub.defaultPoolId ? state.pools.find((p) => p.id === sub.defaultPoolId) : null;
-                    return (
-                      <button
-                        key={sub.id}
-                        type="button"
-                        onClick={() => handleSelectSubcategory(sub)}
-                        className={`px-3 py-1.5 rounded-full text-[12px] font-medium border flex items-center gap-1.5 transition ${
-                          sel
-                            ? 'bg-emerald-400 text-black border-emerald-300 font-semibold'
-                            : 'bg-black/45 text-zinc-200 border-white/[0.08] active:bg-white/10'
-                        }`}
-                      >
-                        <span>{sub.name}</span>
-                        {overridePool && (
-                          <span
-                            className="w-1.5 h-1.5 rounded-full"
-                            style={{ background: sel ? '#000000' : overridePool.color }}
-                            title={`自動歸屬：${overridePool.name}`}
-                          />
-                        )}
-                      </button>
-                    );
-                  })}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setQuickSubName('');
-                      setQuickSubPool('');
-                      setQuickSubOpen(true);
-                    }}
-                    className="px-2.5 py-1.5 rounded-full text-[12px] text-zinc-400 border border-dashed border-white/20 active:bg-white/10"
-                  >
-                    + 自訂小類
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 3. Separated Payment Source Picker (Credit Cards vs Bank/E-Wallet) */}
-          <PaymentSourcePicker
-            label={
-              txType === 'TRANSFER'
-                ? '轉出帳戶'
-                : txType === 'INCOME'
-                ? '入帳帳戶'
-                : txType === 'PAYABLE'
-                ? '收款帳戶（借款入帳）'
-                : '付款方式（信用卡 / 帳戶分流）'
-            }
-            allowCards={txType !== 'PAYABLE'}
-            options={txType === 'PAYABLE' ? bankSources : allSources}
-            selectedKey={fromOpt ? fromOpt.key : ''}
-            onSelect={(opt) => {
-              setFromKey(opt.key);
-              setCurrency(opt.currency);
-            }}
-          />
-
-          {/* Transfer Destination Picker + Swap */}
-          {txType === 'TRANSFER' && (
-            <PaymentSourcePicker
-              label="轉入帳戶 / 找數信用卡"
-              allowCards={true}
-              options={allSources}
-              selectedKey={toOpt ? toOpt.key : ''}
-              accentTone="emerald"
-              onSelect={(opt) => setToKey(opt.key)}
-              rightAction={
+        {/* Upper Compact Grid Section (Zero Scroll) */}
+        <div className="shrink-0 px-3.5 pt-2.5 pb-2 space-y-2 max-w-[480px] w-full mx-auto">
+          {txType === 'TRANSFER' ? (
+            /* === TRANSFER Dedicated Dual-Card Flow Layout (No Pool, No Credit Cards) === */
+            <div className="space-y-2">
+              <div className="relative grid grid-cols-2 gap-2.5 items-stretch">
+                {/* FROM Card */}
                 <button
                   type="button"
-                  onClick={() => {
-                    const oldFrom = fromKey;
-                    setFromKey(toKey);
-                    setToKey(oldFrom);
-                  }}
-                  className="inline-flex items-center gap-1 text-[11px] text-emerald-400 active:opacity-70"
+                  onClick={() => openAccountPanel('FROM')}
+                  className={`p-3 rounded-2xl border text-left transition flex flex-col justify-between min-h-[76px] ${
+                    panel === 'ACCOUNT' && transferSlot === 'FROM'
+                      ? 'bg-[#1D1D24] border-white'
+                      : 'bg-[#141417] border-white/[0.09] active:bg-white/[0.06]'
+                  }`}
                 >
-                  <Icon name="swap" size={13} /> 對調
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[10px] font-semibold tracking-wider text-rose-400">轉出 FROM</span>
+                    <span className="text-[10px] text-zinc-500">點擊切換</span>
+                  </div>
+                  <div className="text-[14px] font-bold text-white truncate mt-1 pr-3">
+                    {fromOpt ? fromOpt.label : '選擇帳戶'}
+                  </div>
+                  <div className="text-[11px] text-zinc-400 tabular-nums truncate mt-0.5">
+                    {fromOpt ? (
+                      numericAmount > 0
+                        ? `餘額 ➔ ${Store.formatMoney(Store.round2(fromOpt.amount - numericAmount), fromOpt.currency)}`
+                        : `餘額 ${Store.formatMoney(fromOpt.amount, fromOpt.currency)}`
+                    ) : '-'}
+                  </div>
                 </button>
-              }
-            />
-          )}
 
-          {/* 4. Upgraded Attribution Pool Card (Critical for Cross-Account / Credit Card Settlement) */}
-          <div className="rounded-2xl bg-[#141417] border border-white/[0.12] p-3.5 space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="text-[12px] font-semibold text-white whitespace-nowrap">歸屬資金池</span>
-                <span className="text-[10px] text-zinc-500 truncate">交叉流水與找數依據</span>
+                {/* TO Card */}
+                <button
+                  type="button"
+                  onClick={() => openAccountPanel('TO')}
+                  className={`p-3 rounded-2xl border text-left transition flex flex-col justify-between min-h-[76px] pl-4 ${
+                    panel === 'ACCOUNT' && transferSlot === 'TO'
+                      ? 'bg-[#14251F] border-emerald-400'
+                      : 'bg-[#141417] border-white/[0.09] active:bg-white/[0.06]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[10px] font-semibold tracking-wider text-emerald-400">轉入 TO</span>
+                    <span className="text-[10px] text-zinc-500">點擊切換</span>
+                  </div>
+                  <div className="text-[14px] font-bold text-white truncate mt-1">
+                    {toOpt ? toOpt.label : '選擇帳戶'}
+                  </div>
+                  <div className="text-[11px] text-zinc-400 tabular-nums truncate mt-0.5">
+                    {toOpt ? (
+                      numericAmount > 0
+                        ? `餘額 ➔ ${Store.formatMoney(Store.round2(toOpt.amount + (isCrossCurrency ? settledAmount : numericAmount)), toOpt.currency)}`
+                        : `餘額 ${Store.formatMoney(toOpt.amount, toOpt.currency)}`
+                    ) : '-'}
+                  </div>
+                </button>
+
+                {/* Floating Center Swap Button */}
+                <button
+                  type="button"
+                  onClick={handleSwapTransfer}
+                  aria-label="對調轉出與轉入帳戶"
+                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-[#24242B] border-2 border-[#0B0B0D] text-white shadow-xl flex items-center justify-center active:scale-90 transition z-10"
+                >
+                  <Icon name="swap" size={16} />
+                </button>
               </div>
-              {txType !== 'TRANSFER' && (
-                poolAutoLinked ? (
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/25 text-[10px] font-medium text-emerald-300 whitespace-nowrap shrink-0">
-                    已依分類自動關聯
+
+              {/* Compact 1-Row Date + Note for Transfer */}
+              <div className="rounded-2xl bg-[#141417] border border-white/[0.09] grid grid-cols-2 divide-x divide-white/[0.08] overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => togglePanel('DATETIME')}
+                  className={`h-[44px] px-3 flex items-center justify-between gap-1.5 text-left transition ${panel === 'DATETIME' ? activeCellClass : ''}`}
+                >
+                  <span className="text-[12px] font-medium text-emerald-300 tabular-nums truncate">
+                    {formatShortDate(date)} · {time}
                   </span>
+                  <Icon name="calendar" size={14} className="text-zinc-400 shrink-0" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => togglePanel('NOTE')}
+                  className={`h-[44px] px-3 flex items-center justify-between gap-1.5 text-left transition ${panel === 'NOTE' ? activeCellClass : ''}`}
+                >
+                  <span className={`text-[12px] truncate ${note || title ? 'text-white font-medium' : 'text-zinc-500'}`}>
+                    {note || title || '轉帳備註'}
+                  </span>
+                  <span className="text-[10px] text-zinc-500 shrink-0">▾</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* === EXPENSE / INCOME / RECEIVABLE / PAYABLE Compact Info Grid === */
+            <div className="rounded-2xl bg-[#141417] border border-white/[0.09] divide-y divide-white/[0.08] overflow-hidden">
+              {/* Row 1: Major Category | Date & Time */}
+              <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
+                <button
+                  type="button"
+                  onClick={() => togglePanel('CATEGORY')}
+                  className={`h-[46px] px-3 flex items-center gap-2 text-left transition min-w-0 ${panel === 'CATEGORY' ? activeCellClass : ''}`}
+                >
+                  <span className="shrink-0" style={{ color: selectedCat ? selectedCat.color : '#9CA3AF' }}>
+                    <Icon name={selectedCat ? selectedCat.icon : 'tag'} size={17} />
+                  </span>
+                  <span className="text-[14px] font-semibold text-white truncate flex-1">
+                    {selectedCat ? selectedCat.name : '選擇分類'}
+                  </span>
+                  <span className="text-[10px] text-zinc-500 shrink-0">▾</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => togglePanel('DATETIME')}
+                  className={`h-[46px] px-3 flex items-center justify-between gap-1.5 text-left transition min-w-0 ${panel === 'DATETIME' ? activeCellClass : ''}`}
+                >
+                  <span className="text-[13px] font-medium text-emerald-300 tabular-nums truncate">
+                    {formatShortDate(date)} · {time}
+                  </span>
+                  <Icon name="calendar" size={15} className="text-zinc-400 shrink-0" />
+                </button>
+              </div>
+
+              {/* Row 2: Sub-Category | Note (or Counterparty for Receivable/Payable) */}
+              <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
+                <button
+                  type="button"
+                  onClick={() => togglePanel('CATEGORY')}
+                  className={`h-[46px] px-3 flex items-center gap-1.5 text-left transition min-w-0 ${panel === 'CATEGORY' ? activeCellClass : ''}`}
+                >
+                  <span className="text-zinc-500 text-[12px] shrink-0">↳</span>
+                  <span className={`text-[13px] truncate flex-1 ${selectedSub ? 'text-white font-medium' : 'text-zinc-400'}`}>
+                    {selectedSub ? selectedSub.name : '點選小類'}
+                  </span>
+                  <span className="text-[10px] text-zinc-500 shrink-0">▾</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => togglePanel('NOTE')}
+                  className={`h-[46px] px-3 flex items-center justify-between gap-1.5 text-left transition min-w-0 ${panel === 'NOTE' ? activeCellClass : ''}`}
+                >
+                  {txType === 'RECEIVABLE' || txType === 'PAYABLE' ? (
+                    <span className={`text-[12px] truncate ${counterparty ? 'text-amber-300 font-semibold' : 'text-amber-400/75'}`}>
+                      {counterparty
+                        ? `${txType === 'RECEIVABLE' ? '待收' : '待還'}·${counterparty}`
+                        : (txType === 'RECEIVABLE' ? '代墊對象 / 備註' : '借款對象 / 備註')}
+                    </span>
+                  ) : (
+                    <span className={`text-[12px] truncate ${(note || (title && title !== (selectedSub && selectedSub.name))) ? 'text-white font-medium' : 'text-zinc-500'}`}>
+                      {note || (title && title !== (selectedSub && selectedSub.name) ? title : '備註 / 自訂名')}
+                    </span>
+                  )}
+                  <span className="text-[10px] text-zinc-500 shrink-0">▾</span>
+                </button>
+              </div>
+
+              {/* Row 3: Only for EXPENSE / RECEIVABLE / PAYABLE (INCOME is strictly 2 rows!) */}
+              {showPoolForType && (
+                isCardSelected ? (
+                  /* Credit Card Selected: Left = Pool | Right = Auto/Manual Billing Bucket */
+                  <div className="grid grid-cols-2 divide-x divide-white/[0.08]">
+                    <button
+                      type="button"
+                      onClick={() => togglePanel('POOL')}
+                      className={`h-[46px] px-3 flex items-center gap-1.5 text-left transition min-w-0 ${panel === 'POOL' ? activeCellClass : ''}`}
+                    >
+                      <span className="text-zinc-500 text-[12px] shrink-0">↳</span>
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ background: selectedPoolObj ? selectedPoolObj.color : '#34D399' }}
+                      />
+                      <span className="text-[13px] font-medium text-white truncate flex-1">
+                        {selectedPoolObj ? selectedPoolObj.name : '資金池'}
+                      </span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded shrink-0 ${
+                        poolAutoLinked ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
+                      }`}>
+                        {poolAutoLinked ? '自動' : '手動'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => togglePanel('BILLING')}
+                      className={`h-[46px] px-3 flex items-center justify-between gap-1.5 text-left transition min-w-0 ${panel === 'BILLING' ? activeCellClass : ''}`}
+                    >
+                      <span className={`text-[12px] font-semibold truncate ${
+                        billingBucket === 'BILLED' ? 'text-amber-300' : 'text-sky-300'
+                      }`}>
+                        {billingBucket === 'BILLED' ? '本期應繳' : '未出帳下期'}
+                      </span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded shrink-0 ${
+                        billingAuto ? 'bg-white/10 text-zinc-300' : 'bg-amber-500/20 text-amber-300'
+                      }`}>
+                        {billingAuto ? '自動' : '手動'}
+                      </span>
+                    </button>
+                  </div>
                 ) : (
+                  /* Bank / E-Wallet Selected: Merged Full-Width Pool Row (Zero Redundancy) */
                   <button
                     type="button"
-                    onClick={() => {
-                      const eff = Store.resolveEffectivePoolId(selectedCat ? selectedCat.id : categoryId, subCategoryId, state);
-                      setPoolId(eff);
-                      setPoolAutoLinked(true);
-                    }}
-                    className="px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-400/30 text-[10px] font-medium text-amber-300 whitespace-nowrap shrink-0"
+                    onClick={() => togglePanel('POOL')}
+                    className={`w-full h-[46px] px-3 flex items-center justify-between gap-2 text-left transition ${panel === 'POOL' ? activeCellClass : ''}`}
                   >
-                    已手動指定 · 還原自動
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-zinc-500 text-[12px] shrink-0">↳</span>
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ background: selectedPoolObj ? selectedPoolObj.color : '#34D399' }}
+                      />
+                      <span className="text-[13px] font-medium text-white truncate">
+                        {selectedPoolObj ? selectedPoolObj.name : '歸屬資金池'}
+                      </span>
+                      {poolAutoLinked && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 shrink-0">
+                          自動
+                        </span>
+                      )}
+                    </div>
+                    <span className={`text-[11px] font-medium truncate shrink-0 max-w-[55%] ${
+                      isCrossPoolBank ? 'text-amber-300' : 'text-zinc-500'
+                    }`}>
+                      {isCrossPoolBank
+                        ? `跨池墊付 · ${settlementAccLabel}歸墊 ▾`
+                        : '本戶直扣 ▾'}
+                    </span>
                   </button>
                 )
               )}
             </div>
+          )}
 
-            <div className="flex flex-wrap gap-1.5">
-              {state.pools.map((p) => {
-                const sel = p.id === poolId;
+          {/* Contextual Slim Status Strip (Only when truly informative: Card Settlement / Income After-Balance / Cross-Currency) */}
+          {isCardSelected && (
+            <div className="px-3 py-1.5 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-between gap-2 text-[11px]">
+              <span className="text-zinc-400 truncate">
+                刷 <strong className="text-zinc-200">{fromOpt ? fromOpt.shortLabel : ''}</strong> ➔ 歸屬 <strong className="text-zinc-200">{selectedPoolObj ? selectedPoolObj.name : ''}</strong>
+              </span>
+              <span className={`font-semibold whitespace-nowrap shrink-0 ${settlementAccLabel ? 'text-emerald-300' : 'text-zinc-500'}`}>
+                {settlementAccLabel ? `${settlementAccLabel}找數` : '未綁定找數戶'}
+              </span>
+            </div>
+          )}
+
+          {txType === 'INCOME' && fromOpt && (
+            <div className="px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-400/20 flex items-center justify-between gap-2 text-[11px]">
+              <span className="text-emerald-200/80 truncate">
+                入帳：<strong className="text-white">{fromOpt.label}</strong>
+              </span>
+              <span className="text-emerald-300 font-semibold tabular-nums whitespace-nowrap shrink-0">
+                入帳後 {Store.formatMoney(Store.round2(fromOpt.amount + (isCrossCurrency ? settledAmount : numericAmount)), fromOpt.currency)}
+              </span>
+            </div>
+          )}
+
+          {isCrossCurrency && (
+            <button
+              type="button"
+              onClick={() => openKeypad({
+                value: settledAmount,
+                currency: targetSettlementCurrency,
+                label: `調整實扣／實收金額 (${targetSettlementCurrency})`,
+                onConfirm: (val) => {
+                  setSettledAmount(val);
+                  setManualSettled(true);
+                }
+              })}
+              className="w-full px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-400/30 flex items-center justify-between gap-2 text-[11px] text-amber-200"
+            >
+              <span className="truncate">跨幣種折算 ({currency} ➔ {targetSettlementCurrency})</span>
+              <span className="font-bold tabular-nums whitespace-nowrap shrink-0">
+                實算 {Store.formatMoney(settledAmount, targetSettlementCurrency)} · 微調
+              </span>
+            </button>
+          )}
+
+          {/* Unified Amount & Account Strip (MOZE / Reference Style) */}
+          <div className="h-[58px] rounded-2xl bg-[#16161B] border border-white/[0.12] flex items-stretch overflow-hidden shadow-lg">
+            {/* Left Colored Account Block (Hidden in Transfer because Dual Cards are right above) */}
+            {txType !== 'TRANSFER' && (
+              <button
+                type="button"
+                onClick={() => openAccountPanel()}
+                className="min-w-[104px] max-w-[128px] px-2.5 flex flex-col justify-center text-left border-r border-white/[0.1] active:opacity-80 transition shrink-0"
+                style={{ background: fromOpt ? fromOpt.bg : '#1E1F24' }}
+              >
+                <span className="text-[9px] text-white/65 leading-none">{accountRoleLabel}</span>
+                <div className="flex items-center gap-1 mt-1 min-w-0">
+                  <span className="text-[12px] font-bold text-white truncate">
+                    {fromOpt ? fromOpt.shortLabel : '選帳戶'}
+                  </span>
+                  <span className="text-[10px] text-white/70 shrink-0">▾</span>
+                </div>
+              </button>
+            )}
+
+            {/* Currency Pill */}
+            <button
+              type="button"
+              onClick={() => togglePanel('CURRENCY')}
+              className={`px-2.5 flex flex-col items-center justify-center border-r border-white/[0.08] shrink-0 transition ${
+                panel === 'CURRENCY' ? 'bg-white/15' : 'active:bg-white/10'
+              }`}
+            >
+              <span className="text-[11px] font-bold text-zinc-200 leading-none">{currency}</span>
+              <span className="text-[9px] text-zinc-500 mt-0.5 leading-none">{sym} ▾</span>
+            </button>
+
+            {/* Amount Display (Tap to bring back Keypad) */}
+            <button
+              type="button"
+              onClick={() => setPanel('KEYPAD')}
+              className="flex-1 px-3 flex flex-col items-end justify-center min-w-0 text-right"
+            >
+              <div className={`text-[24px] font-bold tabular-nums tracking-tight leading-none truncate w-full ${
+                txType === 'INCOME' ? 'text-emerald-400' : 'text-white'
+              }`}>
+                {expr}
+              </div>
+              {hasOperator && (
+                <div className="text-[11px] text-emerald-400 tabular-nums leading-none mt-1">
+                  = {sym} {numericAmount.toLocaleString('en-US')}
+                </div>
+              )}
+            </button>
+
+            {/* Quick Save / Evaluate Button */}
+            <button
+              type="button"
+              onClick={() => {
+                if (hasOperator) {
+                  handleKeyPress('=');
+                } else {
+                  handleSave();
+                }
+              }}
+              className={`w-[58px] shrink-0 flex items-center justify-center font-bold text-[19px] active:opacity-80 transition ${
+                hasOperator
+                  ? 'bg-amber-400 text-black'
+                  : 'bg-emerald-400 text-black'
+              }`}
+              aria-label={hasOperator ? '計算結果' : '儲存'}
+            >
+              {hasOperator ? '=' : <Icon name="check" size={22} strokeWidth={2.6} />}
+            </button>
+          </div>
+        </div>
+
+        {/* Dynamic Bottom Operation Area (Fills Remaining Physical Height — Zero Page Scroll) */}
+        <div
+          className="flex-1 min-h-0 flex flex-col bg-[#111114] border-t border-white/[0.08] max-w-[480px] w-full mx-auto"
+          style={{ paddingBottom: 'max(14px, calc(env(safe-area-inset-bottom) + 6px))' }}
+        >
+          {/* PANEL 1: Built-In 4x4 Adaptive Calculator Keypad */}
+          {panel === 'KEYPAD' && (
+            <div className="flex-1 min-h-0 p-3 grid grid-cols-4 grid-rows-4 gap-2">
+              {keypadKeys.flat().map((k) => {
+                const isConfirm = k === 'OK';
+                const isOp = k === '+' || k === '-' || k === '=';
+                const isUtil = k === 'BACK' || k === 'C';
                 return (
                   <button
-                    key={p.id}
+                    key={k}
                     type="button"
-                    onClick={() => handleManualPoolSelect(p.id)}
-                    className={`px-3 py-2 rounded-xl text-[12px] font-semibold border flex items-center gap-1.5 transition ${
-                      sel
-                        ? 'bg-white text-black border-white shadow-sm'
-                        : 'bg-black/45 text-zinc-200 border-white/[0.08] active:bg-white/10'
+                    onClick={() => {
+                      if (isConfirm) {
+                        handleSave();
+                      } else {
+                        handleKeyPress(k);
+                      }
+                    }}
+                    className={`min-h-0 rounded-2xl text-[20px] font-semibold flex items-center justify-center transition active:scale-95 tabular-nums ${
+                      isConfirm
+                        ? 'bg-white text-black font-bold text-[16px]'
+                        : isOp
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        : isUtil
+                        ? 'bg-white/[0.06] text-zinc-300'
+                        : 'bg-[#1B1B20] text-white border border-white/[0.06]'
                     }`}
                   >
-                    <span
-                      className="w-2 h-2 rounded-full shrink-0"
-                      style={{ background: p.color }}
-                    />
-                    <span className="whitespace-nowrap">{p.name}</span>
+                    {k === 'BACK' ? '⌫' : k === 'OK' ? (editingTx ? '儲存' : '入帳') : k}
                   </button>
                 );
               })}
             </div>
+          )}
 
-            {/* Live Cross-Account Settlement Preview */}
-            <div className="px-3 py-2 rounded-xl bg-black/50 border border-white/[0.06] text-[11px] flex items-center justify-between gap-2">
-              <span className="text-zinc-400">
-                {isCrossSettlementCard
-                  ? `刷卡交叉記帳 ➔ 結算找數來源：`
-                  : isCrossAccountBank
-                  ? `跨池墊付記錄 ➔ 歸屬應付戶口：`
-                  : `此資金池綁定找數戶口：`}
-              </span>
-              <span className={`font-semibold whitespace-nowrap ${settlementAccLabel ? 'text-emerald-300' : 'text-zinc-500'}`}>
-                {settlementAccLabel || '尚未綁定（可於設定配置）'}
-              </span>
-            </div>
-          </div>
+          {/* PANEL 2: Split 2-Column Category -> Preset Sub-Categories Selector */}
+          {panel === 'CATEGORY' && (
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between">
+                <span className="text-[11px] font-medium text-zinc-400">左選大類別 · 右點小類別即套用</span>
+                <button
+                  type="button"
+                  onClick={() => setPanel('KEYPAD')}
+                  className="text-[12px] font-semibold text-emerald-400"
+                >
+                  返回鍵盤
+                </button>
+              </div>
+              <div className="flex-1 min-h-0 grid grid-cols-12 divide-x divide-white/[0.06]">
+                {/* Left Column: Major Categories */}
+                <div className="col-span-5 overflow-y-auto overscroll-contain p-2 space-y-1">
+                  {filteredCats.map((cat) => {
+                    const sel = selectedCat && cat.id === selectedCat.id;
+                    return (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => handleSelectCategory(cat)}
+                        className={`w-full px-2.5 py-2.5 rounded-xl flex items-center gap-2 text-left transition ${
+                          sel ? 'bg-white text-black font-semibold' : 'text-zinc-300 active:bg-white/10'
+                        }`}
+                      >
+                        <span className="shrink-0" style={{ color: sel ? '#000000' : cat.color }}>
+                          <Icon name={cat.icon} size={15} />
+                        </span>
+                        <span className="text-[13px] truncate">{cat.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
 
-          {/* Receivable / Payable Counterparty */}
-          {(txType === 'RECEIVABLE' || txType === 'PAYABLE') && (
-            <div className="rounded-2xl bg-amber-500/10 border border-amber-400/25 p-3.5 space-y-2">
-              <label className="text-[12px] text-amber-300 font-medium block">
-                {txType === 'RECEIVABLE' ? '代墊對象（待收回）' : '借款對象（待償還）'}
-              </label>
-              <input
-                type="text"
-                placeholder="例如：同事 A、朋友名稱"
-                value={counterparty}
-                onChange={(e) => setCounterparty(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-black/50 border border-white/[0.12] text-[14px] text-white outline-none"
-              />
+                {/* Right Column: Sub-Categories */}
+                <div className="col-span-7 overflow-y-auto overscroll-contain p-2.5">
+                  <div className="flex flex-wrap gap-1.5">
+                    {activeSubs.map((sub) => {
+                      const sel = sub.id === subCategoryId;
+                      const overridePool = showPoolForType && sub.defaultPoolId
+                        ? state.pools.find((p) => p.id === sub.defaultPoolId)
+                        : null;
+                      return (
+                        <button
+                          key={sub.id}
+                          type="button"
+                          onClick={() => handleSelectSubcategory(sub)}
+                          className={`px-3 py-2 rounded-xl text-[13px] font-medium border flex items-center gap-1.5 transition ${
+                            sel
+                              ? 'bg-emerald-400 text-black border-emerald-300 font-semibold'
+                              : 'bg-black/45 text-zinc-200 border-white/[0.08] active:bg-white/15'
+                          }`}
+                        >
+                          <span>{sub.name}</span>
+                          {overridePool && (
+                            <span
+                              className="w-1.5 h-1.5 rounded-full"
+                              style={{ background: sel ? '#000000' : overridePool.color }}
+                              title={`自動歸屬：${overridePool.name}`}
+                            />
+                          )}
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQuickSubName('');
+                        setQuickSubPool('');
+                        setQuickSubOpen(true);
+                      }}
+                      className="px-3 py-2 rounded-xl text-[12px] text-zinc-400 border border-dashed border-white/20 active:bg-white/10"
+                    >
+                      + 自訂小類
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
-          {/* 5. Optional Custom Title, Date/Time & Note */}
-          <div className="rounded-2xl bg-[#141417] border border-white/[0.08] p-3.5 space-y-3">
-            <div className="grid grid-cols-2 gap-2.5">
-              <div>
-                <label className="text-[11px] text-zinc-400 block mb-1">
-                  自訂項目標題（選填）
-                </label>
-                <input
-                  type="text"
-                  placeholder={selectedSub ? `預設：${selectedSub.name}` : '留空帶入類別名'}
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
-                />
+          {/* PANEL 3: Separated Multi-Card / Bank-EWallet Account Selector */}
+          {panel === 'ACCOUNT' && (
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between gap-2">
+                {txType === 'TRANSFER' ? (
+                  <div className="p-0.5 rounded-xl bg-black/60 border border-white/[0.08] flex gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setTransferSlot('FROM')}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
+                        transferSlot === 'FROM' ? 'bg-white text-black' : 'text-zinc-400'
+                      }`}
+                    >
+                      選轉出帳戶
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTransferSlot('TO')}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
+                        transferSlot === 'TO' ? 'bg-emerald-400 text-black' : 'text-zinc-400'
+                      }`}
+                    >
+                      選轉入帳戶
+                    </button>
+                  </div>
+                ) : allowCardsForType ? (
+                  <div className="p-0.5 rounded-xl bg-black/60 border border-white/[0.08] flex gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setAccountTab('CARD')}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
+                        accountTab === 'CARD' ? 'bg-white text-black' : 'text-zinc-400'
+                      }`}
+                    >
+                      信用卡 ({cardSources.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAccountTab('ACCOUNT')}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
+                        accountTab === 'ACCOUNT' ? 'bg-white text-black' : 'text-zinc-400'
+                      }`}
+                    >
+                      銀行・錢包 ({bankSources.length})
+                    </button>
+                  </div>
+                ) : (
+                  <span className="text-[12px] font-medium text-zinc-400">
+                    選擇銀行・電子錢包 ({bankSources.length})
+                  </span>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setPanel('KEYPAD')}
+                  className="text-[12px] font-semibold text-emerald-400 shrink-0"
+                >
+                  返回鍵盤
+                </button>
               </div>
-              <div>
-                <label className="text-[11px] text-zinc-400 block mb-1">備註</label>
-                <input
-                  type="text"
-                  placeholder="選填補充"
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
-                />
+
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3">
+                {(() => {
+                  const list = txType === 'TRANSFER' || !allowCardsForType
+                    ? bankSources
+                    : (accountTab === 'CARD' ? cardSources : bankSources);
+                  const activeKey = txType === 'TRANSFER' && transferSlot === 'TO'
+                    ? (toOpt ? toOpt.key : '')
+                    : (fromOpt ? fromOpt.key : '');
+
+                  if (list.length === 0) {
+                    return (
+                      <div className="py-10 text-center text-[13px] text-zinc-500">
+                        {accountTab === 'CARD' && allowCardsForType
+                          ? '尚未建立信用卡，請切換至「銀行・錢包」或於資產頁設定。'
+                          : '尚無可用銀行或電子錢包帳戶。'}
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="grid grid-cols-2 gap-2">
+                      {list.map((opt) => {
+                        const sel = opt.key === activeKey;
+                        const isOpposite = txType === 'TRANSFER' && (
+                          (transferSlot === 'FROM' && toOpt && opt.key === toOpt.key) ||
+                          (transferSlot === 'TO' && fromOpt && opt.key === fromOpt.key)
+                        );
+                        return (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            onClick={() => handlePickAccount(opt)}
+                            className={`px-3 py-2.5 rounded-xl border text-left transition ${
+                              sel
+                                ? (txType === 'TRANSFER' && transferSlot === 'TO'
+                                    ? 'bg-emerald-400 text-black border-emerald-300'
+                                    : 'bg-white text-black border-white')
+                                : 'bg-black/45 text-zinc-100 border-white/[0.08] active:bg-white/10'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1.5 min-w-0">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span
+                                  className="w-2 h-2 rounded-full shrink-0"
+                                  style={{ background: sel ? '#000000' : opt.accent }}
+                                />
+                                <span className="text-[13px] font-semibold truncate">{opt.label}</span>
+                              </div>
+                              {isOpposite && (
+                                <span className="text-[9px] px-1 py-0.5 rounded bg-white/10 text-zinc-400 shrink-0">
+                                  對調
+                                </span>
+                              )}
+                            </div>
+                            <div className={`text-[11px] tabular-nums truncate mt-1 ${sel ? 'text-black/70' : 'text-zinc-400'}`}>
+                              {opt.kind === 'CARD'
+                                ? `${opt.sublabel} · ${Store.formatMoney(-opt.amount, opt.currency)}`
+                                : Store.formatMoney(opt.amount, opt.currency)}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <div>
-                <label className="text-[11px] text-zinc-400 block mb-1">日期</label>
-                <input
-                  type="date"
-                  value={date}
-                  onChange={(e) => setDate(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
-                />
+          )}
+
+          {/* PANEL 4: Funding Pool Selector (EXPENSE / RECEIVABLE / PAYABLE) */}
+          {panel === 'POOL' && showPoolForType && (
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between gap-2">
+                <span className="text-[12px] font-medium text-zinc-400">選擇歸屬資金池（交叉找數依據）</span>
+                <div className="flex items-center gap-2.5">
+                  {!poolAutoLinked && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const eff = Store.resolveEffectivePoolId(selectedCat ? selectedCat.id : categoryId, subCategoryId, state);
+                        setPoolId(eff);
+                        setPoolAutoLinked(true);
+                        setPanel('KEYPAD');
+                      }}
+                      className="text-[11px] text-amber-300 font-medium"
+                    >
+                      還原分類預設
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setPanel('KEYPAD')}
+                    className="text-[12px] font-semibold text-emerald-400"
+                  >
+                    完成
+                  </button>
+                </div>
               </div>
-              <div>
-                <label className="text-[11px] text-zinc-400 block mb-1">時間</label>
-                <input
-                  type="time"
-                  value={time}
-                  onChange={(e) => setTime(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/10 text-[13px] text-white outline-none"
-                />
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 space-y-2">
+                {state.pools.map((p) => {
+                  const sel = p.id === poolId;
+                  const sLabel = Store.getPoolSettlementLabel(p.id, state);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => {
+                        setPoolId(p.id);
+                        const eff = Store.resolveEffectivePoolId(selectedCat ? selectedCat.id : categoryId, subCategoryId, state);
+                        setPoolAutoLinked(p.id === eff);
+                        setPanel('KEYPAD');
+                      }}
+                      className={`w-full px-3.5 py-3 rounded-xl border flex items-center justify-between gap-2 text-left transition ${
+                        sel ? 'bg-white text-black border-white' : 'bg-black/45 text-white border-white/[0.08] active:bg-white/10'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: p.color }} />
+                          <span className="text-[14px] font-semibold truncate">{p.name}</span>
+                        </div>
+                        {p.note && (
+                          <div className={`text-[11px] truncate mt-0.5 ${sel ? 'text-black/65' : 'text-zinc-500'}`}>
+                            {p.note}
+                          </div>
+                        )}
+                      </div>
+                      <span className={`text-[11px] font-medium whitespace-nowrap shrink-0 ${
+                        sel ? 'text-black/80' : (sLabel ? 'text-emerald-300' : 'text-zinc-500')
+                      }`}>
+                        {sLabel ? `${sLabel}找數` : '未綁定戶口'}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
-          </div>
+          )}
+
+          {/* PANEL 5: Credit Card Billing Bucket Selector */}
+          {panel === 'BILLING' && isCardSelected && (
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between">
+                <span className="text-[12px] font-medium text-zinc-400">
+                  {selectedCardObj ? `${selectedCardObj.name} · 每月 ${selectedCardObj.statementDay || 15} 日截數` : '帳期歸分'}
+                </span>
+                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12px] font-semibold text-emerald-400">
+                  完成
+                </button>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto p-3.5 space-y-2.5">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBillingBucket('UNBILLED');
+                      setBillingAuto(false);
+                      setPanel('KEYPAD');
+                    }}
+                    className={`p-4 rounded-2xl border text-left transition ${
+                      billingBucket === 'UNBILLED'
+                        ? 'bg-sky-400/20 border-sky-300 text-white'
+                        : 'bg-black/45 border-white/[0.08] text-zinc-300'
+                    }`}
+                  >
+                    <div className="text-[15px] font-bold">未出帳下期</div>
+                    <div className="text-[11px] text-zinc-400 mt-1">截數日後簽帳，併入下期帳單</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBillingBucket('BILLED');
+                      setBillingAuto(false);
+                      setPanel('KEYPAD');
+                    }}
+                    className={`p-4 rounded-2xl border text-left transition ${
+                      billingBucket === 'BILLED'
+                        ? 'bg-amber-400/20 border-amber-300 text-white'
+                        : 'bg-black/45 border-white/[0.08] text-zinc-300'
+                    }`}
+                  >
+                    <div className="text-[15px] font-bold">本期應繳</div>
+                    <div className="text-[11px] text-zinc-400 mt-1">截數日當日或之前，計入本期帳單</div>
+                  </button>
+                </div>
+
+                {!billingAuto && selectedCardObj && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBillingAuto(true);
+                      setBillingBucket(Store.getAutoCardBillingBucket(selectedCardObj, date));
+                      setPanel('KEYPAD');
+                    }}
+                    className="w-full py-2.5 rounded-xl bg-white/[0.08] text-[12px] font-semibold text-emerald-300"
+                  >
+                    重設為依交易日期（{date}）自動歸分
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* PANEL 6: Currency Picker */}
+          {panel === 'CURRENCY' && (
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between">
+                <span className="text-[12px] font-medium text-zinc-400">選擇交易幣種</span>
+                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12px] font-semibold text-emerald-400">
+                  返回鍵盤
+                </button>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto p-3 grid grid-cols-3 gap-2 content-start">
+                {Store.CURRENCIES.map((c) => {
+                  const sel = c.code === currency;
+                  return (
+                    <button
+                      key={c.code}
+                      type="button"
+                      onClick={() => {
+                        setCurrency(c.code);
+                        setManualSettled(false);
+                        setPanel('KEYPAD');
+                      }}
+                      className={`p-3 rounded-xl border text-left transition ${
+                        sel ? 'bg-white text-black border-white' : 'bg-black/45 text-white border-white/[0.08] active:bg-white/10'
+                      }`}
+                    >
+                      <div className="text-[15px] font-bold">{c.code}</div>
+                      <div className={`text-[11px] mt-0.5 ${sel ? 'text-black/70' : 'text-zinc-400'}`}>
+                        {c.name} ({c.symbol})
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* PANEL 7: Date & Time Quick Picker */}
+          {panel === 'DATETIME' && (
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between">
+                <span className="text-[12px] font-medium text-zinc-400">交易日期與時間</span>
+                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12px] font-semibold text-emerald-400">
+                  完成
+                </button>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto p-3.5 space-y-3">
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { label: '今天', iso: shiftDaysISO(0) },
+                    { label: '昨天', iso: shiftDaysISO(-1) },
+                    { label: '前天', iso: shiftDaysISO(-2) }
+                  ].map((q) => (
+                    <button
+                      key={q.label}
+                      type="button"
+                      onClick={() => {
+                        setDate(q.iso);
+                        if (isCardSelected) setBillingAuto(true);
+                      }}
+                      className={`py-2.5 rounded-xl text-[13px] font-semibold border transition ${
+                        date === q.iso ? 'bg-white text-black border-white' : 'bg-black/45 text-zinc-200 border-white/[0.08]'
+                      }`}
+                    >
+                      {q.label} ({formatShortDate(q.iso)})
+                    </button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-[11px] text-zinc-400 block mb-1">自訂日期</label>
+                    <input
+                      type="date"
+                      value={date}
+                      onChange={(e) => {
+                        setDate(e.target.value);
+                        if (isCardSelected) setBillingAuto(true);
+                      }}
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-zinc-400 block mb-1">時間</label>
+                    <input
+                      type="time"
+                      value={time}
+                      onChange={(e) => setTime(e.target.value)}
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* PANEL 8: Note / Custom Title / Counterparty */}
+          {panel === 'NOTE' && (
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="shrink-0 px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between">
+                <span className="text-[12px] font-medium text-zinc-400">
+                  {txType === 'RECEIVABLE' || txType === 'PAYABLE' ? '對象與備註' : '備註與自訂標題'}
+                </span>
+                <button type="button" onClick={() => setPanel('KEYPAD')} className="text-[12px] font-semibold text-emerald-400">
+                  完成
+                </button>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto p-3.5 space-y-2.5">
+                {(txType === 'RECEIVABLE' || txType === 'PAYABLE') && (
+                  <div>
+                    <label className="text-[11px] text-amber-300 block mb-1">
+                      {txType === 'RECEIVABLE' ? '代墊對象（待收回）' : '借款對象（待償還）'}
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="例如：同事 A、朋友名稱"
+                      value={counterparty}
+                      onChange={(e) => setCounterparty(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-amber-400/30 text-[14px] text-white outline-none"
+                    />
+                  </div>
+                )}
+                <div>
+                  <label className="text-[11px] text-zinc-400 block mb-1">備註說明（選填）</label>
+                  <input
+                    type="text"
+                    placeholder="輸入備註內容…"
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                  />
+                </div>
+                {txType !== 'TRANSFER' && (
+                  <div>
+                    <label className="text-[11px] text-zinc-400 block mb-1">
+                      自訂項目標題（留空自動帶入：{selectedSub ? selectedSub.name : (selectedCat ? selectedCat.name : '類別名')}）
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="選填覆蓋預設名稱"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Sticky Footer Save Button */}
-        <div
-          className="shrink-0 px-4 pt-3 border-t border-white/[0.08] bg-[#0B0B0D]"
-          style={{ paddingBottom: 'max(18px, calc(env(safe-area-inset-bottom) + 8px))' }}
-        >
-          <button
-            type="button"
-            onClick={handleSave}
-            className="w-full py-3.5 rounded-2xl bg-white text-black text-[15px] font-bold active:scale-[0.99] transition"
-          >
-            {editingTx ? '儲存修改' : '確認入帳'}
-          </button>
-        </div>
-
-        {/* Quick Add Sub-category Sheet */}
+        {/* Quick Add Sub-Category Sub-Sheet */}
         <BottomSheet
           open={quickSubOpen && Boolean(selectedCat)}
           title={selectedCat ? `新增「${selectedCat.name}」小類別` : '新增小類別'}
@@ -774,14 +1524,17 @@
                 if (!quickSubName.trim() || !selectedCat) return;
                 const created = Store.addSubcategory(selectedCat.id, {
                   name: quickSubName,
-                  defaultPoolId: quickSubPool || null
+                  defaultPoolId: showPoolForType ? (quickSubPool || null) : null
                 });
                 if (created) {
                   setSubCategoryId(created.id);
                   setTitle(created.name);
-                  const eff = Store.resolveEffectivePoolId(selectedCat.id, created.id, Store.getState());
-                  setPoolId(eff);
-                  setPoolAutoLinked(true);
+                  if (showPoolForType) {
+                    const eff = Store.resolveEffectivePoolId(selectedCat.id, created.id, Store.getState());
+                    setPoolId(eff);
+                    setPoolAutoLinked(true);
+                  }
+                  setPanel('KEYPAD');
                   showToast(`已新增小類別「${created.name}」`);
                 }
                 setQuickSubOpen(false);
@@ -804,17 +1557,19 @@
                 autoFocus
               />
             </div>
-            <div>
-              <label className="text-[12px] text-zinc-400 block mb-1.5">獨立歸屬資金池（選填）</label>
-              <select
-                value={quickSubPool}
-                onChange={(e) => setQuickSubPool(e.target.value)}
-                className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
-              >
-                <option value="">繼承大類別預設資金池</option>
-                {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
+            {showPoolForType && (
+              <div>
+                <label className="text-[12px] text-zinc-400 block mb-1.5">獨立歸屬資金池（選填）</label>
+                <select
+                  value={quickSubPool}
+                  onChange={(e) => setQuickSubPool(e.target.value)}
+                  className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                >
+                  <option value="">繼承大類別預設資金池</option>
+                  {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            )}
           </div>
         </BottomSheet>
       </div>,
@@ -1182,16 +1937,18 @@
                 </div>
               )}
 
-              <div>
-                <label className="text-[12px] text-zinc-400 block mb-1.5">歸屬資金池</label>
-                <select
-                  value={draft.poolId}
-                  onChange={(e) => setDraft((p) => Object.assign({}, p, { poolId: e.target.value }))}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
-                >
-                  {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
+              {draft.type === 'EXPENSE' && (
+                <div>
+                  <label className="text-[12px] text-zinc-400 block mb-1.5">歸屬資金池</label>
+                  <select
+                    value={draft.poolId}
+                    onChange={(e) => setDraft((p) => Object.assign({}, p, { poolId: e.target.value }))}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
+                  >
+                    {state.pools.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1315,7 +2072,7 @@
     };
 
     const getCategoryObj = (catId) => state.categories.find((c) => c.id === catId);
-    const getPoolObj = (pid) => state.pools.find((p) => p.id === pid);
+    const getPoolObj = (pid) => (pid ? state.pools.find((p) => p.id === pid) : null);
 
     const openSettleSheet = (tx) => {
       setSettlingTx(tx);
@@ -1492,11 +2249,12 @@
                   {list.map((tx) => {
                     const isExpanded = expandedTxId === tx.id;
                     const cat = getCategoryObj(tx.categoryId);
-                    const pool = getPoolObj(tx.poolId);
                     const isLoan = tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE';
                     const isSettlement = tx.type === 'LOAN_SETTLEMENT';
                     const isPositive = tx.type === 'INCOME' || (isSettlement && tx.settlementDirection === 'IN');
                     const isTransfer = tx.type === 'TRANSFER';
+                    const showPoolTag = !isTransfer && tx.type !== 'INCOME' && !isSettlement;
+                    const pool = showPoolTag ? getPoolObj(tx.poolId) : null;
 
                     const iconName = isTransfer
                       ? 'swap'
@@ -1548,7 +2306,7 @@
                               </div>
                               <div className="text-[11px] text-zinc-400 truncate mt-0.5 flex items-center gap-1.5">
                                 <span className="truncate">{getAccountLabel(tx)}</span>
-                                {pool && !isTransfer && (
+                                {pool && (
                                   <span className="inline-flex items-center gap-1 shrink-0 text-zinc-500">
                                     ·
                                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: pool.color }} />
@@ -1590,6 +2348,11 @@
                                   歸屬池：
                                   <span className="w-1.5 h-1.5 rounded-full" style={{ background: pool.color }} />
                                   {pool.name}
+                                </span>
+                              )}
+                              {tx.accountKind === 'CARD' && tx.billingBucket && (
+                                <span className={tx.billingBucket === 'BILLED' ? 'text-amber-300' : 'text-sky-300'}>
+                                  帳期：{tx.billingBucket === 'BILLED' ? '本期應繳' : '未出帳下期'}
                                 </span>
                               )}
                             </div>

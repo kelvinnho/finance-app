@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 1 r12';
+  const APP_VERSION = 'Stage 1 r13';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -556,13 +556,17 @@
     return JSON.parse(JSON.stringify(state));
   }
 
-  function adjustAccountOrCard(draft, kind, accountId, balanceId, delta) {
+  function adjustAccountOrCard(draft, kind, accountId, balanceId, delta, cardBucket) {
     const d = round2(delta);
     if (!d) return;
     if (kind === 'CARD') {
       const card = draft.cards.find((c) => c.id === accountId);
       if (card) {
-        card.unbilled = round2((card.unbilled || 0) + d);
+        if (cardBucket === 'BILLED') {
+          card.billed = round2((card.billed || 0) + d);
+        } else {
+          card.unbilled = round2((card.unbilled || 0) + d);
+        }
       }
       return;
     }
@@ -581,30 +585,30 @@
 
     if (tx.type === 'EXPENSE') {
       if (tx.accountKind === 'CARD') {
-        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * settled);
+        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * settled, tx.billingBucket);
       } else {
         adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, -sign * settled);
       }
     } else if (tx.type === 'INCOME') {
       if (tx.accountKind === 'CARD') {
-        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, -sign * settled);
+        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, -sign * settled, tx.billingBucket);
       } else {
         adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, sign * settled);
       }
     } else if (tx.type === 'TRANSFER') {
       if (tx.accountKind === 'CARD') {
-        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * amt);
+        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * amt, tx.billingBucket);
       } else {
         adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, -sign * amt);
       }
       if (tx.toAccountKind === 'CARD') {
-        adjustAccountOrCard(draft, 'CARD', tx.toAccountId, null, -sign * settled);
+        adjustAccountOrCard(draft, 'CARD', tx.toAccountId, null, -sign * settled, tx.billingBucket);
       } else {
         adjustAccountOrCard(draft, 'ACCOUNT', tx.toAccountId, tx.toBalanceId, sign * settled);
       }
     } else if (tx.type === 'RECEIVABLE') {
       if (tx.accountKind === 'CARD') {
-        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * settled);
+        adjustAccountOrCard(draft, 'CARD', tx.accountId, null, sign * settled, tx.billingBucket);
       } else {
         adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, -sign * settled);
       }
@@ -774,6 +778,19 @@
     };
   }
 
+  function getAutoCardBillingBucket(card, txDateISO) {
+    const stmtDay = Math.min(28, Math.max(1, Number((card && card.statementDay) || 15)));
+    const now = new Date();
+    const todayD = now.getDate();
+    const lastStmtDate = todayD >= stmtDay
+      ? new Date(now.getFullYear(), now.getMonth(), stmtDay)
+      : new Date(now.getFullYear(), now.getMonth() - 1, stmtDay);
+
+    const parts = String(txDateISO || todayISO()).split('-').map(Number);
+    const txD = new Date(parts[0] || now.getFullYear(), (parts[1] || (now.getMonth() + 1)) - 1, parts[2] || todayD);
+    return txD.getTime() <= lastStmtDate.getTime() ? 'BILLED' : 'UNBILLED';
+  }
+
   const WealthStore = {
     APP_VERSION,
     SCHEMA_VERSION,
@@ -792,6 +809,7 @@
     getPoolSettlementLabel,
     getSummaryMetrics,
     getCreditCardCycle,
+    getAutoCardBillingBucket,
 
     getState() {
       return state;
@@ -1168,6 +1186,7 @@
           subCategoryId: null,
           subCategoryName: '',
           poolId: (draft.pools[0] && draft.pools[0].id) || 'pool_liquid',
+          billingBucket: null,
           counterparty: '',
           isLoanSettled: false,
           settlementTxId: null,
