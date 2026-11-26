@@ -95,61 +95,6 @@
     );
   }
 
-  // ---- Assets Sub-Tab 3: Fixed Deposits & Investments ----
-  function InvestmentsTab({ state }) {
-    const Store = window.WealthStore;
-    const totalInv = state.investments.reduce(
-      (s, x) => s + Store.convertToBase(x.currentValue || x.principal || 0, x.currency, state),
-      0
-    );
-
-    return (
-      <div className="space-y-3.5 pb-6">
-        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] text-zinc-400">定存與投資市值</span>
-            <span className="text-[11px] text-zinc-500 tabular-nums">{state.investments.length} 項持倉</span>
-          </div>
-          <div className="text-[28px] font-bold text-white tabular-nums tracking-tight leading-tight break-all">
-            {Store.formatMoney(totalInv, state.meta.baseCurrency)}
-          </div>
-        </div>
-
-        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
-          {state.investments.length === 0 ? (
-            <div className="py-10 text-center text-[13px] text-zinc-500">
-              尚未建立定存或投資部位（將於階段 2 接入完整定存／美債與券商季報歸檔）。
-            </div>
-          ) : (
-            state.investments.map((inv) => {
-              const pnl = Store.round2((inv.currentValue || 0) - (inv.principal || 0));
-              return (
-                <div key={inv.id} className="px-4 py-3.5 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-[14px] font-semibold text-white truncate">{inv.name}</div>
-                    <div className="text-[11px] text-zinc-400 mt-0.5">
-                      {inv.type === 'FIXED_DEPOSIT'
-                        ? `定期存款 · 年利率 ${inv.apr}% · 到期 ${inv.maturityDate}`
-                        : `投資標的 · ${inv.currency}`}
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-[14px] font-semibold text-white tabular-nums">
-                      {Store.formatMoney(inv.currentValue, inv.currency)}
-                    </div>
-                    <div className={`text-[11px] tabular-nums ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {Store.formatMoney(pnl, inv.currency, { showPlus: true })}
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </div>
-    );
-  }
-
   // ---- Reports View ----
   function ReportsView({ state }) {
     const Store = window.WealthStore;
@@ -1013,6 +958,7 @@
     const { WalletView } = window.WealthWallet;
     const { CreditCardsView } = window.WealthCards;
     const { LedgerView, TransactionEditorSheet } = window.WealthLedger;
+    const { WealthView } = window.WealthInvest;
 
     const state = useWealthStore();
     const [activeTab, setActiveTab] = useState('LEDGER');
@@ -1219,7 +1165,14 @@
                   resetSignal={assetResetKey}
                 />
               )}
-              {assetSubTab === 'WEALTH' && <InvestmentsTab state={state} />}
+              {assetSubTab === 'WEALTH' && (
+                <WealthView
+                  state={state}
+                  showToast={showToast}
+                  onFocusChange={handleAssetFocusChange}
+                  resetSignal={assetResetKey}
+                />
+              )}
             </div>
           )}
 
