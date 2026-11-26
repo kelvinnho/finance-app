@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 3 r1';
+  const APP_VERSION = 'Stage 3 r2';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -70,8 +70,7 @@
   const INVESTMENT_TYPES = [
     { id: 'FIXED_DEPOSIT', label: '定期存款', shortLabel: '定期', color: '#FBBF24', isTerm: true, theme: 'amber' },
     { id: 'TBILL', label: '美國國債 / 債券', shortLabel: '美債', color: '#38BDF8', isTerm: true, theme: 'sapphire' },
-    { id: 'ETF', label: '指數 ETF', shortLabel: 'ETF', color: '#34D399', isTerm: false, theme: 'emerald' },
-    { id: 'STOCK', label: '個股 / 基金', shortLabel: '股票', color: '#A78BFA', isTerm: false, theme: 'violet' }
+    { id: 'STOCK_ETF', label: '股票 / ETF', shortLabel: '股/ETF', color: '#34D399', isTerm: false, theme: 'emerald' }
   ];
 
   const CATEGORY_ICONS = [
@@ -437,6 +436,8 @@
           ticker: '',
           type: 'FIXED_DEPOSIT',
           status: 'ACTIVE',
+          entryMode: 'EXISTING',
+          fundingSource: null,
           currency: base,
           principal: 100000,
           currentValue: 100000,
@@ -450,15 +451,19 @@
           cumulativeDividends: 0,
           linkedAccountId: 'acc_bank_high',
           linkedBalanceId: 'bal_high_base',
+          dca: null,
+          dcaHistory: [],
           lastUpdated: today,
           note: '高息銀行 6 個月新資金定存'
         },
         {
           id: 'inv_2',
-          name: '標普 500 指數 ETF',
+          name: 'VANGUARD S&P 500 ETF',
           ticker: 'VOO',
-          type: 'ETF',
+          type: 'STOCK_ETF',
           status: 'ACTIVE',
+          entryMode: 'EXISTING',
+          fundingSource: null,
           currency: 'USD',
           principal: 15000,
           currentValue: 17420,
@@ -472,6 +477,8 @@
           cumulativeDividends: 185,
           linkedAccountId: 'acc_broker',
           linkedBalanceId: 'bal_brk_usd',
+          dca: { enabled: true, frequency: 'MONTHLY', dayOfMonth: 25, amount: 500, lastExecutedDate: '2026-10-25' },
+          dcaHistory: [],
           lastUpdated: today,
           note: '長期核心定投持倉'
         },
@@ -481,6 +488,8 @@
           ticker: 'T-Bill',
           type: 'TBILL',
           status: 'ACTIVE',
+          entryMode: 'EXISTING',
+          fundingSource: null,
           currency: 'USD',
           principal: 9790,
           currentValue: 9885,
@@ -494,6 +503,8 @@
           cumulativeDividends: 0,
           linkedAccountId: 'acc_broker',
           linkedBalanceId: 'bal_brk_usd',
+          dca: null,
+          dcaHistory: [],
           lastUpdated: today,
           note: '貼現買入 · 到期面值 US$ 10,000'
         }
@@ -861,6 +872,8 @@
           ticker: '',
           type: 'FIXED_DEPOSIT',
           status: 'ACTIVE',
+          entryMode: 'EXISTING',
+          fundingSource: null,
           currency: base,
           principal: 0,
           currentValue: 0,
@@ -874,9 +887,14 @@
           cumulativeDividends: 0,
           linkedAccountId: null,
           linkedBalanceId: null,
+          dca: null,
+          dcaHistory: [],
           lastUpdated: todayISO(),
           note: ''
         }, inv || {});
+        if (baseObj.type === 'ETF' || baseObj.type === 'STOCK') {
+          baseObj.type = 'STOCK_ETF';
+        }
         if (baseObj.id === 'inv_1' && baseObj.type === 'FIXED_DEPOSIT' && !baseObj.linkedAccountId && Array.isArray(raw.accounts) && raw.accounts.some((a) => a.id === 'acc_bank_high')) {
           baseObj.linkedAccountId = 'acc_bank_high';
           baseObj.linkedBalanceId = 'bal_high_base';
@@ -888,6 +906,7 @@
             baseObj.startDate = formatDateISO(md);
           }
         }
+        if (!Array.isArray(baseObj.dcaHistory)) baseObj.dcaHistory = [];
         return baseObj;
       }) : [],
       wealthSnapshots: Array.isArray(raw.wealthSnapshots) ? raw.wealthSnapshots : [],
@@ -1781,6 +1800,284 @@
     };
   }
 
+  function checkSufficientBalance(accountId, balanceId, requiredAmount, requiredCurrency, st) {
+    const s = st || state;
+    const acc = (s.accounts || []).find((a) => a.id === accountId);
+    if (!acc || !(acc.balances || []).length) {
+      return { ok: false, available: 0, required: round2(requiredAmount), shortfall: round2(requiredAmount), bankCurrency: requiredCurrency || s.meta.baseCurrency, accountLabel: '未指定帳戶' };
+    }
+    const bal = (balanceId ? acc.balances.find((b) => b.id === balanceId) : null)
+      || (requiredCurrency ? acc.balances.find((b) => b.currency === requiredCurrency) : null)
+      || acc.balances[0];
+    const reqInBankCur = convertBetweenCurrencies(Math.max(0, round2(requiredAmount || 0)), requiredCurrency || bal.currency, bal.currency, s);
+    const avail = round2(bal.amount || 0);
+    const shortfall = Math.max(0, round2(reqInBankCur - avail));
+    return {
+      ok: avail + 0.005 >= reqInBankCur,
+      available: avail,
+      required: reqInBankCur,
+      shortfall,
+      bankCurrency: bal.currency,
+      balanceId: bal.id,
+      accountLabel: acc.balances.length > 1 ? `${acc.name} (${bal.currency})` : acc.name
+    };
+  }
+
+  function getDcaStatus(inv) {
+    if (!inv || inv.type !== 'STOCK_ETF' || inv.status === 'CLOSED' || !inv.dca || !inv.dca.enabled || Number(inv.dca.amount || 0) <= 0) {
+      return { enabled: false, isDue: false, isSoon: false, nextDueDate: null, freqLabel: '' };
+    }
+    const dca = inv.dca;
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    const todayD = now.getDate();
+    const todayMid = new Date(y, m, todayD);
+    const curYM = `${y}-${String(m + 1).padStart(2, '0')}`;
+    const last = dca.lastExecutedDate || '';
+    const freq = dca.frequency || 'MONTHLY';
+
+    const parseISO = (iso) => {
+      if (!iso) return null;
+      const p = String(iso).split('-').map(Number);
+      return p.length === 3 && p[0] ? new Date(p[0], p[1] - 1, p[2]) : null;
+    };
+
+    let nextD;
+    let isDue = false;
+    let freqLabel = '';
+
+    if (freq === 'MONTHLY') {
+      const dom = Math.min(28, Math.max(1, Number(dca.dayOfMonth || 15)));
+      freqLabel = `每月 ${dom} 日`;
+      const doneThisMonth = last.startsWith(curYM);
+      if (doneThisMonth) {
+        nextD = new Date(y, m + 1, dom);
+        isDue = false;
+      } else {
+        nextD = new Date(y, m, dom);
+        isDue = todayD >= dom;
+      }
+    } else {
+      const stepDays = freq === 'WEEKLY' ? 7 : 14;
+      freqLabel = freq === 'WEEKLY' ? '每週' : '每兩週';
+      const lastD = parseISO(last);
+      if (!lastD) {
+        nextD = todayMid;
+        isDue = true;
+      } else {
+        nextD = new Date(lastD.getTime() + stepDays * 86400000);
+        isDue = todayMid.getTime() >= nextD.getTime();
+      }
+    }
+
+    const diffDays = Math.round((nextD.getTime() - todayMid.getTime()) / 86400000);
+    const isSoon = !isDue && diffDays >= 0 && diffDays <= 3;
+
+    return {
+      enabled: true,
+      isDue,
+      isSoon,
+      diffDays,
+      nextDueDate: formatDateISO(nextD),
+      freqLabel
+    };
+  }
+
+  function cleanNumeric(val) {
+    if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+    const str = String(val == null ? '' : val).replace(/[,$\sA-Za-z¥]/g, '');
+    const n = parseFloat(str);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function normalizeBrokerInvType(rawType) {
+    const t = String(rawType || '').toUpperCase().trim();
+    if (t === 'FIXED_DEPOSIT' || t === 'FD' || t === 'DEPOSIT') return 'FIXED_DEPOSIT';
+    if (t === 'TBILL' || t === 'T-BILL' || t === 'BOND' || t === 'TREASURY' || t === 'BILL') return 'TBILL';
+    return 'STOCK_ETF';
+  }
+
+  function parseBrokerSyncPayload(rawInput) {
+    let obj = rawInput;
+    if (typeof rawInput === 'string') {
+      let cleaned = rawInput.trim();
+      // Strip optional markdown code fences (```json ... ```)
+      const fence = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fence && fence[1]) cleaned = fence[1].trim();
+      obj = JSON.parse(cleaned);
+    }
+    if (!obj || typeof obj !== 'object') {
+      throw new Error('JSON 根結構必須為物件');
+    }
+
+    const rawPositions = Array.isArray(obj.positions) ? obj.positions : [];
+    const rawClosed = Array.isArray(obj.closedPositions) ? obj.closedPositions : [];
+    const rawCash = Array.isArray(obj.cashBalances) ? obj.cashBalances : [];
+
+    if (rawPositions.length === 0 && rawCash.length === 0 && rawClosed.length === 0) {
+      throw new Error('找不到 positions、cashBalances 或 closedPositions 欄位');
+    }
+
+    const positions = rawPositions.map((p) => {
+      const ticker = String(p.ticker || p.symbol || p.code || '').trim().toUpperCase();
+      const name = String(p.name || p.description || ticker || '未命名持倉').trim();
+      const shares = round2(cleanNumeric(p.shares != null ? p.shares : (p.quantity != null ? p.quantity : p.qty)));
+      const costBasis = Math.max(0, round2(cleanNumeric(p.costBasis != null ? p.costBasis : (p.principal != null ? p.principal : p.cost))));
+      const marketValue = Math.max(0, round2(cleanNumeric(p.marketValue != null ? p.marketValue : (p.currentValue != null ? p.currentValue : p.value))));
+      const closePrice = cleanNumeric(p.closePrice != null ? p.closePrice : p.price);
+      return {
+        ticker,
+        name,
+        type: normalizeBrokerInvType(p.type),
+        currency: String(p.currency || 'USD').trim().toUpperCase(),
+        shares: shares > 0 ? shares : null,
+        costBasis,
+        marketValue,
+        closePrice: closePrice > 0 ? round2(closePrice) : null,
+        maturityDate: p.maturityDate || null,
+        faceValue: p.faceValue ? round2(cleanNumeric(p.faceValue)) : null
+      };
+    }).filter((p) => p.ticker || p.name);
+
+    const closedPositions = rawClosed.map((c) => ({
+      ticker: String(c.ticker || c.symbol || c.code || '').trim().toUpperCase(),
+      name: String(c.name || c.ticker || '已平倉標的').trim(),
+      currency: String(c.currency || 'USD').trim().toUpperCase(),
+      realizedPnl: round2(cleanNumeric(c.realizedPnl)),
+      closedDate: c.closedDate || obj.statementDate || obj.periodEnd || todayISO()
+    })).filter((c) => c.ticker || c.name);
+
+    const cashBalances = rawCash.map((cb) => ({
+      currency: String(cb.currency || '').trim().toUpperCase(),
+      amount: round2(cleanNumeric(cb.amount))
+    })).filter((cb) => cb.currency);
+
+    const statementDate = obj.statementDate || obj.periodEnd || todayISO();
+    const broker = String(obj.broker || '券商結單').trim();
+    const accountRef = String(obj.accountRef || obj.account || '').trim();
+    const label = String(obj.label || `${broker}${accountRef ? ' ' + accountRef : ''} (${statementDate})`).trim();
+
+    return {
+      schema: obj.schema || 'wealth-broker-sync-v1',
+      broker,
+      accountRef,
+      baseCurrency: String(obj.baseCurrency || state.meta.baseCurrency).toUpperCase(),
+      statementDate,
+      periodStart: obj.periodStart || null,
+      periodEnd: obj.periodEnd || statementDate,
+      label,
+      fxRatesToBase: obj.fxRatesToBase || null,
+      cashBalances,
+      positions,
+      closedPositions,
+      periodSummary: obj.periodSummary || null
+    };
+  }
+
+  function findMatchingInvestment(list, ticker, name) {
+    const tk = String(ticker || '').trim().toUpperCase();
+    const nm = String(name || '').trim().toUpperCase();
+    if (tk) {
+      const byTk = list.find((x) => x.status !== 'CLOSED' && String(x.ticker || '').trim().toUpperCase() === tk);
+      if (byTk) return byTk;
+    }
+    if (nm) {
+      const byNm = list.find((x) => x.status !== 'CLOSED' && String(x.name || '').trim().toUpperCase() === nm);
+      if (byNm) return byNm;
+    }
+    return null;
+  }
+
+  function previewBrokerSync(parsed, brokerAccountId, st) {
+    const s = st || state;
+    const invs = s.investments || [];
+    const positionDiffs = [];
+    const matchedIds = new Set();
+
+    (parsed.positions || []).forEach((p) => {
+      const existing = findMatchingInvestment(invs, p.ticker, p.name);
+      if (existing) {
+        matchedIds.add(existing.id);
+        positionDiffs.push({
+          action: 'UPDATE',
+          existingId: existing.id,
+          ticker: p.ticker || existing.ticker,
+          name: existing.name || p.name,
+          currency: p.currency,
+          before: {
+            shares: existing.shares,
+            costBasis: round2(existing.principal || 0),
+            marketValue: round2(existing.currentValue != null ? existing.currentValue : (existing.principal || 0))
+          },
+          after: {
+            shares: p.shares,
+            costBasis: p.costBasis,
+            marketValue: p.marketValue
+          }
+        });
+      } else {
+        positionDiffs.push({
+          action: 'CREATE',
+          existingId: null,
+          ticker: p.ticker,
+          name: p.name,
+          currency: p.currency,
+          before: null,
+          after: {
+            shares: p.shares,
+            costBasis: p.costBasis,
+            marketValue: p.marketValue
+          }
+        });
+      }
+    });
+
+    (parsed.closedPositions || []).forEach((cp) => {
+      const existing = findMatchingInvestment(invs, cp.ticker, cp.name);
+      if (existing) {
+        matchedIds.add(existing.id);
+        positionDiffs.push({
+          action: 'CLOSE',
+          existingId: existing.id,
+          ticker: cp.ticker || existing.ticker,
+          name: existing.name || cp.name,
+          currency: cp.currency,
+          realizedPnl: cp.realizedPnl,
+          before: {
+            shares: existing.shares,
+            costBasis: round2(existing.principal || 0),
+            marketValue: round2(existing.currentValue || 0)
+          },
+          after: { shares: 0, costBasis: 0, marketValue: 0 }
+        });
+      }
+    });
+
+    const cashDiffs = [];
+    const brokerAcc = brokerAccountId ? (s.accounts || []).find((a) => a.id === brokerAccountId) : null;
+    (parsed.cashBalances || []).forEach((cb) => {
+      const existingBal = brokerAcc ? (brokerAcc.balances || []).find((b) => b.currency === cb.currency) : null;
+      cashDiffs.push({
+        currency: cb.currency,
+        action: existingBal ? 'UPDATE' : 'CREATE_CUR',
+        beforeAmount: existingBal ? round2(existingBal.amount || 0) : null,
+        afterAmount: cb.amount
+      });
+    });
+
+    return {
+      brokerAccountName: brokerAcc ? brokerAcc.name : null,
+      positionDiffs,
+      cashDiffs,
+      counts: {
+        create: positionDiffs.filter((d) => d.action === 'CREATE').length,
+        update: positionDiffs.filter((d) => d.action === 'UPDATE').length,
+        close: positionDiffs.filter((d) => d.action === 'CLOSE').length
+      }
+    };
+  }
+
   function checkAccountDeductions(events, st) {
     // Virtual allocations do NOT block or trigger warnings; warn ONLY when real balance would go negative (OVERDRAFT)
     const s = st || state;
@@ -1869,6 +2166,10 @@
     getDefaultExpenseSourceKey,
     getAccountLinkedDeposits,
     getInvestmentMetrics,
+    checkSufficientBalance,
+    getDcaStatus,
+    parseBrokerSyncPayload,
+    previewBrokerSync,
     checkAccountDeductions,
     getCreditCardCycle,
     getAutoCardBillingBucket,
@@ -2871,16 +3172,46 @@
       return count;
     },
 
-    // ---- Fixed Deposits & Investments Lifecycle (Module 4) ----
+    // ---- Fixed Deposits & Investments Lifecycle (Module 4 · Plan A Pure Ledger) ----
     addInvestment(payload, opts) {
       const draft = cloneState();
       const options = opts || {};
       const today = todayISO();
-      const type = payload.type || 'FIXED_DEPOSIT';
+      const type = normalizeBrokerInvType(payload.type || 'FIXED_DEPOSIT');
       const principal = Math.max(0, round2(payload.principal || 0));
       const initVal = type === 'FIXED_DEPOSIT'
         ? principal
         : Math.max(0, round2(payload.currentValue != null ? payload.currentValue : principal));
+
+      let fundingSource = null;
+      let resolvedLinkedAccId = payload.linkedAccountId || null;
+      let resolvedLinkedBalId = payload.linkedBalanceId || null;
+
+      // Plan A: When opening NEW from a bank/broker account, adjust bank balance directly
+      // WITHOUT cluttering daily ledger transactions. Store fundingSource for safe refund on delete.
+      if (options.deductFromBank && principal > 0 && (options.fromAccountId || resolvedLinkedAccId)) {
+        const fromAccId = options.fromAccountId || resolvedLinkedAccId;
+        const fromBalId = options.fromBalanceId || resolvedLinkedBalId;
+        const fromAcc = draft.accounts.find((a) => a.id === fromAccId);
+        if (fromAcc && (fromAcc.balances || []).length) {
+          const fromBal = (fromBalId ? fromAcc.balances.find((b) => b.id === fromBalId) : null)
+            || fromAcc.balances.find((b) => b.currency === (payload.currency || draft.meta.baseCurrency))
+            || fromAcc.balances[0];
+          if (fromBal) {
+            const deductAmt = convertBetweenCurrencies(principal, payload.currency || draft.meta.baseCurrency, fromBal.currency, draft);
+            adjustAccountOrCard(draft, 'ACCOUNT', fromAcc.id, fromBal.id, -deductAmt);
+            resolvedLinkedAccId = fromAcc.id;
+            resolvedLinkedBalId = fromBal.id;
+            fundingSource = {
+              deductedFromBank: true,
+              accountId: fromAcc.id,
+              balanceId: fromBal.id,
+              deductedAmount: deductAmt,
+              deductedCurrency: fromBal.currency
+            };
+          }
+        }
+      }
 
       const inv = {
         id: uid('inv'),
@@ -2888,6 +3219,8 @@
         ticker: (payload.ticker || '').trim().toUpperCase(),
         type,
         status: 'ACTIVE',
+        entryMode: options.deductFromBank ? 'NEW_OPEN' : 'EXISTING',
+        fundingSource,
         currency: payload.currency || draft.meta.baseCurrency,
         principal,
         currentValue: initVal,
@@ -2899,52 +3232,15 @@
         closedDate: null,
         realizedPnl: 0,
         cumulativeDividends: 0,
-        linkedAccountId: payload.linkedAccountId || null,
-        linkedBalanceId: payload.linkedBalanceId || null,
+        linkedAccountId: resolvedLinkedAccId,
+        linkedBalanceId: resolvedLinkedBalId,
+        dca: payload.dca || null,
+        dcaHistory: [],
         lastUpdated: today,
         note: (payload.note || '').trim()
       };
 
       draft.investments.unshift(inv);
-
-      // Optional accounting closure: deduct opening capital from bank/broker account
-      if (options.deductFromBank && principal > 0 && (options.fromAccountId || inv.linkedAccountId)) {
-        const fromAccId = options.fromAccountId || inv.linkedAccountId;
-        const fromBalId = options.fromBalanceId || inv.linkedBalanceId;
-        const fromAcc = draft.accounts.find((a) => a.id === fromAccId);
-        if (fromAcc && (fromAcc.balances || []).length) {
-          const fromBal = (fromBalId ? fromAcc.balances.find((b) => b.id === fromBalId) : null)
-            || fromAcc.balances.find((b) => b.currency === inv.currency)
-            || fromAcc.balances[0];
-          if (fromBal) {
-            const deductAmt = convertBetweenCurrencies(principal, inv.currency, fromBal.currency, draft);
-            const tx = {
-              id: uid('tx_inv'),
-              type: 'INVEST_FLOW',
-              flowDirection: 'OUT',
-              linkedInvestmentId: inv.id,
-              title: (type === 'FIXED_DEPOSIT' ? '開立定期：' : '投資買入：') + inv.name,
-              amount: principal,
-              currency: inv.currency,
-              settledAmount: deductAmt,
-              settledCurrency: fromBal.currency,
-              accountKind: 'ACCOUNT',
-              accountId: fromAcc.id,
-              balanceId: fromBal.id,
-              categoryId: null,
-              subCategoryId: null,
-              subCategoryName: '',
-              poolId: 'pool_invest',
-              date: inv.startDate || today,
-              time: nowTimeHM(),
-              note: `由 ${fromAcc.name} 劃撥資金（資產內部調撥，不計入純支出）`
-            };
-            applyTransactionEffect(draft, tx, 1);
-            draft.transactions.unshift(tx);
-          }
-        }
-      }
-
       state = draft;
       notify();
       return inv;
@@ -2956,7 +3252,7 @@
       if (!inv) return null;
       if (patch.name != null) inv.name = String(patch.name).trim() || inv.name;
       if (patch.ticker != null) inv.ticker = String(patch.ticker).trim().toUpperCase();
-      if (patch.type != null) inv.type = patch.type;
+      if (patch.type != null) inv.type = normalizeBrokerInvType(patch.type);
       if (patch.currency != null) inv.currency = patch.currency;
       if (patch.principal != null && Number.isFinite(Number(patch.principal))) {
         inv.principal = Math.max(0, round2(patch.principal));
@@ -2972,6 +3268,7 @@
       if ('maturityDate' in patch) inv.maturityDate = patch.maturityDate || null;
       if ('linkedAccountId' in patch) inv.linkedAccountId = patch.linkedAccountId || null;
       if ('linkedBalanceId' in patch) inv.linkedBalanceId = patch.linkedBalanceId || null;
+      if ('dca' in patch) inv.dca = patch.dca || null;
       if (patch.note != null) inv.note = String(patch.note).trim();
       if (patch.status != null) inv.status = patch.status;
       inv.lastUpdated = todayISO();
@@ -2980,11 +3277,61 @@
       return inv;
     },
 
-    deleteInvestment(invId) {
+    deleteInvestment(invId, opts) {
       const draft = cloneState();
+      const options = opts || {};
+      const inv = draft.investments.find((x) => x.id === invId);
+      if (!inv) return { refunded: false, refundAmount: 0, currency: draft.meta.baseCurrency };
+
+      let refunded = false;
+      let refundAmount = 0;
+      let refundCur = inv.currency || draft.meta.baseCurrency;
+
+      if (options.refundToBank && inv.status !== 'CLOSED') {
+        // First check if there were any legacy Stage 3 r1 INVEST_FLOW txs tied to this investment
+        const legacyOutTxs = draft.transactions.filter(
+          (t) => t.type === 'INVEST_FLOW' && t.flowDirection === 'OUT' && t.linkedInvestmentId === inv.id
+        );
+
+        if (inv.fundingSource && inv.fundingSource.deductedFromBank && !options.toAccountId) {
+          const fs = inv.fundingSource;
+          adjustAccountOrCard(draft, 'ACCOUNT', fs.accountId, fs.balanceId, fs.deductedAmount);
+          refunded = true;
+          refundAmount = fs.deductedAmount;
+          refundCur = fs.deductedCurrency;
+        } else if (legacyOutTxs.length > 0 && !options.toAccountId) {
+          legacyOutTxs.forEach((lt) => {
+            applyTransactionEffect(draft, lt, -1);
+            refundAmount = round2(refundAmount + (lt.settledAmount || lt.amount || 0));
+            refundCur = lt.settledCurrency || lt.currency;
+          });
+          draft.transactions = draft.transactions.filter(
+            (t) => !(t.type === 'INVEST_FLOW' && t.flowDirection === 'OUT' && t.linkedInvestmentId === inv.id)
+          );
+          refunded = true;
+        } else {
+          const targetAccId = options.toAccountId || inv.linkedAccountId;
+          const targetBalId = options.toBalanceId || inv.linkedBalanceId;
+          const acc = targetAccId ? draft.accounts.find((a) => a.id === targetAccId) : null;
+          if (acc && (acc.balances || []).length && inv.principal > 0) {
+            const bal = (targetBalId ? acc.balances.find((b) => b.id === targetBalId) : null)
+              || acc.balances.find((b) => b.currency === inv.currency)
+              || acc.balances[0];
+            if (bal) {
+              const creditAmt = convertBetweenCurrencies(inv.principal, inv.currency, bal.currency, draft);
+              adjustAccountOrCard(draft, 'ACCOUNT', acc.id, bal.id, creditAmt);
+              refunded = true;
+              refundAmount = creditAmt;
+              refundCur = bal.currency;
+            }
+          }
+        }
+      }
+
       draft.investments = draft.investments.filter((x) => x.id !== invId);
       state = draft;
       notify();
+      return { refunded, refundAmount, currency: refundCur };
     },
 
     topUpInvestment(invId, payload) {
@@ -3001,6 +3348,7 @@
       }
       inv.lastUpdated = todayISO();
 
+      // Plan A: Deduct from bank/broker cash directly without polluting daily ledger
       if (payload.deductFromBank && (payload.fromAccountId || inv.linkedAccountId)) {
         const fromAccId = payload.fromAccountId || inv.linkedAccountId;
         const fromBalId = payload.fromBalanceId || inv.linkedBalanceId;
@@ -3011,29 +3359,58 @@
             || fromAcc.balances[0];
           if (fromBal) {
             const deductAmt = convertBetweenCurrencies(addAmt, inv.currency, fromBal.currency, draft);
-            const tx = {
-              id: uid('tx_inv'),
-              type: 'INVEST_FLOW',
-              flowDirection: 'OUT',
-              linkedInvestmentId: inv.id,
-              title: `追加買入：${inv.name}`,
-              amount: addAmt,
-              currency: inv.currency,
-              settledAmount: deductAmt,
-              settledCurrency: fromBal.currency,
-              accountKind: 'ACCOUNT',
-              accountId: fromAcc.id,
-              balanceId: fromBal.id,
-              categoryId: null,
-              subCategoryId: null,
-              subCategoryName: '',
-              poolId: 'pool_invest',
-              date: todayISO(),
-              time: nowTimeHM(),
-              note: payload.note || `由 ${fromAcc.name} 加倉投入`
-            };
-            applyTransactionEffect(draft, tx, 1);
-            draft.transactions.unshift(tx);
+            adjustAccountOrCard(draft, 'ACCOUNT', fromAcc.id, fromBal.id, -deductAmt);
+            if (inv.fundingSource && inv.fundingSource.accountId === fromAcc.id && inv.fundingSource.balanceId === fromBal.id) {
+              inv.fundingSource.deductedAmount = round2((inv.fundingSource.deductedAmount || 0) + deductAmt);
+            }
+          }
+        }
+      }
+
+      state = draft;
+      notify();
+      return inv;
+    },
+
+    executeDcaInstallment(invId, payload) {
+      const draft = cloneState();
+      const inv = draft.investments.find((x) => x.id === invId);
+      if (!inv) return null;
+      const amt = Math.max(0, round2(payload.amount || (inv.dca && inv.dca.amount) || 0));
+      if (amt <= 0) return null;
+      const execDate = payload.date || todayISO();
+      const addShares = payload.shares != null && Number(payload.shares) > 0 ? round2(payload.shares) : 0;
+
+      inv.principal = round2((inv.principal || 0) + amt);
+      inv.currentValue = round2((inv.currentValue != null ? inv.currentValue : inv.principal) + amt);
+      if (addShares > 0) {
+        inv.shares = round2((inv.shares || 0) + addShares);
+      }
+      inv.dca = Object.assign({ enabled: true, frequency: 'MONTHLY', dayOfMonth: 15, amount: amt }, inv.dca || {}, {
+        lastExecutedDate: execDate
+      });
+      inv.dcaHistory = Array.isArray(inv.dcaHistory) ? inv.dcaHistory : [];
+      inv.dcaHistory.unshift({
+        id: uid('dca'),
+        date: execDate,
+        amount: amt,
+        shares: addShares > 0 ? addShares : null,
+        note: (payload.note || '').trim()
+      });
+      inv.lastUpdated = execDate;
+
+      // Plan A: Deduct broker cash directly (no daily expense clutter)
+      if (payload.deductFromBank !== false && (payload.fromAccountId || inv.linkedAccountId)) {
+        const fromAccId = payload.fromAccountId || inv.linkedAccountId;
+        const fromBalId = payload.fromBalanceId || inv.linkedBalanceId;
+        const fromAcc = draft.accounts.find((a) => a.id === fromAccId);
+        if (fromAcc && (fromAcc.balances || []).length) {
+          const fromBal = (fromBalId ? fromAcc.balances.find((b) => b.id === fromBalId) : null)
+            || fromAcc.balances.find((b) => b.currency === inv.currency)
+            || fromAcc.balances[0];
+          if (fromBal) {
+            const deductAmt = convertBetweenCurrencies(amt, inv.currency, fromBal.currency, draft);
+            adjustAccountOrCard(draft, 'ACCOUNT', fromAcc.id, fromBal.id, -deductAmt);
           }
         }
       }
@@ -3094,7 +3471,7 @@
           draft.transactions.unshift(tx);
         }
       } else {
-        // SELL / Partial or Full Redemption
+        // Plan A: SELL / Redemption credits broker/bank cash directly without polluting daily ledger
         const isFull = Boolean(payload.fullClose);
         const costReduce = isFull
           ? round2(inv.principal || 0)
@@ -3129,29 +3506,7 @@
         const dest = payload.creditToBank !== false ? resolveDest() : null;
         if (dest) {
           const creditAmt = convertBetweenCurrencies(amt, inv.currency, dest.bal.currency, draft);
-          const tx = {
-            id: uid('tx_inv'),
-            type: 'INVEST_FLOW',
-            flowDirection: 'IN',
-            linkedInvestmentId: inv.id,
-            title: `${isFull ? '全額賣出' : '部分贖回'}：${inv.name}`,
-            amount: amt,
-            currency: inv.currency,
-            settledAmount: creditAmt,
-            settledCurrency: dest.bal.currency,
-            accountKind: 'ACCOUNT',
-            accountId: dest.acc.id,
-            balanceId: dest.bal.id,
-            categoryId: null,
-            subCategoryId: null,
-            subCategoryName: '',
-            poolId: 'pool_invest',
-            date: today,
-            time,
-            note: payload.note || `回款至 ${dest.acc.name}（實現損益 ${formatMoney(realizedGain, inv.currency, { showPlus: true, privacy: false })}）`
-          };
-          applyTransactionEffect(draft, tx, 1);
-          draft.transactions.unshift(tx);
+          adjustAccountOrCard(draft, 'ACCOUNT', dest.acc.id, dest.bal.id, creditAmt);
         }
       }
 
@@ -3161,7 +3516,8 @@
     },
 
     settleTermInvestment(invId, payload) {
-      // payload.mode: 'CASH_OUT' | 'ROLLOVER_PRINCIPAL' | 'ROLLOVER_ALL'
+      // Plan A: Principal moves directly back to bank balance (NO principal ledger tx);
+      // ONLY true interest income (>0) is written to daily ledger!
       const draft = cloneState();
       const inv = draft.investments.find((x) => x.id === invId);
       if (!inv) return null;
@@ -3194,33 +3550,13 @@
 
         const dest = resolveDest();
         if (dest) {
+          // 1. Principal returns directly to bank balance (Plan A: no ledger noise)
           if (principal > 0) {
             const pCredit = convertBetweenCurrencies(principal, inv.currency, dest.bal.currency, draft);
-            const pTx = {
-              id: uid('tx_inv'),
-              type: 'INVEST_FLOW',
-              flowDirection: 'IN',
-              linkedInvestmentId: inv.id,
-              title: `${isTBill ? '美債到期本金' : '定存到期本金'}：${inv.name}`,
-              amount: principal,
-              currency: inv.currency,
-              settledAmount: pCredit,
-              settledCurrency: dest.bal.currency,
-              accountKind: 'ACCOUNT',
-              accountId: dest.acc.id,
-              balanceId: dest.bal.id,
-              categoryId: null,
-              subCategoryId: null,
-              subCategoryName: '',
-              poolId: 'pool_reserve',
-              date: today,
-              time,
-              note: `本金回籠至 ${dest.acc.name}`
-            };
-            applyTransactionEffect(draft, pTx, 1);
-            draft.transactions.unshift(pTx);
+            adjustAccountOrCard(draft, 'ACCOUNT', dest.acc.id, dest.bal.id, pCredit);
           }
 
+          // 2. Only actual interest is recorded as INCOME in daily ledger
           if (actualInterest > 0) {
             const iCredit = convertBetweenCurrencies(actualInterest, inv.currency, dest.bal.currency, draft);
             const iTx = {
@@ -3240,7 +3576,7 @@
               poolId: 'pool_reserve',
               date: today,
               time,
-              note: `${inv.name} 到期實收利息`
+              note: `${inv.name} 到期實收利息（本金 ${formatMoney(principal, inv.currency, { privacy: false })} 已同步退回活期）`
             };
             applyTransactionEffect(draft, iTx, 1);
             draft.transactions.unshift(iTx);
@@ -3297,23 +3633,112 @@
       return inv;
     },
 
-    recordWealthSnapshot(payload) {
+    applyBrokerSync(parsed, options) {
+      const opts = options || {};
       const draft = cloneState();
-      const snapDate = (payload && payload.date) || todayISO();
-      const updates = Array.isArray(payload && payload.updates) ? payload.updates : [];
+      const brokerAccId = opts.brokerAccountId || null;
+      const syncPositions = opts.syncPositions !== false;
+      const syncCash = opts.syncCash !== false;
+      const syncDate = parsed.statementDate || todayISO();
 
-      updates.forEach((u) => {
-        const inv = draft.investments.find((x) => x.id === u.id);
-        if (!inv || inv.status === 'CLOSED') return;
-        if (u.currentValue != null && Number.isFinite(Number(u.currentValue))) {
-          inv.currentValue = Math.max(0, round2(u.currentValue));
-        }
-        if (u.shares != null && Number.isFinite(Number(u.shares))) {
-          inv.shares = Number(u.shares) > 0 ? round2(u.shares) : inv.shares;
-        }
-        inv.lastUpdated = snapDate;
-      });
+      const brokerAcc = brokerAccId ? draft.accounts.find((a) => a.id === brokerAccId) : null;
+      const resolveBrokerBalId = (cur) => {
+        if (!brokerAcc) return null;
+        const found = (brokerAcc.balances || []).find((b) => b.currency === cur);
+        return found ? found.id : ((brokerAcc.balances || [])[0] ? brokerAcc.balances[0].id : null);
+      };
 
+      // 1. Sync multi-currency cash balances on the selected broker account
+      let cashUpdated = 0;
+      if (syncCash && brokerAcc && Array.isArray(parsed.cashBalances)) {
+        parsed.cashBalances.forEach((cb) => {
+          let bal = (brokerAcc.balances || []).find((b) => b.currency === cb.currency);
+          if (bal) {
+            bal.amount = round2(cb.amount);
+          } else {
+            brokerAcc.balances.push({
+              id: uid('bal'),
+              currency: cb.currency,
+              amount: round2(cb.amount),
+              poolId: 'pool_invest',
+              isDefaultPayment: false
+            });
+          }
+          cashUpdated++;
+        });
+      }
+
+      // 2. Sync open & closed positions
+      let createdCnt = 0;
+      let updatedCnt = 0;
+      let closedCnt = 0;
+
+      if (syncPositions) {
+        (parsed.positions || []).forEach((p) => {
+          const existing = findMatchingInvestment(draft.investments, p.ticker, p.name);
+          const balId = resolveBrokerBalId(p.currency);
+          if (existing) {
+            existing.type = p.type;
+            existing.ticker = p.ticker || existing.ticker;
+            existing.currency = p.currency;
+            existing.shares = p.shares;
+            existing.principal = p.costBasis;
+            existing.currentValue = p.marketValue;
+            if (p.maturityDate) existing.maturityDate = p.maturityDate;
+            if (p.faceValue) existing.faceValue = p.faceValue;
+            if (brokerAccId) {
+              existing.linkedAccountId = brokerAccId;
+              existing.linkedBalanceId = balId;
+            }
+            existing.lastUpdated = syncDate;
+            updatedCnt++;
+          } else {
+            draft.investments.unshift({
+              id: uid('inv'),
+              name: p.name,
+              ticker: p.ticker,
+              type: p.type,
+              status: 'ACTIVE',
+              entryMode: 'EXISTING',
+              fundingSource: null,
+              currency: p.currency,
+              principal: p.costBasis,
+              currentValue: p.marketValue,
+              shares: p.shares,
+              apr: null,
+              faceValue: p.faceValue || null,
+              startDate: parsed.periodStart || syncDate,
+              maturityDate: p.maturityDate || null,
+              closedDate: null,
+              realizedPnl: 0,
+              cumulativeDividends: 0,
+              linkedAccountId: brokerAccId,
+              linkedBalanceId: balId,
+              dca: null,
+              dcaHistory: [],
+              lastUpdated: syncDate,
+              note: `由 ${parsed.broker} 結單匯入`
+            });
+            createdCnt++;
+          }
+        });
+
+        (parsed.closedPositions || []).forEach((cp) => {
+          const existing = findMatchingInvestment(draft.investments, cp.ticker, cp.name);
+          if (existing) {
+            existing.status = 'CLOSED';
+            existing.shares = 0;
+            existing.principal = 0;
+            existing.currentValue = 0;
+            existing.closedDate = cp.closedDate || syncDate;
+            existing.realizedPnl = round2((existing.realizedPnl || 0) + (cp.realizedPnl || 0));
+            existing.lastUpdated = syncDate;
+            closedCnt++;
+          }
+        });
+      }
+
+      // 3. Archive statement snapshot into wealthSnapshots
       const activeInvs = draft.investments.filter((x) => x.status !== 'CLOSED');
       let totalPrincipalBase = 0;
       let totalValueBase = 0;
@@ -3330,6 +3755,7 @@
           ticker: inv.ticker || '',
           type: inv.type,
           currency: inv.currency,
+          shares: inv.shares,
           principal: pri,
           currentValue: val
         };
@@ -3337,13 +3763,20 @@
 
       const snap = {
         id: uid('snap'),
-        label: (payload && payload.label ? String(payload.label).trim() : '') || `${snapDate.slice(0, 7)} 估值快照`,
-        date: snapDate,
+        source: 'BROKER_SYNC',
+        broker: parsed.broker,
+        accountRef: parsed.accountRef,
+        label: parsed.label,
+        date: syncDate,
+        periodStart: parsed.periodStart,
+        periodEnd: parsed.periodEnd,
         baseCurrency: draft.meta.baseCurrency,
         totalPrincipalBase,
         totalValueBase,
         totalPnlBase: round2(totalValueBase - totalPrincipalBase),
-        note: (payload && payload.note ? String(payload.note).trim() : ''),
+        cashBalances: parsed.cashBalances || [],
+        periodSummary: parsed.periodSummary || null,
+        note: `同步：新增 ${createdCnt}、更新 ${updatedCnt}、清倉 ${closedCnt}，現金更新 ${cashUpdated} 幣種`,
         items: snapItems
       };
 
@@ -3351,7 +3784,7 @@
       draft.wealthSnapshots.unshift(snap);
       state = draft;
       notify();
-      return snap;
+      return { snap, createdCnt, updatedCnt, closedCnt, cashUpdated };
     },
 
     deleteWealthSnapshot(snapId) {
