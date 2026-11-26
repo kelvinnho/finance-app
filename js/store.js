@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 2 r6';
+  const APP_VERSION = 'Stage 2 r7';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -324,7 +324,7 @@
             { id: 'bal_main_hkd', currency: base === 'HKD' ? 'USD' : 'HKD', amount: 12000, poolId: 'pool_reserve', isDefaultPayment: false }
           ],
           allocations: [
-            { id: 'alloc_1', currency: base, name: '應急底倉', amount: 20000, locked: true, poolId: 'pool_reserve' }
+            { id: 'alloc_1', currency: base, name: '應急底倉', amount: 20000, locked: false, poolId: 'pool_reserve' }
           ]
         },
         {
@@ -348,7 +348,7 @@
             { id: 'bal_high_base', currency: base, amount: 245000, poolId: 'pool_reserve', isDefaultPayment: false }
           ],
           allocations: [
-            { id: 'alloc_3', currency: base, name: '核心凍結底倉', amount: 200000, locked: true, poolId: 'pool_reserve' },
+            { id: 'alloc_3', currency: base, name: '核心凍結底倉', amount: 200000, locked: false, poolId: 'pool_reserve' },
             { id: 'alloc_2', currency: base, name: '年度旅行基金', amount: 18000, locked: false, poolId: 'pool_goal' }
           ]
         },
@@ -969,25 +969,57 @@
     return bal && acc.balances.length > 1 ? `${acc.name} (${bal.currency})` : acc.name;
   }
 
+  function getAccountOverflowInfo(acc, st) {
+    if (!acc) return { hasOverflow: false, currencies: [], primaryOverflow: null };
+    const allocByCur = {};
+    (acc.allocations || []).forEach((al) => {
+      allocByCur[al.currency] = round2((allocByCur[al.currency] || 0) + Math.max(0, Number(al.amount || 0)));
+    });
+    const currencies = [];
+    (acc.balances || []).forEach((bal) => {
+      const total = round2(bal.amount || 0);
+      const allocated = round2(allocByCur[bal.currency] || 0);
+      if (allocated > Math.max(0, total) + 0.01) {
+        currencies.push({
+          balanceId: bal.id,
+          currency: bal.currency,
+          total,
+          allocated,
+          deficit: round2(allocated - Math.max(0, total))
+        });
+      }
+    });
+    return {
+      hasOverflow: currencies.length > 0,
+      currencies,
+      primaryOverflow: currencies[0] || null
+    };
+  }
+
   function getSummaryMetrics(st) {
     const s = st || state;
-    let liquidCash = 0;
-    let lockedWallet = 0;
+    let walletTotal = 0;
+    let freeWallet = 0;
+    let allocatedWallet = 0;
+    let overflowAccountCount = 0;
 
     s.accounts.forEach((acc) => {
-      const lockedByCur = {};
+      const allocByCur = {};
       (acc.allocations || []).forEach((al) => {
-        if (al.locked) {
-          lockedByCur[al.currency] = round2((lockedByCur[al.currency] || 0) + Number(al.amount || 0));
-        }
+        allocByCur[al.currency] = round2((allocByCur[al.currency] || 0) + Math.max(0, Number(al.amount || 0)));
       });
+      let accHasOverflow = false;
       (acc.balances || []).forEach((bal) => {
-        const totalCur = Number(bal.amount || 0);
-        const lockedCur = Math.min(Math.max(0, totalCur), lockedByCur[bal.currency] || 0);
-        const freeCur = totalCur - lockedCur;
-        liquidCash += convertToBase(freeCur, bal.currency, s);
-        lockedWallet += convertToBase(lockedCur, bal.currency, s);
+        const totalCur = round2(bal.amount || 0);
+        const allocCur = round2(allocByCur[bal.currency] || 0);
+        if (allocCur > Math.max(0, totalCur) + 0.01) accHasOverflow = true;
+        const effectiveAllocCur = Math.min(Math.max(0, totalCur), allocCur);
+        const freeCur = totalCur > 0 ? round2(totalCur - effectiveAllocCur) : 0;
+        walletTotal += convertToBase(totalCur, bal.currency, s);
+        allocatedWallet += convertToBase(effectiveAllocCur, bal.currency, s);
+        freeWallet += convertToBase(freeCur, bal.currency, s);
       });
+      if (accHasOverflow) overflowAccountCount += 1;
     });
 
     let investmentsTotal = 0;
@@ -1010,14 +1042,19 @@
       }
     });
 
-    const lockedAndInvestments = round2(lockedWallet + investmentsTotal);
-    const totalNetWorth = round2(liquidCash + lockedAndInvestments + pendingReceivables - pendingPayables - cardDebt);
+    const walletTotalR = round2(walletTotal);
+    const investmentsTotalR = round2(investmentsTotal);
+    const totalNetWorth = round2(walletTotalR + investmentsTotalR + pendingReceivables - pendingPayables - cardDebt);
 
     return {
-      liquidCash: round2(liquidCash),
-      lockedWallet: round2(lockedWallet),
-      investmentsTotal: round2(investmentsTotal),
-      lockedAndInvestments,
+      walletTotal: walletTotalR,
+      freeWallet: round2(freeWallet),
+      allocatedWallet: round2(allocatedWallet),
+      overflowAccountCount,
+      liquidCash: walletTotalR,
+      lockedWallet: 0,
+      investmentsTotal: investmentsTotalR,
+      lockedAndInvestments: investmentsTotalR,
       cardDebt: round2(cardDebt),
       pendingReceivables: round2(pendingReceivables),
       pendingPayables: round2(pendingPayables),
@@ -1546,8 +1583,7 @@
   }
 
   function checkAccountDeductions(events, st) {
-    // events: [{ accountId, balanceId, delta }]
-    // Negative delta = outflow/deduction, positive delta = inflow (e.g. inbound reimbursement before main pay)
+    // Virtual allocations do NOT block or trigger warnings; warn ONLY when real balance would go negative (OVERDRAFT)
     const s = st || state;
     if (!Array.isArray(events) || !events.length) {
       return { hasRisk: false, highestSeverity: 'OK', warnings: [] };
@@ -1567,11 +1603,6 @@
 
       const key = `${acc.id}::${bal.id}`;
       if (!simMap.has(key)) {
-        const lockedTotal = round2(
-          (acc.allocations || [])
-            .filter((al) => al.currency === bal.currency && al.locked)
-            .reduce((sum, al) => sum + Number(al.amount || 0), 0)
-        );
         const curBal = round2(bal.amount || 0);
         simMap.set(key, {
           key,
@@ -1581,8 +1612,7 @@
           currency: bal.currency,
           initialBalance: curBal,
           runningBalance: curBal,
-          totalOutflow: 0,
-          lockedTotal
+          totalOutflow: 0
         });
         touchedOrder.push(key);
       }
@@ -1597,8 +1627,6 @@
     touchedOrder.forEach((key) => {
       const rec = simMap.get(key);
       if (rec.totalOutflow <= 0 || rec.runningBalance >= rec.initialBalance) return;
-
-      const availableFree = Math.max(0, round2(rec.initialBalance - rec.lockedTotal));
       if (rec.runningBalance < -0.005) {
         warnings.push({
           status: 'OVERDRAFT',
@@ -1608,32 +1636,14 @@
           currency: rec.currency,
           currentBalance: rec.initialBalance,
           deductAmount: round2(rec.initialBalance - rec.runningBalance),
-          afterBalance: rec.runningBalance,
-          lockedTotal: rec.lockedTotal,
-          availableFree,
-          lockedDeficit: rec.lockedTotal > 0 ? round2(rec.lockedTotal - Math.max(0, rec.runningBalance)) : 0
-        });
-      } else if (rec.lockedTotal > 0 && rec.runningBalance < rec.lockedTotal - 0.005) {
-        warnings.push({
-          status: 'BREACH_LOCKED',
-          accountId: rec.accountId,
-          balanceId: rec.balanceId,
-          accountLabel: rec.accountLabel,
-          currency: rec.currency,
-          currentBalance: rec.initialBalance,
-          deductAmount: round2(rec.initialBalance - rec.runningBalance),
-          afterBalance: rec.runningBalance,
-          lockedTotal: rec.lockedTotal,
-          availableFree,
-          lockedDeficit: round2(rec.lockedTotal - rec.runningBalance)
+          afterBalance: rec.runningBalance
         });
       }
     });
 
-    const hasOverdraft = warnings.some((w) => w.status === 'OVERDRAFT');
     return {
       hasRisk: warnings.length > 0,
-      highestSeverity: hasOverdraft ? 'OVERDRAFT' : (warnings.length > 0 ? 'BREACH_LOCKED' : 'OK'),
+      highestSeverity: warnings.length > 0 ? 'OVERDRAFT' : 'OK',
       warnings
     };
   }
@@ -1654,6 +1664,7 @@
     formatMoney,
     resolveEffectivePoolId,
     getPoolSettlementLabel,
+    getAccountOverflowInfo,
     getSummaryMetrics,
     getDefaultExpenseSourceKey,
     getAccountLinkedDeposits,
@@ -1869,7 +1880,7 @@
         currency,
         name: (payload.name || '新份額').trim(),
         amount: Math.max(0, round2(payload.amount || 0)),
-        locked: Boolean(payload.locked),
+        locked: false,
         poolId: payload.poolId || 'pool_reserve'
       });
       state = draft;

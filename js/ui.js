@@ -949,30 +949,17 @@
       const res = Store.checkAccountDeductions(deductions);
       if (!res || !res.hasRisk) return Promise.resolve(true);
 
-      const isOverdraft = res.highestSeverity === 'OVERDRAFT';
-      const details = res.warnings.map((w) => {
-        if (w.status === 'OVERDRAFT') {
-          return {
-            tone: 'rose',
-            title: `${w.accountLabel} · 餘額不足透支`,
-            line1: `目前餘額 ${Store.formatMoney(w.currentBalance, w.currency)}，本次扣款 ${Store.formatMoney(w.deductAmount, w.currency)}`,
-            line2: `入帳後將透支為 ${Store.formatMoney(w.afterBalance, w.currency)}`
-          };
-        }
-        return {
-          tone: 'amber',
-          title: `${w.accountLabel} · 將動用凍結底倉`,
-          line1: `可動用自由額 ${Store.formatMoney(w.availableFree, w.currency)}（凍結底倉 ${Store.formatMoney(w.lockedTotal, w.currency)}）`,
-          line2: `本次扣款 ${Store.formatMoney(w.deductAmount, w.currency)}，將動用凍結底倉 ${Store.formatMoney(w.lockedDeficit, w.currency)}`
-        };
-      });
+      const details = res.warnings.map((w) => ({
+        tone: 'rose',
+        title: `${w.accountLabel} · 餘額不足透支`,
+        line1: `目前餘額 ${Store.formatMoney(w.currentBalance, w.currency)}，本次扣款 ${Store.formatMoney(w.deductAmount, w.currency)}`,
+        line2: `入帳後將透支為 ${Store.formatMoney(w.afterBalance, w.currency)}`
+      }));
 
       return confirmAction({
-        tone: isOverdraft ? 'rose' : 'amber',
-        title: isOverdraft ? '帳戶餘額不足警告' : '動用凍結底倉提醒',
-        message: isOverdraft
-          ? '此操作會令帳戶餘額變為負數，是否仍要繼續入帳？'
-          : '此操作超過可動用自由額並將動用凍結底倉，是否仍要繼續入帳？',
+        tone: 'rose',
+        title: '帳戶餘額不足警告',
+        message: '此操作會令帳戶餘額變為負數，是否仍要繼續入帳？',
         details,
         confirmLabel: '仍要繼續入帳',
         cancelLabel: '返回檢查'

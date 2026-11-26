@@ -207,15 +207,15 @@
           </div>
           <div className="grid grid-cols-2 gap-3 pt-3 border-t border-white/[0.06] text-[12px]">
             <div className="min-w-0">
-              <div className="text-zinc-500 text-[11px]">可動用現金</div>
+              <div className="text-zinc-500 text-[11px]">銀包活期</div>
               <div className="text-emerald-400 font-semibold tabular-nums mt-0.5 whitespace-nowrap">
-                {Store.formatMoney(metrics.liquidCash, state.meta.baseCurrency)}
+                {Store.formatMoney(metrics.walletTotal, state.meta.baseCurrency)}
               </div>
             </div>
             <div className="min-w-0 text-right">
-              <div className="text-zinc-500 text-[11px]">鎖定與投資</div>
+              <div className="text-zinc-500 text-[11px]">定存與投資</div>
               <div className="text-zinc-200 font-semibold tabular-nums mt-0.5 whitespace-nowrap">
-                {Store.formatMoney(metrics.lockedAndInvestments, state.meta.baseCurrency)}
+                {Store.formatMoney(metrics.investmentsTotal, state.meta.baseCurrency)}
               </div>
             </div>
             <div className="min-w-0">
