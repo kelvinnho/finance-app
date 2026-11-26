@@ -1,4 +1,4 @@
-// mod1_wallet.js · Stage 2 r7
+// mod1_wallet.js · Stage 2 r8
 (function () {
   'use strict';
 
@@ -49,6 +49,10 @@
     const [flipped, setFlipped] = useState(false);
     const [editingAllocId, setEditingAllocId] = useState(null);
 
+    // Unified Draft Rebalance Sheet (Handles both Overflow Fix & Normal Multi-Item Rebalancing)
+    const [rebalanceOpen, setRebalanceOpen] = useState(false);
+    const [rebalanceDraft, setRebalanceDraft] = useState([]);
+
     // BottomSheet States
     const [addAccOpen, setAddAccOpen] = useState(false);
     const [newAcc, setNewAcc] = useState({
@@ -71,7 +75,7 @@
     const [topUpDraft, setTopUpDraft] = useState({ fromKey: '', amount: 1000 });
 
     const [addAllocOpen, setAddAllocOpen] = useState(false);
-    const [allocDraft, setAllocDraft] = useState({ name: '', amount: 5000 });
+    const [allocDraft, setAllocDraft] = useState({ name: '', amount: 0 });
 
     const [editCardDraft, setEditCardDraft] = useState({
       name: '',
@@ -94,6 +98,8 @@
       return focusedAcc.balances.find((b) => b.id === pickedId) || focusedAcc.balances[0];
     }, [focusedAcc, selectedBalMap]);
 
+    const activeBalanceId = activeBalance ? activeBalance.id : null;
+
     const syncEditDraftFromAcc = (acc, bal) => {
       if (!acc) return;
       const targetBal = bal || (acc.balances && acc.balances[0]) || null;
@@ -106,15 +112,16 @@
       });
     };
 
+    // IMPORTANT: Depend strictly on primitive IDs (focusedAccId, activeBalanceId),
+    // NEVER on focusedAcc object reference, so dragging sliders / clicking -1K / +1K / typing
+    // will NEVER collapse or jump away!
     useEffect(() => {
-      if (focusedAcc) {
-        syncEditDraftFromAcc(focusedAcc, activeBalance);
-        setEditingAllocId(null);
-      } else {
+      setEditingAllocId(null);
+      setRebalanceOpen(false);
+      if (!focusedAccId) {
         setFlipped(false);
-        setEditingAllocId(null);
       }
-    }, [focusedAcc, activeBalance && activeBalance.id]);
+    }, [focusedAccId, activeBalanceId]);
 
     const isAccFocused = Boolean(focusedAcc);
     useEffect(() => {
@@ -132,6 +139,7 @@
         setFocusedAccId(null);
         setFlipped(false);
         setEditingAllocId(null);
+        setRebalanceOpen(false);
       }
     }, [resetSignal]);
 
@@ -219,16 +227,17 @@
 
     const allocStats = useMemo(() => {
       const total = activeBalance ? Store.round2(activeBalance.amount || 0) : 0;
+      const capTotal = Math.max(0, total);
       const allocatedSum = Store.round2(activeAllocations.reduce((s, x) => s + Math.max(0, Number(x.amount || 0)), 0));
-      const free = Math.max(0, Store.round2(total - allocatedSum));
-      const deficit = allocatedSum > Math.max(0, total) + 0.01 ? Store.round2(allocatedSum - Math.max(0, total)) : 0;
+      const free = Math.max(0, Store.round2(capTotal - allocatedSum));
+      const deficit = allocatedSum > capTotal + 0.01 ? Store.round2(allocatedSum - capTotal) : 0;
       const isSoftLocked = deficit > 0;
-      const denom = total > 0 ? total : 1;
+      const denom = capTotal > 0 ? capTotal : 1;
 
       const segments = [];
       if (!isSoftLocked) {
         if (free > 0 || activeAllocations.length === 0) {
-          const freePct = total > 0 ? Math.round((free / denom) * 100) : 0;
+          const freePct = capTotal > 0 ? Math.round((free / denom) * 100) : 0;
           segments.push({
             id: '__free__',
             name: '自由餘額',
@@ -241,8 +250,8 @@
 
         activeAllocations.forEach((al, idx) => {
           const amt = Math.max(0, Store.round2(al.amount || 0));
-          if (amt <= 0) return; // Keep 0-balance recurring allocations in bottom list without cluttering card face
-          const pct = total > 0 ? Math.round((amt / denom) * 100) : 0;
+          if (amt <= 0) return;
+          const pct = capTotal > 0 ? Math.round((amt / denom) * 100) : 0;
           segments.push({
             id: al.id,
             name: al.name,
@@ -253,7 +262,7 @@
           });
         });
 
-        if (segments.length > 0 && total > 0) {
+        if (segments.length > 0 && capTotal > 0) {
           const sumPct = segments.reduce((s, x) => s + x.pct, 0);
           if (sumPct !== 100) {
             const largest = segments.reduce((best, cur) => (cur.amount > best.amount ? cur : best), segments[0]);
@@ -262,28 +271,131 @@
         }
       }
 
-      return { total, allocatedSum, free, deficit, isSoftLocked, segments };
+      return { total, capTotal, allocatedSum, free, deficit, isSoftLocked, segments };
     }, [activeBalance, activeAllocations]);
 
     const freeAmount = allocStats.free;
+
+    // ---- Unified Draft Rebalance Sheet Handlers ----
+    const openRebalanceSheet = () => {
+      if (!activeBalance || !activeAllocations.length) return;
+      const items = activeAllocations.map((al, idx) => ({
+        id: al.id,
+        name: al.name,
+        poolId: al.poolId || 'pool_reserve',
+        origAmount: Math.max(0, Store.round2(al.amount || 0)),
+        amount: Math.max(0, Store.round2(al.amount || 0)),
+        pinned: false,
+        deleted: false,
+        color: ALLOC_PALETTE[idx % ALLOC_PALETTE.length]
+      }));
+      setRebalanceDraft(items);
+      setRebalanceOpen(true);
+    };
+
+    const rebalanceMetrics = useMemo(() => {
+      const capTotal = activeBalance ? Math.max(0, Store.round2(activeBalance.amount || 0)) : 0;
+      const activeItems = rebalanceDraft.filter((x) => !x.deleted);
+      const draftSum = Store.round2(activeItems.reduce((s, x) => s + Math.max(0, Number(x.amount || 0)), 0));
+      const deficit = Store.round2(Math.max(0, draftSum - capTotal));
+      const free = Store.round2(Math.max(0, capTotal - draftSum));
+      const isBalanced = deficit <= 0.005;
+      const hasChanges = rebalanceDraft.some((x) => x.deleted || Math.abs(x.amount - x.origAmount) > 0.005);
+      const unpinnedCount = activeItems.filter((x) => !x.pinned).length;
+      return { capTotal, activeItems, draftSum, deficit, free, isBalanced, hasChanges, unpinnedCount };
+    }, [rebalanceDraft, activeBalance]);
+
+    const updateRebalanceItem = (id, patch) => {
+      setRebalanceDraft((prev) =>
+        prev.map((it) => {
+          if (it.id !== id) return it;
+          return Object.assign({}, it, patch);
+        })
+      );
+    };
+
+    const restoreRebalanceItem = (id) => {
+      setRebalanceDraft((prev) =>
+        prev.map((it) => (it.id === id ? Object.assign({}, it, { amount: it.origAmount, deleted: false, pinned: false }) : it))
+      );
+    };
+
+    const restoreAllRebalance = () => {
+      setRebalanceDraft((prev) =>
+        prev.map((it) => Object.assign({}, it, { amount: it.origAmount, deleted: false, pinned: false }))
+      );
+    };
+
+    const zeroAllRebalance = () => {
+      setRebalanceDraft((prev) =>
+        prev.map((it) => (it.deleted ? it : Object.assign({}, it, { amount: 0, pinned: false })))
+      );
+    };
+
+    const rebalanceRemainingProportional = () => {
+      const capTotal = rebalanceMetrics.capTotal;
+      const active = rebalanceDraft.filter((x) => !x.deleted);
+      const unpinned = active.filter((x) => !x.pinned);
+      if (unpinned.length === 0) {
+        showToast('所有項目皆已固定，請先點「已固定」解鎖至少一項');
+        return;
+      }
+
+      const pinnedSum = Store.round2(active.filter((x) => x.pinned).reduce((s, x) => s + Math.max(0, Number(x.amount || 0)), 0));
+      const targetForUnpinned = Store.round2(capTotal - pinnedSum);
+
+      if (targetForUnpinned <= 0.005) {
+        setRebalanceDraft((prev) =>
+          prev.map((it) => (!it.deleted && !it.pinned ? Object.assign({}, it, { amount: 0 }) : it))
+        );
+        if (pinnedSum > capTotal + 0.005) {
+          showToast('已先將未固定項目歸零，已固定項目總和仍超出餘額');
+        } else {
+          showToast('已將未固定項目歸零並對齊總額');
+        }
+        return;
+      }
+
+      const curUnpinnedSum = Store.round2(unpinned.reduce((s, x) => s + Math.max(0, Number(x.amount || 0)), 0));
+      const nextMap = {};
+      let running = 0;
+
+      unpinned.forEach((it, idx) => {
+        if (idx === unpinned.length - 1) {
+          nextMap[it.id] = Math.max(0, Store.round2(targetForUnpinned - running));
+        } else {
+          const share = curUnpinnedSum > 0
+            ? Store.round2(targetForUnpinned * (it.amount / curUnpinnedSum))
+            : Store.round2(targetForUnpinned / unpinned.length);
+          nextMap[it.id] = Math.max(0, share);
+          running = Store.round2(running + nextMap[it.id]);
+        }
+      });
+
+      setRebalanceDraft((prev) =>
+        prev.map((it) => (it.id in nextMap ? Object.assign({}, it, { amount: nextMap[it.id] }) : it))
+      );
+      showToast('已按比例同步配平未固定項目');
+    };
+
+    const handleCommitRebalance = () => {
+      if (!focusedAcc || !activeBalance) return;
+      if (!rebalanceMetrics.isBalanced) {
+        showToast(`尚需調減 ${Store.formatMoney(rebalanceMetrics.deficit, activeBalance.currency)}`);
+        return;
+      }
+      const wasLocked = allocStats.isSoftLocked;
+      Store.replaceAccountAllocations(focusedAcc.id, activeBalance.currency, rebalanceDraft);
+      setRebalanceOpen(false);
+      setEditingAllocId(null);
+      showToast(wasLocked ? '已修正份額並解除卡片鎖定' : '已儲存份額調配');
+    };
 
     // Linked Fixed Deposits (Option 2A Read-Only Integration)
     const linkedDeposits = useMemo(() => {
       if (!focusedAcc) return { count: 0, items: [], totalBase: 0, byCurrency: {} };
       return Store.getAccountLinkedDeposits(focusedAcc.id, state);
     }, [focusedAcc, state]);
-
-    // Recent transactions for focused account
-    const accountTransactions = useMemo(() => {
-      if (!focusedAcc) return [];
-      return (state.transactions || [])
-        .filter((tx) => {
-          const isFrom = tx.accountKind !== 'CARD' && tx.accountId === focusedAcc.id;
-          const isTo = tx.toAccountKind !== 'CARD' && tx.toAccountId === focusedAcc.id;
-          return isFrom || isTo;
-        })
-        .slice(0, 12);
-    }, [focusedAcc, state.transactions]);
 
     // Overview Summary Bar: Unallocated Free vs Virtual Allocated
     const walletTotalBase = metrics.walletTotal;
@@ -342,7 +454,7 @@
           </div>
         )}
 
-        {/* Mode A: Apple Wallet Stacked Card Pack (Soft-Lock Visual Highlight When Allocations Overflow) */}
+        {/* Mode A: Apple Wallet Stacked Card Pack */}
         {!focusedAcc && (
           <div className="space-y-4">
             {state.accounts.length === 0 ? (
@@ -383,7 +495,6 @@
                     >
                       <CardAuraLayers theme={theme} lockedAlert={ov.hasOverflow} />
 
-                      {/* Clean Card Header */}
                       <div className="relative flex items-start justify-between gap-3">
                         <div className="flex items-start gap-2.5 min-w-0 flex-1">
                           <div
@@ -433,7 +544,6 @@
                         </div>
                       </div>
 
-                      {/* Clean Bottom Strip for Front-Most Card */}
                       {isLast && (
                         <div className="relative mt-6 pt-3 border-t border-white/15 flex items-center justify-between gap-2">
                           <div className="flex items-center gap-1.5 flex-wrap">
@@ -473,7 +583,7 @@
           </div>
         )}
 
-        {/* Mode B: Focused Wallet Card + Soft-Lock Guard + Overview-First Virtual Allocations */}
+        {/* Mode B: Focused Wallet Card + Clean Allocation Management (No Recent Transactions Clutter) */}
         {focusedAcc && activeBalance && (() => {
           const theme = getThemeObj(focusedAcc.theme);
           const typeMeta = getTypeMeta(focusedAcc.type);
@@ -552,7 +662,7 @@
                     )}
                   </div>
 
-                  {/* Row 2: Pure Currency Selector Pills (With Red Dot If Another Currency Has Overflow) */}
+                  {/* Row 2: Pure Currency Selector Pills */}
                   <div className="relative flex items-center gap-1.5 overflow-x-auto no-scrollbar" data-no-swipe="true">
                     {focusedAcc.balances.map((b) => {
                       const isSel = b.id === activeBalance.id;
@@ -622,20 +732,29 @@
                     </button>
                   </div>
 
-                  {/* Row 4: Soft-Lock Alert Banner (When Allocations > Balance) OR Dynamic % Proportion Strip */}
+                  {/* Row 4: Actionable Soft-Lock Bar (One-Tap Rebalance Sheet) OR Dynamic % Strip */}
                   {isCardSoftLocked ? (
-                    <div className="relative p-3 rounded-2xl bg-rose-500/20 border border-rose-300/55 flex items-start gap-2.5">
-                      <div className="w-7 h-7 rounded-xl bg-rose-500/30 text-rose-100 flex items-center justify-center shrink-0 mt-0.5">
-                        <Icon name="lock" size={14} />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[12.5px] font-bold text-rose-100 tabular-nums">
-                          卡片份額鎖定：份額超出餘額 {Store.formatMoney(allocStats.deficit, activeBalance.currency)}
+                    <div className="relative p-3 rounded-2xl bg-rose-500/20 border border-rose-300/55 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-xl bg-rose-500/30 text-rose-100 flex items-center justify-center shrink-0">
+                          <Icon name="lock" size={14} />
                         </div>
-                        <div className="text-[11px] text-rose-200/85 mt-0.5">
-                          虛擬份額總和（{Store.formatMoney(allocStats.allocatedSum, activeBalance.currency)}）大於目前餘額，請於下方調低或歸零份額以解除鎖定。
+                        <div className="min-w-0">
+                          <div className="text-[12.5px] font-bold text-rose-100 tabular-nums truncate">
+                            需調減 {Store.formatMoney(allocStats.deficit, activeBalance.currency)}
+                          </div>
+                          <div className="text-[11px] text-rose-200/80 tabular-nums truncate">
+                            份額合計 {Store.formatMoney(allocStats.allocatedSum, activeBalance.currency)}
+                          </div>
                         </div>
                       </div>
+                      <button
+                        type="button"
+                        onClick={openRebalanceSheet}
+                        className="px-3.5 py-2 rounded-xl bg-rose-500 text-white text-[12.5px] font-bold shadow-lg active:scale-95 transition shrink-0 whitespace-nowrap"
+                      >
+                        立即配平
+                      </button>
                     </div>
                   ) : (
                     activeAllocations.length > 0 && allocStats.segments.length > 0 && (
@@ -767,7 +886,7 @@
                 </div>
               )}
 
-              {/* Elevated Card Options Tray */}
+              {/* Elevated Card Options Tray (Linked Fixed Deposits + Virtual Allocations ONLY) */}
               <div
                 className="rounded-[22px] bg-[#17171D] border border-white/[0.12] shadow-[0_10px_28px_rgba(0,0,0,0.45)] overflow-hidden"
                 style={{ borderTop: `2px solid ${isCardSoftLocked ? '#FB7185' : (theme.accent + '88')}` }}
@@ -805,31 +924,45 @@
                     </button>
                   )}
 
-                  {/* Virtual Allocations Section: Overview-First Compact List -> Tap to Edit */}
+                  {/* Virtual Allocations Section: Strict Anti-Overdraft + Smooth Slider + Rebalance Trigger */}
                   <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-2">
-                      <div>
+                      <div className="min-w-0">
                         <div className="text-[14.5px] font-semibold text-white">虛擬份額切分 ({activeBalance.currency})</div>
-                        {isCardSoftLocked ? (
-                          <div className="text-[12px] text-rose-400 font-semibold mt-0.5 tabular-nums">
-                            份額超出餘額 {Store.formatMoney(allocStats.deficit, activeBalance.currency)}，請點選下方修正
-                          </div>
-                        ) : (
-                          <div className="text-[12px] text-zinc-400 mt-0.5 tabular-nums">
-                            自由餘額 <strong className="text-emerald-400 font-semibold">{Store.formatMoney(freeAmount, activeBalance.currency)}</strong>
-                          </div>
-                        )}
+                        <div className="text-[12px] text-zinc-400 mt-0.5 tabular-nums">
+                          {isCardSoftLocked ? (
+                            <span>份額總和 <strong className="text-rose-300 font-semibold">{Store.formatMoney(allocStats.allocatedSum, activeBalance.currency)}</strong></span>
+                          ) : (
+                            <span>自由餘額 <strong className="text-emerald-400 font-semibold">{Store.formatMoney(freeAmount, activeBalance.currency)}</strong></span>
+                          )}
+                        </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAllocDraft({ name: '', amount: Math.min(5000, freeAmount || 5000) });
-                          setAddAllocOpen(true);
-                        }}
-                        className="px-3 py-1.5 rounded-full bg-white text-black text-[12px] font-bold active:scale-95 transition shrink-0"
-                      >
-                        + 份額
-                      </button>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {activeAllocations.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={openRebalanceSheet}
+                            className={`px-3 py-1.5 rounded-full text-[12px] font-bold active:scale-95 transition whitespace-nowrap ${
+                              isCardSoftLocked
+                                ? 'bg-rose-500 text-white'
+                                : 'bg-white/[0.10] border border-white/15 text-zinc-100'
+                            }`}
+                          >
+                            {isCardSoftLocked ? '配平修正' : '調配'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAllocDraft({ name: '', amount: Math.min(5000, freeAmount) });
+                            setAddAllocOpen(true);
+                          }}
+                          className="px-3 py-1.5 rounded-full bg-white text-black text-[12px] font-bold active:scale-95 transition whitespace-nowrap"
+                        >
+                          + 份額
+                        </button>
+                      </div>
                     </div>
 
                     {activeAllocations.length === 0 ? (
@@ -843,12 +976,18 @@
                         {activeAllocations.map((al, idx) => {
                           const segColor = ALLOC_PALETTE[idx % ALLOC_PALETTE.length];
                           const isEditing = editingAllocId === al.id;
-                          const maxForThis = Math.max(al.amount, Store.round2(al.amount + freeAmount));
-                          const sliderMax = Math.max(100, Math.round(Math.max(al.amount, Store.round2(Math.max(0, allocStats.total) - (allocStats.allocatedSum - al.amount)))));
+                          const otherSum = Store.round2(allocStats.allocatedSum - al.amount);
+                          // Strict anti-overdraft ceiling in normal mode; reduce-only ceiling in overflow mode
+                          const hardCeiling = Math.max(0, Store.round2(allocStats.capTotal - otherSum));
+                          const isThisOverCeiling = al.amount > hardCeiling + 0.005;
+                          const effectiveMax = isThisOverCeiling ? al.amount : hardCeiling;
+                          const sliderMax = Math.max(effectiveMax, 0);
+                          const sliderStep = sliderMax >= 1000 ? 100 : (sliderMax >= 100 ? 10 : 1);
+                          const canIncrease = al.amount < hardCeiling - 0.005;
 
                           return (
                             <div key={al.id}>
-                              {/* Compact Overview Row (Color Dot + Name + Prominent Value) */}
+                              {/* Compact Overview Row */}
                               <button
                                 type="button"
                                 onClick={() => setEditingAllocId(isEditing ? null : al.id)}
@@ -875,9 +1014,12 @@
                                 </div>
                               </button>
 
-                              {/* Expanded Inline Editor (Only Visible When Tapped) */}
+                              {/* Expanded Inline Editor (Rock-Solid Open While Dragging / Clicking / Typing) */}
                               {isEditing && (
-                                <div className="px-3.5 pb-3.5 pt-2.5 bg-white/[0.03] border-t border-white/[0.06] space-y-3">
+                                <div
+                                  data-no-swipe="true"
+                                  className="px-3.5 pb-3.5 pt-2.5 bg-white/[0.03] border-t border-white/[0.06] space-y-3"
+                                >
                                   <input
                                     type="text"
                                     value={al.name}
@@ -890,39 +1032,91 @@
                                     size="sm"
                                     value={al.amount}
                                     currency={activeBalance.currency}
-                                    label={`調整「${al.name}」份額`}
+                                    label={`調整「${al.name}」份額（上限 ${Store.formatMoney(effectiveMax, activeBalance.currency)}）`}
                                     quickAdds={[1000, 5000, 10000]}
-                                    onChange={(val) => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.max(0, val) })}
+                                    onChange={(val) => {
+                                      const clamped = Math.max(0, Math.min(val, effectiveMax));
+                                      if (val > effectiveMax + 0.005) {
+                                        showToast(`已封頂於可用上限 ${Store.formatMoney(effectiveMax, activeBalance.currency)}`);
+                                      }
+                                      Store.updateAllocation(focusedAcc.id, al.id, { amount: clamped });
+                                    }}
                                   />
 
-                                  <div data-no-swipe="true">
+                                  {/* Smooth Anti-Overdraft Capped Slider */}
+                                  <div className="space-y-1">
                                     <input
                                       type="range"
                                       min={0}
-                                      max={sliderMax}
-                                      step={100}
-                                      value={Math.min(al.amount, sliderMax)}
-                                      onChange={(e) => Store.updateAllocation(focusedAcc.id, al.id, { amount: Number(e.target.value) })}
-                                      className="w-full accent-white h-1.5 bg-white/10 rounded-lg cursor-pointer"
+                                      max={sliderMax > 0 ? sliderMax : 100}
+                                      step={sliderStep}
+                                      disabled={sliderMax <= 0}
+                                      value={sliderMax > 0 ? Math.min(al.amount, sliderMax) : 0}
+                                      onChange={(e) => {
+                                        const raw = Number(e.target.value);
+                                        const safeVal = Math.max(0, Math.min(raw, effectiveMax));
+                                        Store.updateAllocation(focusedAcc.id, al.id, { amount: safeVal });
+                                      }}
+                                      className="w-full accent-white h-2 bg-white/10 rounded-lg cursor-pointer disabled:opacity-35"
                                     />
+                                    <div className="flex items-center justify-between text-[10.5px] text-zinc-500 tabular-nums">
+                                      <span>0</span>
+                                      <span>
+                                        {isThisOverCeiling
+                                          ? '目前超額（僅可調低或點配平）'
+                                          : `上限 ${Store.formatMoney(hardCeiling, activeBalance.currency)}`}
+                                      </span>
+                                    </div>
                                   </div>
 
+                                  {/* Dynamic Context-Aware Quick Buttons */}
                                   <div className="flex items-center justify-between gap-2 text-[11.5px] flex-wrap">
                                     <div className="flex gap-1.5 flex-wrap">
                                       <button
                                         type="button"
-                                        onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.max(0, al.amount - 1000) })}
-                                        className="px-2.5 py-1.5 rounded-lg bg-white/[0.08] text-zinc-200 active:bg-white/15"
+                                        disabled={al.amount <= 0}
+                                        onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.max(0, Store.round2(al.amount - 1000)) })}
+                                        className="px-2.5 py-1.5 rounded-lg bg-white/[0.08] text-zinc-200 active:bg-white/15 disabled:opacity-35"
                                       >
                                         -1K
                                       </button>
                                       <button
                                         type="button"
-                                        onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.min(maxForThis, al.amount + 1000) })}
-                                        className="px-2.5 py-1.5 rounded-lg bg-white/[0.08] text-zinc-200 active:bg-white/15"
+                                        disabled={!canIncrease}
+                                        onClick={() => Store.updateAllocation(focusedAcc.id, al.id, { amount: Math.min(hardCeiling, Store.round2(al.amount + 1000)) })}
+                                        className="px-2.5 py-1.5 rounded-lg bg-white/[0.08] text-zinc-200 active:bg-white/15 disabled:opacity-35"
                                       >
                                         +1K
                                       </button>
+
+                                      {/* Dynamic Align / Fit Button */}
+                                      {isCardSoftLocked ? (
+                                        al.amount > allocStats.deficit + 0.005 ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const fit = Store.round2(al.amount - allocStats.deficit);
+                                              Store.updateAllocation(focusedAcc.id, al.id, { amount: fit });
+                                              showToast(`已扣至符合（${Store.formatMoney(fit, activeBalance.currency)}）`);
+                                            }}
+                                            className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-400/35 font-semibold tabular-nums"
+                                          >
+                                            扣至符合（➔ {Store.formatMoney(Store.round2(al.amount - allocStats.deficit), activeBalance.currency)}）
+                                          </button>
+                                        ) : null
+                                      ) : freeAmount > 0.005 ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            Store.updateAllocation(focusedAcc.id, al.id, { amount: hardCeiling });
+                                            showToast(`已補齊至 ${Store.formatMoney(hardCeiling, activeBalance.currency)}`);
+                                          }}
+                                          className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/25 font-medium tabular-nums"
+                                        >
+                                          補齊至總額（➔ {Store.formatMoney(hardCeiling, activeBalance.currency)}）
+                                        </button>
+                                      ) : null}
+
                                       {al.amount > 0 && (
                                         <button
                                           type="button"
@@ -932,19 +1126,7 @@
                                           }}
                                           className="px-2.5 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/25"
                                         >
-                                          歸零
-                                        </button>
-                                      )}
-                                      {freeAmount > 0 && (
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            Store.absorbFreeAmount(focusedAcc.id, activeBalance.currency, al.id);
-                                            showToast('已吸納剩餘自由額');
-                                          }}
-                                          className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/25"
-                                        >
-                                          吸納自由額
+                                          {isCardSoftLocked && al.amount <= allocStats.deficit + 0.005 ? '全扣歸零' : '歸零'}
                                         </button>
                                       )}
                                     </div>
@@ -962,42 +1144,6 @@
                                   </div>
                                 </div>
                               )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Account Recent Transactions */}
-                  <div className="rounded-2xl bg-[#111116] border border-white/[0.08] overflow-hidden">
-                    <div className="px-3.5 py-2.5 border-b border-white/[0.06] flex items-center justify-between">
-                      <span className="text-[12.5px] font-semibold text-zinc-300">本戶近期流水</span>
-                      <span className="text-[11px] text-zinc-500 tabular-nums">{accountTransactions.length} 筆</span>
-                    </div>
-                    {accountTransactions.length === 0 ? (
-                      <div className="py-5 text-center text-[12px] text-zinc-500">暫無交易流水</div>
-                    ) : (
-                      <div className="divide-y divide-white/[0.06]">
-                        {accountTransactions.map((tx) => {
-                          const isToThis = tx.toAccountKind !== 'CARD' && tx.toAccountId === focusedAcc.id;
-                          const isInflow = isToThis
-                            || tx.type === 'INCOME'
-                            || tx.type === 'PAYABLE'
-                            || (tx.type === 'LOAN_SETTLEMENT' && tx.settlementDirection === 'IN');
-                          const dispAmt = isToThis && tx.settledAmount != null ? tx.settledAmount : tx.amount;
-                          const dispCur = isToThis && tx.settledCurrency ? tx.settledCurrency : tx.currency;
-                          return (
-                            <div key={tx.id} className="px-3.5 py-2.5 flex items-center justify-between gap-2.5">
-                              <div className="min-w-0">
-                                <div className="text-[13px] font-semibold text-white truncate">{tx.title}</div>
-                                <div className="text-[11px] text-zinc-500 mt-0.5 tabular-nums">{tx.date} · {tx.time || ''}</div>
-                              </div>
-                              <div className={`text-[13px] font-semibold tabular-nums whitespace-nowrap shrink-0 ${
-                                isInflow ? 'text-emerald-400' : 'text-white'
-                              }`}>
-                                {Store.formatMoney(isInflow ? dispAmt : -dispAmt, dispCur, { showPlus: isInflow })}
-                              </div>
                             </div>
                           );
                         })}
@@ -1049,6 +1195,303 @@
             </div>
           );
         })()}
+
+        {/* Sheet: Unified Draft Allocation Rebalance & Overflow Fix (獨立草稿調配頁) */}
+        <BottomSheet
+          open={rebalanceOpen && Boolean(focusedAcc && activeBalance)}
+          title={allocStats.isSoftLocked ? '修正超額份額' : '虛擬份額調配'}
+          subtitle={focusedAcc && activeBalance ? `${focusedAcc.name} · ${activeBalance.currency} 活期餘額 ${Store.formatMoney(activeBalance.amount, activeBalance.currency)}` : ''}
+          maxHeight="90dvh"
+          onClose={() => setRebalanceOpen(false)}
+          footer={
+            activeBalance ? (
+              <button
+                type="button"
+                disabled={!rebalanceMetrics.isBalanced}
+                onClick={handleCommitRebalance}
+                className={`w-full py-3.5 rounded-2xl text-[15px] font-bold transition active:scale-[0.99] ${
+                  rebalanceMetrics.isBalanced
+                    ? 'bg-emerald-400 text-black'
+                    : 'bg-white/10 text-zinc-400 cursor-not-allowed'
+                }`}
+              >
+                {rebalanceMetrics.isBalanced
+                  ? (allocStats.isSoftLocked ? '確認修正並解除鎖定' : '儲存份額調配')
+                  : `尚需調減 ${Store.formatMoney(rebalanceMetrics.deficit, activeBalance.currency)} 才可儲存`}
+              </button>
+            ) : null
+          }
+        >
+          {focusedAcc && activeBalance && (
+            <div className="space-y-4">
+              {/* Live 3-Column Alignment Status Strip */}
+              <div className={`p-3.5 rounded-2xl border space-y-2.5 ${
+                rebalanceMetrics.isBalanced
+                  ? 'bg-emerald-500/10 border-emerald-400/30'
+                  : 'bg-rose-500/10 border-rose-400/35'
+              }`}>
+                <div className="grid grid-cols-3 gap-2 text-center tabular-nums">
+                  <div>
+                    <div className="text-[10.5px] text-zinc-400">帳戶餘額</div>
+                    <div className={`text-[13.5px] font-bold mt-0.5 ${activeBalance.amount < 0 ? 'text-rose-300' : 'text-white'}`}>
+                      {Store.formatMoney(activeBalance.amount, activeBalance.currency)}
+                    </div>
+                  </div>
+                  <div className="border-x border-white/[0.08]">
+                    <div className="text-[10.5px] text-zinc-400">調整後總和</div>
+                    <div className="text-[13.5px] font-bold text-white mt-0.5">
+                      {Store.formatMoney(rebalanceMetrics.draftSum, activeBalance.currency)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10.5px] text-zinc-400">
+                      {rebalanceMetrics.isBalanced ? '剩餘自由額' : '尚需調減'}
+                    </div>
+                    <div className={`text-[13.5px] font-bold mt-0.5 ${
+                      rebalanceMetrics.isBalanced ? 'text-emerald-300' : 'text-rose-300'
+                    }`}>
+                      {rebalanceMetrics.isBalanced
+                        ? Store.formatMoney(rebalanceMetrics.free, activeBalance.currency)
+                        : Store.formatMoney(rebalanceMetrics.deficit, activeBalance.currency)}
+                    </div>
+                  </div>
+                </div>
+
+                {activeBalance.amount < 0 && (
+                  <div className="text-[11px] text-rose-200/90 text-center">
+                    帳戶目前透支，請將所有份額歸零或刪除以解除鎖定。
+                  </div>
+                )}
+
+                {/* Multi-Item Simultaneous Sync Controls */}
+                <div className="pt-2 border-t border-white/[0.08] flex items-center gap-2 flex-wrap">
+                  {rebalanceMetrics.activeItems.length >= 2 && (
+                    <button
+                      type="button"
+                      onClick={rebalanceRemainingProportional}
+                      className="flex-1 py-2 px-3 rounded-xl bg-white/[0.12] text-white text-[12px] font-semibold active:bg-white/20 whitespace-nowrap"
+                    >
+                      其餘按比例配平
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={zeroAllRebalance}
+                    className="py-2 px-3 rounded-xl bg-amber-500/15 border border-amber-400/25 text-amber-200 text-[12px] font-semibold active:bg-amber-500/25 whitespace-nowrap"
+                  >
+                    全部歸零
+                  </button>
+                  {rebalanceMetrics.hasChanges && (
+                    <button
+                      type="button"
+                      onClick={restoreAllRebalance}
+                      className="py-2 px-3 rounded-xl bg-white/[0.06] text-zinc-300 text-[12px] font-medium active:bg-white/15 whitespace-nowrap"
+                    >
+                      全部還原
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Per-Item Draft Cards with Dynamic Live Buttons & Before -> After Diff */}
+              <div className="space-y-3">
+                {rebalanceDraft.map((item) => {
+                  const isChanged = !item.deleted && Math.abs(item.amount - item.origAmount) > 0.005;
+                  const draftDeficit = rebalanceMetrics.deficit;
+                  const draftFree = rebalanceMetrics.free;
+                  const capTotal = rebalanceMetrics.capTotal;
+                  const itemSliderMax = Math.max(100, Math.round(Math.max(item.origAmount, capTotal, item.amount)));
+                  const itemSliderStep = itemSliderMax >= 1000 ? 100 : (itemSliderMax >= 100 ? 10 : 1);
+
+                  return (
+                    <div
+                      key={item.id}
+                      className={`p-3.5 rounded-2xl border space-y-2.5 transition ${
+                        item.deleted
+                          ? 'bg-rose-500/10 border-rose-400/25 opacity-75'
+                          : isChanged
+                          ? 'bg-[#1B1D24] border-emerald-400/35'
+                          : 'bg-[#111116] border-white/[0.09]'
+                      }`}
+                    >
+                      {/* Header Row: Color Dot + Name + Pin Toggle / Delete / Restore */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: item.color }} />
+                          <span className={`text-[14.5px] font-semibold truncate ${item.deleted ? 'line-through text-zinc-400' : 'text-white'}`}>
+                            {item.name}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {item.deleted ? (
+                            <button
+                              type="button"
+                              onClick={() => restoreRebalanceItem(item.id)}
+                              className="px-2.5 py-1 rounded-lg bg-white/15 text-white text-[11.5px] font-semibold"
+                            >
+                              還原
+                            </button>
+                          ) : (
+                            <>
+                              {rebalanceMetrics.activeItems.length >= 2 && (
+                                <button
+                                  type="button"
+                                  onClick={() => updateRebalanceItem(item.id, { pinned: !item.pinned })}
+                                  className={`px-2 py-1 rounded-lg text-[11px] font-medium border transition ${
+                                    item.pinned
+                                      ? 'bg-sky-500/20 border-sky-400/40 text-sky-200'
+                                      : 'bg-white/[0.05] border-white/10 text-zinc-400'
+                                  }`}
+                                >
+                                  {item.pinned ? '已固定' : '自動跟隨'}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => updateRebalanceItem(item.id, { deleted: true, pinned: false })}
+                                className="p-1.5 rounded-lg bg-rose-500/15 text-rose-400"
+                                title="刪除份額"
+                              >
+                                <Icon name="trash" size={13} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Before -> After Diff Preview */}
+                      <div className="flex items-center justify-between gap-2 text-[12.5px] tabular-nums">
+                        {item.deleted ? (
+                          <div className="text-rose-300">
+                            <span className="line-through text-zinc-500 mr-1.5">{Store.formatMoney(item.origAmount, activeBalance.currency)}</span>
+                            ➔ 將刪除（釋放 {Store.formatMoney(item.origAmount, activeBalance.currency)}）
+                          </div>
+                        ) : isChanged ? (
+                          <div className="flex items-center justify-between w-full gap-2">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-zinc-500 line-through">{Store.formatMoney(item.origAmount, activeBalance.currency)}</span>
+                              <span className="text-amber-400 font-bold">➔</span>
+                              <span className="text-emerald-300 font-bold text-[14px]">{Store.formatMoney(item.amount, activeBalance.currency)}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => restoreRebalanceItem(item.id)}
+                              className="text-[11px] text-zinc-400 underline underline-offset-2 shrink-0"
+                            >
+                              還原
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="text-zinc-300 font-semibold">
+                            目前 {Store.formatMoney(item.amount, activeBalance.currency)}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Draft Controls: Calculator + Slider + Dynamic Context-Aware Action Buttons */}
+                      {!item.deleted && (
+                        <div className="space-y-2.5 pt-0.5" data-no-swipe="true">
+                          <NumericInput
+                            size="sm"
+                            value={item.amount}
+                            currency={activeBalance.currency}
+                            label={`調配「${item.name}」金額`}
+                            quickAdds={[1000, 5000, 10000]}
+                            onChange={(val) => updateRebalanceItem(item.id, { amount: Math.max(0, Store.round2(val)), pinned: true })}
+                          />
+
+                          <input
+                            type="range"
+                            min={0}
+                            max={itemSliderMax}
+                            step={itemSliderStep}
+                            value={Math.min(item.amount, itemSliderMax)}
+                            onChange={(e) => updateRebalanceItem(item.id, { amount: Math.max(0, Number(e.target.value)), pinned: true })}
+                            className="w-full accent-white h-2 bg-white/10 rounded-lg cursor-pointer"
+                          />
+
+                          <div className="flex items-center gap-1.5 flex-wrap text-[11.5px]">
+                            {draftDeficit > 0.005 ? (
+                              item.amount > draftDeficit + 0.005 ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateRebalanceItem(item.id, {
+                                      amount: Store.round2(item.amount - draftDeficit),
+                                      pinned: true
+                                    })}
+                                    className="px-3 py-1.5 rounded-xl bg-emerald-400 text-black font-bold tabular-nums active:scale-95 transition"
+                                  >
+                                    扣至符合（➔ {Store.formatMoney(Store.round2(item.amount - draftDeficit), activeBalance.currency)}）
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateRebalanceItem(item.id, { amount: 0, pinned: true })}
+                                    className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-400/30 text-amber-200 font-semibold active:scale-95 transition"
+                                  >
+                                    歸零
+                                  </button>
+                                </>
+                              ) : item.amount > 0.005 ? (
+                                <button
+                                  type="button"
+                                  onClick={() => updateRebalanceItem(item.id, { amount: 0, pinned: true })}
+                                  className="px-3 py-1.5 rounded-xl bg-amber-400 text-black font-bold tabular-nums active:scale-95 transition"
+                                >
+                                  全扣歸零（抵消 {Store.formatMoney(item.amount, activeBalance.currency)}）
+                                </button>
+                              ) : (
+                                <span className="text-[11px] text-zinc-500">已歸零</span>
+                              )
+                            ) : draftFree > 0.005 ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => updateRebalanceItem(item.id, {
+                                    amount: Store.round2(item.amount + draftFree),
+                                    pinned: true
+                                  })}
+                                  className="px-3 py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-400/35 text-emerald-200 font-semibold tabular-nums active:scale-95 transition"
+                                >
+                                  補齊至總額（➔ {Store.formatMoney(Store.round2(item.amount + draftFree), activeBalance.currency)}）
+                                </button>
+                                {item.amount > 0.005 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => updateRebalanceItem(item.id, { amount: 0, pinned: true })}
+                                    className="px-2.5 py-1.5 rounded-xl bg-white/[0.08] text-zinc-300 font-medium"
+                                  >
+                                    歸零
+                                  </button>
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                <span className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 font-semibold">
+                                  ✓ 總額已對齊
+                                </span>
+                                {item.amount > 0.005 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => updateRebalanceItem(item.id, { amount: 0, pinned: true })}
+                                    className="px-2.5 py-1 rounded-lg bg-white/[0.08] text-zinc-300 font-medium"
+                                  >
+                                    歸零
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </BottomSheet>
 
         {/* Sheet: Add Account */}
         <BottomSheet
@@ -1294,11 +1737,11 @@
           </div>
         </BottomSheet>
 
-        {/* Sheet: Add Virtual Allocation (Pure Name + Amount, Zero Frozen Toggle) */}
+        {/* Sheet: Add Virtual Allocation (Strict Anti-Overdraft Capped to Free Balance) */}
         <BottomSheet
           open={addAllocOpen && Boolean(focusedAcc && activeBalance)}
           title="新增虛擬份額"
-          subtitle={activeBalance ? `目前自由餘額：${Store.formatMoney(freeAmount, activeBalance.currency)}` : ''}
+          subtitle={activeBalance ? `可分配自由餘額：${Store.formatMoney(freeAmount, activeBalance.currency)}` : ''}
           onClose={() => setAddAllocOpen(false)}
           footer={
             <button
@@ -1308,9 +1751,10 @@
                   showToast('請輸入份額名稱');
                   return;
                 }
+                const safeAmt = Math.max(0, Math.min(Number(allocDraft.amount || 0), freeAmount));
                 Store.addAllocation(focusedAcc.id, activeBalance.currency, {
                   name: allocDraft.name,
-                  amount: allocDraft.amount,
+                  amount: safeAmt,
                   locked: false
                 });
                 setAddAllocOpen(false);
@@ -1333,16 +1777,64 @@
                 className="w-full px-3.5 py-3 rounded-xl bg-black/60 border border-white/[0.12] text-[14px] text-white outline-none"
               />
             </div>
+
             <div>
-              <label className="text-[12px] text-zinc-400 block mb-1.5">分配金額</label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-[12px] text-zinc-400">分配金額（上限 {activeBalance ? Store.formatMoney(freeAmount, activeBalance.currency) : ''}）</label>
+                {activeBalance && freeAmount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setAllocDraft((p) => Object.assign({}, p, { amount: freeAmount }))}
+                    className="text-[11.5px] font-semibold text-emerald-300 tabular-nums"
+                  >
+                    帶入全部自由額
+                  </button>
+                )}
+              </div>
               <NumericInput
                 value={allocDraft.amount}
                 currency={activeBalance ? activeBalance.currency : state.meta.baseCurrency}
-                label="份額分配金額"
+                label={`份額金額（上限 ${activeBalance ? Store.formatMoney(freeAmount, activeBalance.currency) : ''}）`}
                 quickAdds={[1000, 5000, 10000]}
-                onChange={(val) => setAllocDraft((p) => Object.assign({}, p, { amount: val }))}
+                onChange={(val) => {
+                  const clamped = Math.max(0, Math.min(val, freeAmount));
+                  if (val > freeAmount + 0.005) {
+                    showToast(`已封頂於目前自由餘額 ${Store.formatMoney(freeAmount, activeBalance.currency)}`);
+                  }
+                  setAllocDraft((p) => Object.assign({}, p, { amount: clamped }));
+                }}
               />
             </div>
+
+            {freeAmount > 0 ? (
+              <div data-no-swipe="true">
+                <input
+                  type="range"
+                  min={0}
+                  max={freeAmount}
+                  step={freeAmount >= 1000 ? 100 : (freeAmount >= 100 ? 10 : 1)}
+                  value={Math.min(Number(allocDraft.amount || 0), freeAmount)}
+                  onChange={(e) => setAllocDraft((p) => Object.assign({}, p, { amount: Number(e.target.value) }))}
+                  className="w-full accent-white h-2 bg-white/10 rounded-lg cursor-pointer"
+                />
+              </div>
+            ) : (
+              <div className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.08] space-y-2 text-[12px] text-zinc-400">
+                <div>目前自由餘額為 0，可直接建立 0 元份額佔位，或先由現有份額調配騰出空間。</div>
+                {activeAllocations.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddAllocOpen(false);
+                      openRebalanceSheet();
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-white/10 text-white text-[12px] font-semibold"
+                  >
+                    前往份額調配頁 ›
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </BottomSheet>
       </div>

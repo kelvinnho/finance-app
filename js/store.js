@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 2 r7';
+  const APP_VERSION = 'Stage 2 r8';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -1926,6 +1926,26 @@
         state = draft;
         notify();
       }
+    },
+
+    replaceAccountAllocations(accId, currency, nextList) {
+      const draft = cloneState();
+      const acc = draft.accounts.find((a) => a.id === accId);
+      if (!acc) return;
+      const others = (acc.allocations || []).filter((x) => x.currency !== currency);
+      const sanitized = (Array.isArray(nextList) ? nextList : [])
+        .filter((x) => x && !x.deleted)
+        .map((x) => ({
+          id: x.id || uid('alloc'),
+          currency,
+          name: String(x.name || '未命名份額').trim() || '未命名份額',
+          amount: Math.max(0, round2(x.amount || 0)),
+          locked: false,
+          poolId: x.poolId || 'pool_reserve'
+        }));
+      acc.allocations = others.concat(sanitized);
+      state = draft;
+      notify();
     },
 
     // ---- Credit Cards Management & Cross-Pool Settlement (Module 2) ----
