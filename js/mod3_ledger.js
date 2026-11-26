@@ -2081,7 +2081,7 @@
       state.transactions.forEach((tx) => {
         if (!tx.date || !tx.date.startsWith(monthPrefix)) return;
         if (!map[tx.date]) map[tx.date] = { inc: false, exp: false };
-        if (tx.type === 'INCOME' || tx.type === 'PAYABLE' || (tx.type === 'LOAN_SETTLEMENT' && tx.settlementDirection === 'IN')) {
+        if (tx.type === 'INCOME' || tx.type === 'PAYABLE' || (tx.type === 'LOAN_SETTLEMENT' && tx.settlementDirection === 'IN') || (tx.type === 'INVEST_FLOW' && tx.flowDirection === 'IN')) {
           map[tx.date].inc = true;
         } else {
           map[tx.date].exp = true;
@@ -2190,6 +2190,7 @@
       if (tx.type === 'RECEIVABLE') return { label: '應收代墊', cls: 'bg-amber-500/20 text-amber-300' };
       if (tx.type === 'PAYABLE') return { label: '借貸入帳', cls: 'bg-violet-500/20 text-violet-300' };
       if (tx.type === 'LOAN_SETTLEMENT') return { label: '結清紀錄', cls: 'bg-emerald-500/15 text-emerald-300' };
+      if (tx.type === 'INVEST_FLOW') return { label: tx.flowDirection === 'IN' ? '投資回籠' : '定存 / 投資', cls: 'bg-violet-500/20 text-violet-300' };
       return { label: '支出', cls: 'bg-white/10 text-zinc-300' };
     };
 
@@ -2412,7 +2413,8 @@
                     const cat = getCategoryObj(tx.categoryId);
                     const isLoan = tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE';
                     const isSettlement = tx.type === 'LOAN_SETTLEMENT';
-                    const isPositive = tx.type === 'INCOME' || tx.type === 'PAYABLE' || (isSettlement && tx.settlementDirection === 'IN');
+                    const isInvestFlow = tx.type === 'INVEST_FLOW';
+                    const isPositive = tx.type === 'INCOME' || tx.type === 'PAYABLE' || (isSettlement && tx.settlementDirection === 'IN') || (isInvestFlow && tx.flowDirection === 'IN');
                     const isTransfer = tx.type === 'TRANSFER';
                     const isReimb = Boolean(tx.cardReimbursement);
                     const isCardPay = isTransfer && tx.toAccountKind === 'CARD';
@@ -2429,6 +2431,8 @@
 
                     const iconName = isTransfer
                       ? 'swap'
+                      : isInvestFlow
+                      ? 'trend'
                       : isLoan || isSettlement
                       ? 'users'
                       : (cat ? cat.icon : 'tag');
@@ -2438,6 +2442,8 @@
                       ? '#34D399'
                       : isTransfer
                       ? '#38BDF8'
+                      : isInvestFlow
+                      ? '#A78BFA'
                       : isLoan
                       ? '#FBBF24'
                       : isSettlement
@@ -2708,7 +2714,7 @@
                                   <Icon name="edit" size={14} /> 調整金額 / 備註
                                 </button>
                               )}
-                              {!isSettlement && !isCardPay && !isReimb && (
+                              {!isSettlement && !isInvestFlow && !isCardPay && !isReimb && (
                                 <button
                                   type="button"
                                   onClick={() => onEditTx(tx)}
