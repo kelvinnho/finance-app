@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const { useState, useMemo, useEffect } = React;
+  const { useState, useMemo, useEffect, useRef, useCallback } = React;
   const { createPortal } = ReactDOM;
 
   const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
@@ -2058,6 +2058,10 @@
     const [searchQuery, setSearchQuery] = useState('');
     const [expandedTxId, setExpandedTxId] = useState(null);
     const [splitOpen, setSplitOpen] = useState(false);
+    const [scrollSyncedDate, setScrollSyncedDate] = useState(null);
+    const [visibleLimit, setVisibleLimit] = useState(60);
+    const listScrollRef = useRef(null);
+    const scrollRafRef = useRef(null);
 
     const [settlingTx, setSettlingTx] = useState(null);
     const [settleTargetKey, setSettleTargetKey] = useState('');
@@ -2081,7 +2085,7 @@
       state.transactions.forEach((tx) => {
         if (!tx.date || !tx.date.startsWith(monthPrefix)) return;
         if (!map[tx.date]) map[tx.date] = { inc: false, exp: false };
-        if (tx.type === 'INCOME' || tx.type === 'PAYABLE' || (tx.type === 'LOAN_SETTLEMENT' && tx.settlementDirection === 'IN') || (tx.type === 'INVEST_FLOW' && tx.flowDirection === 'IN')) {
+        if (tx.type === 'INCOME' || tx.type === 'PAYABLE' || (tx.type === 'LOAN_SETTLEMENT' && tx.settlementDirection === 'IN') || (tx.type === 'INVEST_FLOW' && tx.flowDirection === 'IN') || (tx.type === 'INVEST_SETTLEMENT' && (tx.realizedPnl || 0) >= 0)) {
           map[tx.date].inc = true;
         } else {
           map[tx.date].exp = true;
@@ -2102,8 +2106,9 @@
         }
         return cells;
       }
-      const anchor = selectedDate && selectedDate.startsWith(monthPrefix)
-        ? parseYMD(selectedDate)
+      const focusISO = selectedDate || scrollSyncedDate;
+      const anchor = focusISO && (focusISO.startsWith(monthPrefix) || searchQuery.trim() || filterPendingLoans)
+        ? parseYMD(focusISO)
         : (viewYear === now.getFullYear() && viewMonth === now.getMonth()
             ? now
             : new Date(viewYear, viewMonth, 1));
@@ -2116,7 +2121,7 @@
         week.push(fmtYMD(d));
       }
       return week;
-    }, [viewYear, viewMonth, monthExpanded, selectedDate, monthPrefix]);
+    }, [viewYear, viewMonth, monthExpanded, selectedDate, scrollSyncedDate, monthPrefix, searchQuery, filterPendingLoans]);
 
     const visibleTransactions = useMemo(() => {
       const q = searchQuery.trim().toLowerCase();
@@ -2136,21 +2141,77 @@
       });
     }, [state.transactions, filterPendingLoans, selectedDate, monthPrefix, searchQuery]);
 
+    const hasMoreTx = visibleTransactions.length > visibleLimit;
+    const displayedTransactions = useMemo(
+      () => (hasMoreTx ? visibleTransactions.slice(0, visibleLimit) : visibleTransactions),
+      [visibleTransactions, visibleLimit, hasMoreTx]
+    );
+
     const groupedByDate = useMemo(() => {
       const map = new Map();
-      visibleTransactions.forEach((tx) => {
+      displayedTransactions.forEach((tx) => {
         const d = tx.date || Store.todayISO();
         if (!map.has(d)) map.set(d, []);
         map.get(d).push(tx);
       });
       return Array.from(map.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1));
-    }, [visibleTransactions]);
+    }, [displayedTransactions]);
+
+    const firstGroupDate = groupedByDate.length > 0 ? groupedByDate[0][0] : null;
+
+    // Reset pagination & scroll-synced date cleanly when month/filter/search changes
+    useEffect(() => {
+      setVisibleLimit(60);
+      setScrollSyncedDate(firstGroupDate);
+      if (listScrollRef.current) {
+        listScrollRef.current.scrollTop = 0;
+      }
+    }, [viewYear, viewMonth, selectedDate, filterPendingLoans, searchQuery]);
+
+    // Keep scrollSyncedDate valid if transactions list updates
+    useEffect(() => {
+      if (!selectedDate && !scrollSyncedDate && firstGroupDate) {
+        setScrollSyncedDate(firstGroupDate);
+      }
+    }, [selectedDate, scrollSyncedDate, firstGroupDate]);
+
+    useEffect(() => {
+      return () => {
+        if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+      };
+    }, []);
+
+    const handleListScroll = useCallback(() => {
+      if (selectedDate) return;
+      if (scrollRafRef.current) return;
+      scrollRafRef.current = requestAnimationFrame(() => {
+        scrollRafRef.current = null;
+        const el = listScrollRef.current;
+        if (!el) return;
+        const containerTop = el.getBoundingClientRect().top;
+        const nodes = el.querySelectorAll('[data-ledger-date]');
+        if (!nodes.length) return;
+        let currentDate = nodes[0].getAttribute('data-ledger-date');
+        for (let i = 0; i < nodes.length; i++) {
+          const rect = nodes[i].getBoundingClientRect();
+          if (rect.top - containerTop <= 28) {
+            currentDate = nodes[i].getAttribute('data-ledger-date');
+          } else {
+            break;
+          }
+        }
+        if (currentDate) {
+          setScrollSyncedDate((prev) => (prev === currentDate ? prev : currentDate));
+        }
+      });
+    }, [selectedDate]);
 
     const shiftMonth = (delta) => {
       const d = new Date(viewYear, viewMonth + delta, 1);
       setViewYear(d.getFullYear());
       setViewMonth(d.getMonth());
       setSelectedDate(null);
+      setScrollSyncedDate(null);
     };
 
     const getAccountLabel = (tx) => {
@@ -2191,6 +2252,7 @@
       if (tx.type === 'PAYABLE') return { label: '借貸入帳', cls: 'bg-violet-500/20 text-violet-300' };
       if (tx.type === 'LOAN_SETTLEMENT') return { label: '結清紀錄', cls: 'bg-emerald-500/15 text-emerald-300' };
       if (tx.type === 'INVEST_FLOW') return { label: tx.flowDirection === 'IN' ? '投資回籠' : '定存 / 投資', cls: 'bg-violet-500/20 text-violet-300' };
+      if (tx.type === 'INVEST_SETTLEMENT') return { label: '投資結算', cls: 'bg-amber-500/20 text-amber-300' };
       return { label: '支出', cls: 'bg-white/10 text-zinc-300' };
     };
 
@@ -2266,7 +2328,9 @@
     };
 
     return (
-      <div className="space-y-3 pb-6">
+      <div className="flex-1 min-h-0 flex flex-col">
+        {/* Frozen Top Section: Month Nav, Banners & Scroll-Synced Calendar */}
+        <div className="shrink-0 space-y-2.5 pb-2.5 border-b border-white/[0.06] bg-black z-10">
         {/* Row 1: Un-Truncated Month Nav & Actions */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1 shrink-0">
@@ -2365,6 +2429,7 @@
               const dNum = Number(iso.slice(8, 10));
               const isToday = iso === Store.todayISO();
               const isSelected = iso === selectedDate;
+              const isScrollActive = !selectedDate && iso === scrollSyncedDate;
               const inCurrentMonth = iso.startsWith(monthPrefix);
               const mark = dayMarkers[iso];
               return (
@@ -2374,7 +2439,9 @@
                   onClick={() => setSelectedDate(isSelected ? null : iso)}
                   className={`h-10 rounded-xl flex flex-col items-center justify-center relative transition ${
                     isSelected
-                      ? 'bg-white text-black font-bold'
+                      ? 'bg-white text-black font-bold shadow-sm'
+                      : isScrollActive
+                      ? 'bg-sky-400/20 text-sky-200 font-bold border border-sky-300/55'
                       : isToday
                       ? 'bg-white/[0.09] text-white font-semibold border border-white/15'
                       : inCurrentMonth
@@ -2391,9 +2458,28 @@
               );
             })}
           </div>
+
+          {selectedDate && (
+            <div className="mt-2 pt-2 border-t border-white/[0.06] flex items-center justify-between text-[11.5px]">
+              <span className="text-zinc-400 tabular-nums">已篩選 {formatGroupDate(selectedDate)}</span>
+              <button
+                type="button"
+                onClick={() => setSelectedDate(null)}
+                className="text-sky-300 font-semibold"
+              >
+                顯示全月
+              </button>
+            </div>
+          )}
+        </div>
         </div>
 
-        {/* Grouped Transaction List */}
+        {/* Scrollable Transaction List (Syncs Frozen Calendar on Scroll) */}
+        <div
+          ref={listScrollRef}
+          onScroll={handleListScroll}
+          className="flex-1 min-h-0 overflow-y-auto app-scroll-main pt-3 pb-6"
+        >
         {groupedByDate.length === 0 ? (
           <div className="rounded-2xl bg-[#111114] border border-white/[0.08] py-12 text-center text-[13px] text-zinc-500">
             {selectedDate ? `${selectedDate} 尚無收支紀錄` : '本月尚無紀錄，點擊底部 ＋ 快速記帳'}
@@ -2401,7 +2487,7 @@
         ) : (
           <div className="space-y-3.5">
             {groupedByDate.map(([dateIso, list]) => (
-              <div key={dateIso} className="space-y-1.5">
+              <div key={dateIso} data-ledger-date={dateIso} className="space-y-1.5">
                 <div className="px-1 flex items-center justify-between text-[12px] text-zinc-400">
                   <span className="font-medium">{formatGroupDate(dateIso)}</span>
                   <span className="tabular-nums text-zinc-500">{list.length} 筆</span>
@@ -2414,7 +2500,8 @@
                     const isLoan = tx.type === 'RECEIVABLE' || tx.type === 'PAYABLE';
                     const isSettlement = tx.type === 'LOAN_SETTLEMENT';
                     const isInvestFlow = tx.type === 'INVEST_FLOW';
-                    const isPositive = tx.type === 'INCOME' || tx.type === 'PAYABLE' || (isSettlement && tx.settlementDirection === 'IN') || (isInvestFlow && tx.flowDirection === 'IN');
+                    const isInvestSettle = tx.type === 'INVEST_SETTLEMENT';
+                    const isPositive = tx.type === 'INCOME' || tx.type === 'PAYABLE' || (isSettlement && tx.settlementDirection === 'IN') || (isInvestFlow && tx.flowDirection === 'IN') || (isInvestSettle && (tx.realizedPnl || 0) >= 0);
                     const isTransfer = tx.type === 'TRANSFER';
                     const isReimb = Boolean(tx.cardReimbursement);
                     const isCardPay = isTransfer && tx.toAccountKind === 'CARD';
@@ -2431,7 +2518,7 @@
 
                     const iconName = isTransfer
                       ? 'swap'
-                      : isInvestFlow
+                      : (isInvestFlow || isInvestSettle)
                       ? 'trend'
                       : isLoan || isSettlement
                       ? 'users'
@@ -2442,6 +2529,8 @@
                       ? '#34D399'
                       : isTransfer
                       ? '#38BDF8'
+                      : isInvestSettle
+                      ? ((tx.realizedPnl || 0) >= 0 ? '#34D399' : '#FB7185')
                       : isInvestFlow
                       ? '#A78BFA'
                       : isLoan
@@ -2542,6 +2631,8 @@
                               className={`text-[14.5px] font-semibold tabular-nums whitespace-nowrap ${
                                 isPositive
                                   ? 'text-emerald-400'
+                                  : isInvestSettle
+                                  ? 'text-rose-400'
                                   : isReimb
                                   ? 'text-amber-300'
                                   : isTransfer
@@ -2648,6 +2739,14 @@
                                 </div>
                               )}
 
+                              {/* One-Time Investment Settlement Note */}
+                              {isInvestSettle && (
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-zinc-500 shrink-0">帳戶餘額影響</span>
+                                  <span className="text-amber-300 font-medium text-right">僅計統計績效（不重複異動餘額）</span>
+                                </div>
+                              )}
+
                               {/* Reimbursement Target Card Info */}
                               {isReimb && (
                                 <div className="flex items-start justify-between gap-3">
@@ -2714,7 +2813,7 @@
                                   <Icon name="edit" size={14} /> 調整金額 / 備註
                                 </button>
                               )}
-                              {!isSettlement && !isInvestFlow && !isCardPay && !isReimb && (
+                              {!isSettlement && !isInvestFlow && !isInvestSettle && !isCardPay && !isReimb && (
                                 <button
                                   type="button"
                                   onClick={() => onEditTx(tx)}
@@ -2748,8 +2847,18 @@
                 </div>
               </div>
             ))}
+            {hasMoreTx && (
+              <button
+                type="button"
+                onClick={() => setVisibleLimit((n) => n + 60)}
+                className="w-full py-3 rounded-2xl bg-[#141417] border border-white/[0.08] text-[13px] font-medium text-zinc-300 active:bg-white/10"
+              >
+                顯示更多紀錄（尚餘 {visibleTransactions.length - visibleLimit} 筆）
+              </button>
+            )}
           </div>
         )}
+        </div>
 
         <SplitRulesSheet
           open={splitOpen}

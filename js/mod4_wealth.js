@@ -1,4 +1,4 @@
-// mod4_wealth.js · Stage 3 r2
+// mod4_wealth.js · Stage 4 r1
 (function () {
   'use strict';
 
@@ -68,6 +68,7 @@
     const [focusedInvId, setFocusedInvId] = useState(null);
     const [flipped, setFlipped] = useState(false);
     const [closedExpanded, setClosedExpanded] = useState(false);
+    const [showHiddenClosed, setShowHiddenClosed] = useState(false);
 
     // Sheet 1: Add New Investment (Explicit Top Mode: NEW_OPEN vs EXISTING)
     const [addOpen, setAddOpen] = useState(false);
@@ -78,6 +79,7 @@
       ticker: '',
       currency: state.meta.baseCurrency,
       principal: 50000,
+      fee: 0,
       currentValue: 50000,
       faceValue: 0,
       shares: 0,
@@ -132,6 +134,7 @@
     const [cashEventMode, setCashEventMode] = useState('TOPUP');
     const [cashDraft, setCashDraft] = useState({
       amount: 0,
+      fee: 0,
       sharesDelta: 0,
       costReduce: 0,
       fullClose: false,
@@ -146,11 +149,13 @@
       enabled: true,
       frequency: 'MONTHLY',
       dayOfMonth: 15,
-      amount: 500
+      amount: 500,
+      defaultFee: 1
     });
     const [dcaExecTarget, setDcaExecTarget] = useState(null);
     const [dcaExecDraft, setDcaExecDraft] = useState({
       amount: 500,
+      fee: 1,
       shares: 0,
       bankKey: '',
       deductFromBank: true,
@@ -229,6 +234,14 @@
     const closedInvestments = useMemo(
       () => (state.investments || []).filter((x) => x.status === 'CLOSED'),
       [state.investments]
+    );
+    const visibleClosedInvestments = useMemo(
+      () => closedInvestments.filter((x) => !x.hiddenFromArchive),
+      [closedInvestments]
+    );
+    const hiddenClosedInvestments = useMemo(
+      () => closedInvestments.filter((x) => Boolean(x.hiddenFromArchive)),
+      [closedInvestments]
     );
 
     const focusedInv = useMemo(() => {
@@ -341,8 +354,8 @@
     }, [activeInvestments, state]);
 
     const filteredActive = useMemo(() => {
-      if (filterTab === 'FD') return activeInvestments.filter((x) => x.type === 'FIXED_DEPOSIT');
-      if (filterTab === 'INVEST') return activeInvestments.filter((x) => x.type !== 'FIXED_DEPOSIT');
+      if (filterTab === 'FD') return activeInvestments.filter((x) => x.type === 'FIXED_DEPOSIT' || x.type === 'TBILL');
+      if (filterTab === 'INVEST') return activeInvestments.filter((x) => x.type !== 'FIXED_DEPOSIT' && x.type !== 'TBILL');
       return activeInvestments;
     }, [activeInvestments, filterTab]);
 
@@ -361,24 +374,28 @@
 
     const addBalanceCheck = useMemo(() => {
       if (entryMode !== 'NEW_OPEN') return { ok: true, available: 0, required: 0, shortfall: 0 };
-      if (!newInv.linkedKey) return { ok: false, missingAccount: true, available: 0, required: Number(newInv.principal || 0), shortfall: Number(newInv.principal || 0) };
+      const feeVal = newInv.type === 'FIXED_DEPOSIT' ? 0 : Math.max(0, Number(newInv.fee || 0));
+      const totalReq = Store.round2(Number(newInv.principal || 0) + feeVal);
+      if (!newInv.linkedKey) return { ok: false, missingAccount: true, available: 0, required: totalReq, shortfall: totalReq };
       const [accId, balId] = newInv.linkedKey.split('::');
-      return Store.checkSufficientBalance(accId, balId, Number(newInv.principal || 0), newInv.currency, state);
-    }, [entryMode, newInv.linkedKey, newInv.principal, newInv.currency, state]);
+      return Store.checkSufficientBalance(accId, balId, totalReq, newInv.currency, state);
+    }, [entryMode, newInv.linkedKey, newInv.principal, newInv.fee, newInv.type, newInv.currency, state]);
 
     const topUpBalanceCheck = useMemo(() => {
       if (!cashEventOpen || cashEventMode !== 'TOPUP' || !cashDraft.linkCash || !focusedInv) return { ok: true };
       if (!cashDraft.bankKey) return { ok: false, missingAccount: true };
       const [accId, balId] = cashDraft.bankKey.split('::');
-      return Store.checkSufficientBalance(accId, balId, Number(cashDraft.amount || 0), focusedInv.currency, state);
-    }, [cashEventOpen, cashEventMode, cashDraft.linkCash, cashDraft.bankKey, cashDraft.amount, focusedInv, state]);
+      const totalReq = Store.round2(Number(cashDraft.amount || 0) + Math.max(0, Number(cashDraft.fee || 0)));
+      return Store.checkSufficientBalance(accId, balId, totalReq, focusedInv.currency, state);
+    }, [cashEventOpen, cashEventMode, cashDraft.linkCash, cashDraft.bankKey, cashDraft.amount, cashDraft.fee, focusedInv, state]);
 
     const dcaBalanceCheck = useMemo(() => {
       if (!dcaExecTarget || !dcaExecDraft.deductFromBank) return { ok: true };
       if (!dcaExecDraft.bankKey) return { ok: false, missingAccount: true };
       const [accId, balId] = dcaExecDraft.bankKey.split('::');
-      return Store.checkSufficientBalance(accId, balId, Number(dcaExecDraft.amount || 0), dcaExecTarget.currency, state);
-    }, [dcaExecTarget, dcaExecDraft.deductFromBank, dcaExecDraft.bankKey, dcaExecDraft.amount, state]);
+      const totalReq = Store.round2(Number(dcaExecDraft.amount || 0) + Math.max(0, Number(dcaExecDraft.fee || 0)));
+      return Store.checkSufficientBalance(accId, balId, totalReq, dcaExecTarget.currency, state);
+    }, [dcaExecTarget, dcaExecDraft.deductFromBank, dcaExecDraft.bankKey, dcaExecDraft.amount, dcaExecDraft.fee, state]);
 
     // Broker JSON Sync Live Parse & Diff Preview
     const syncAnalysis = useMemo(() => {
@@ -404,6 +421,7 @@
         ticker: '',
         currency: cur,
         principal: t === 'FIXED_DEPOSIT' ? 50000 : 1000,
+        fee: t === 'FIXED_DEPOSIT' ? 0 : 1,
         currentValue: t === 'FIXED_DEPOSIT' ? 50000 : 1000,
         faceValue: t === 'TBILL' ? 10200 : 0,
         shares: 0,
@@ -445,6 +463,7 @@
         type: newInv.type,
         currency: newInv.currency,
         principal: pri,
+        fee: (isNewOpen && newInv.type !== 'FIXED_DEPOSIT') ? Number(newInv.fee || 0) : 0,
         currentValue: newInv.type === 'FIXED_DEPOSIT' ? pri : Number(newInv.currentValue || pri),
         faceValue: newInv.type === 'TBILL' ? Number(newInv.faceValue || 0) : null,
         shares: newInv.type === 'STOCK_ETF' ? Number(newInv.shares || 0) : null,
@@ -590,6 +609,7 @@
       setCashEventMode(mode);
       setCashDraft({
         amount: mode === 'SELL' ? (inv.currentValue || inv.principal || 0) : 0,
+        fee: (mode === 'TOPUP' || mode === 'SELL') && inv.type !== 'FIXED_DEPOSIT' ? 1 : 0,
         sharesDelta: mode === 'SELL' ? (inv.shares || 0) : 0,
         costReduce: mode === 'SELL' ? (inv.principal || 0) : 0,
         fullClose: mode === 'SELL',
@@ -616,8 +636,10 @@
             : `餘額不足，尚缺 ${Store.formatMoney(topUpBalanceCheck.shortfall, topUpBalanceCheck.bankCurrency)}`);
           return;
         }
+        const feeVal = Math.max(0, Number(cashDraft.fee || 0));
         Store.topUpInvestment(focusedInv.id, {
           addAmount: amt,
+          fee: feeVal,
           addShares: Number(cashDraft.sharesDelta || 0),
           deductFromBank: cashDraft.linkCash,
           fromAccountId: accId,
@@ -625,22 +647,27 @@
           note: cashDraft.note
         });
         setCashEventOpen(false);
-        showToast(`已追加投入 ${Store.formatMoney(amt, focusedInv.currency)}`);
+        showToast(`已追加投入 ${Store.formatMoney(Store.round2(amt + feeVal), focusedInv.currency)}`);
       } else if (cashEventMode === 'DIVIDEND') {
+        const feeVal = Math.max(0, Number(cashDraft.fee || 0));
+        const netDiv = Math.max(0, Store.round2(amt - feeVal));
         Store.recordInvestmentCashEvent(focusedInv.id, {
           mode: 'DIVIDEND',
           amount: amt,
+          fee: feeVal,
           creditToBank: cashDraft.linkCash,
           toAccountId: accId,
           toBalanceId: balId,
           note: cashDraft.note
         });
         setCashEventOpen(false);
-        showToast(`已入帳配息收益 ${Store.formatMoney(amt, focusedInv.currency)}`);
+        showToast(`已入帳實收配息 ${Store.formatMoney(netDiv, focusedInv.currency)}`);
       } else {
+        const feeVal = Math.max(0, Number(cashDraft.fee || 0));
         Store.recordInvestmentCashEvent(focusedInv.id, {
           mode: 'SELL',
           amount: amt,
+          fee: feeVal,
           sellShares: Number(cashDraft.sharesDelta || 0),
           costBasisReduced: cashDraft.fullClose ? focusedInv.principal : Number(cashDraft.costReduce || 0),
           fullClose: cashDraft.fullClose,
@@ -657,12 +684,13 @@
 
     // DCA Handlers
     const openDcaConfig = (inv) => {
-      const cur = inv.dca || { enabled: false, frequency: 'MONTHLY', dayOfMonth: 15, amount: 500 };
+      const cur = inv.dca || { enabled: false, frequency: 'MONTHLY', dayOfMonth: 15, amount: 500, defaultFee: 1 };
       setDcaConfigDraft({
         enabled: cur.enabled !== false,
         frequency: cur.frequency || 'MONTHLY',
         dayOfMonth: cur.dayOfMonth || 15,
-        amount: cur.amount || 500
+        amount: cur.amount || 500,
+        defaultFee: cur.defaultFee != null ? cur.defaultFee : 1
       });
       setDcaConfigOpen(true);
     };
@@ -677,7 +705,8 @@
         enabled: Boolean(dcaConfigDraft.enabled),
         frequency: dcaConfigDraft.frequency,
         dayOfMonth: Math.min(28, Math.max(1, Number(dcaConfigDraft.dayOfMonth || 15))),
-        amount: Store.round2(dcaConfigDraft.amount || 0)
+        amount: Store.round2(dcaConfigDraft.amount || 0),
+        defaultFee: Math.max(0, Store.round2(dcaConfigDraft.defaultFee || 0))
       });
       Store.updateInvestment(focusedInv.id, { dca: nextDca });
       setDcaConfigOpen(false);
@@ -689,11 +718,13 @@
         ? (bankOptions.find((b) => b.accountId === inv.linkedAccountId && (!inv.linkedBalanceId || b.balanceId === inv.linkedBalanceId))?.key || findBestBankKey(inv.type, inv.currency))
         : findBestBankKey(inv.type, inv.currency);
       const dcaAmt = (inv.dca && inv.dca.amount) || 500;
+      const dcaFee = inv.dca && inv.dca.defaultFee != null ? inv.dca.defaultFee : 1;
       const estUnit = inv.shares && inv.shares > 0 && inv.currentValue > 0 ? (inv.currentValue / inv.shares) : 0;
       const estShares = estUnit > 0 ? Store.round2(dcaAmt / estUnit) : 0;
       setDcaExecTarget(inv);
       setDcaExecDraft({
         amount: dcaAmt,
+        fee: dcaFee,
         shares: estShares,
         bankKey: lKey,
         deductFromBank: true,
@@ -718,6 +749,7 @@
       const [accId, balId] = dcaExecDraft.bankKey ? dcaExecDraft.bankKey.split('::') : [null, null];
       Store.executeDcaInstallment(dcaExecTarget.id, {
         amount: amt,
+        fee: Math.max(0, Number(dcaExecDraft.fee || 0)),
         shares: Number(dcaExecDraft.shares || 0),
         deductFromBank: dcaExecDraft.deductFromBank,
         fromAccountId: accId,
@@ -916,14 +948,14 @@
               </div>
             )}
 
-            {/* Category Filter */}
+            {/* Category Filter (Low-Risk Term vs Investments) */}
             <SegmentedControl
               value={filterTab}
               onChange={setFilterTab}
               options={[
                 { value: 'ALL', label: `全部 (${activeInvestments.length})` },
-                { value: 'FD', label: `定期存款 (${activeInvestments.filter((x) => x.type === 'FIXED_DEPOSIT').length})` },
-                { value: 'INVEST', label: `投資美債 (${activeInvestments.filter((x) => x.type !== 'FIXED_DEPOSIT').length})` }
+                { value: 'FD', label: `定期/美債 (${activeInvestments.filter((x) => x.type === 'FIXED_DEPOSIT' || x.type === 'TBILL').length})` },
+                { value: 'INVEST', label: `投資 (${activeInvestments.filter((x) => x.type !== 'FIXED_DEPOSIT' && x.type !== 'TBILL').length})` }
               ]}
             />
 
@@ -1057,7 +1089,7 @@
               <Icon name="plus" size={16} /> 新增定期存款 / 投資部位
             </button>
 
-            {/* Collapsible Closed / Matured Archive */}
+            {/* Collapsible Closed / Matured Archive (Hideable Without Affecting Stats) */}
             {closedInvestments.length > 0 && (
               <div className="rounded-2xl bg-[#111114] border border-white/[0.08] overflow-hidden">
                 <button
@@ -1065,36 +1097,110 @@
                   onClick={() => setClosedExpanded((p) => !p)}
                   className="w-full px-4 py-3 flex items-center justify-between text-[12.5px] text-zinc-400 active:bg-white/[0.04]"
                 >
-                  <span>已結清 / 到期歸檔 ({closedInvestments.length})</span>
+                  <span>
+                    已結清 / 到期歸檔 ({visibleClosedInvestments.length})
+                    {hiddenClosedInvestments.length > 0 && (
+                      <span className="text-zinc-500 ml-1">· 已隱藏 {hiddenClosedInvestments.length}</span>
+                    )}
+                  </span>
                   <Icon name="chevronDown" size={14} className={`transition-transform ${closedExpanded ? 'rotate-180' : ''}`} />
                 </button>
                 {closedExpanded && (
-                  <div className="divide-y divide-white/[0.06] border-t border-white/[0.06]">
-                    {closedInvestments.map((inv) => {
-                      const tMeta = getTypeMeta(inv.type);
-                      return (
-                        <div key={inv.id} className="px-4 py-3 flex items-center justify-between gap-2.5">
-                          <div className="min-w-0">
-                            <div className="text-[13.5px] font-semibold text-zinc-300 truncate">{inv.name}</div>
-                            <div className="text-[11px] text-zinc-500 mt-0.5 tabular-nums">
-                              {tMeta.shortLabel} · 結清於 {inv.closedDate || inv.lastUpdated}
+                  <div className="border-t border-white/[0.06]">
+                    {visibleClosedInvestments.length === 0 ? (
+                      <div className="px-4 py-4 text-[12px] text-zinc-500 text-center">
+                        目前所有已結清項目皆已封存隱藏（仍完整計入「報表」投資統計）。
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-white/[0.06]">
+                        {visibleClosedInvestments.map((inv) => {
+                          const tMeta = getTypeMeta(inv.type);
+                          return (
+                            <div key={inv.id} className="px-4 py-3 flex items-center justify-between gap-2.5">
+                              <div className="min-w-0">
+                                <div className="text-[13.5px] font-semibold text-zinc-300 truncate">{inv.name}</div>
+                                <div className="text-[11px] text-zinc-500 mt-0.5 tabular-nums">
+                                  {tMeta.shortLabel} · 結清於 {inv.closedDate || inv.lastUpdated}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <span className={`text-[12.5px] font-semibold tabular-nums mr-1 ${(inv.realizedPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  {Store.formatMoney(inv.realizedPnl || 0, inv.currency, { showPlus: true })}
+                                </span>
+                                <button
+                                  type="button"
+                                  title="隱藏（不影響統計）"
+                                  onClick={() => {
+                                    Store.setInvestmentArchiveHidden(inv.id, true);
+                                    showToast(`已隱藏「${inv.name}」（仍計入報表統計）`);
+                                  }}
+                                  className="p-1.5 rounded-lg bg-white/[0.06] text-zinc-300 active:bg-white/15"
+                                >
+                                  <Icon name="eyeOff" size={13} />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="刪除"
+                                  onClick={() => openDeleteDialog(inv)}
+                                  className="p-1.5 rounded-lg bg-white/[0.06] text-zinc-500 active:text-rose-400"
+                                >
+                                  <Icon name="trash" size={13} />
+                                </button>
+                              </div>
                             </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {hiddenClosedInvestments.length > 0 && (
+                      <div className="border-t border-white/[0.06] bg-black/30">
+                        <button
+                          type="button"
+                          onClick={() => setShowHiddenClosed((p) => !p)}
+                          className="w-full px-4 py-2.5 flex items-center justify-between text-[11.5px] text-zinc-500 active:text-zinc-300"
+                        >
+                          <span>{showHiddenClosed ? '收起已封存隱藏項目' : `查看已隱藏項目 (${hiddenClosedInvestments.length} · 均保留於報表統計)`}</span>
+                          <Icon name="chevronDown" size={12} className={`transition-transform ${showHiddenClosed ? 'rotate-180' : ''}`} />
+                        </button>
+                        {showHiddenClosed && (
+                          <div className="divide-y divide-white/[0.05] border-t border-white/[0.05]">
+                            {hiddenClosedInvestments.map((inv) => {
+                              const tMeta = getTypeMeta(inv.type);
+                              return (
+                                <div key={inv.id} className="px-4 py-2.5 flex items-center justify-between gap-2 opacity-75">
+                                  <div className="min-w-0">
+                                    <div className="text-[12.5px] font-medium text-zinc-400 truncate">{inv.name}</div>
+                                    <div className="text-[10.5px] text-zinc-600 tabular-nums">
+                                      {tMeta.shortLabel} · {inv.closedDate || inv.lastUpdated} · {Store.formatMoney(inv.realizedPnl || 0, inv.currency, { showPlus: true })}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        Store.setInvestmentArchiveHidden(inv.id, false);
+                                        showToast(`已恢復顯示「${inv.name}」`);
+                                      }}
+                                      className="px-2 py-1 rounded-lg bg-white/[0.08] text-[11px] text-zinc-200"
+                                    >
+                                      恢復
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => openDeleteDialog(inv)}
+                                      className="p-1.5 rounded-lg bg-white/[0.05] text-zinc-500"
+                                    >
+                                      <Icon name="trash" size={12} />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <span className={`text-[13px] font-semibold tabular-nums ${(inv.realizedPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              收益 {Store.formatMoney(inv.realizedPnl || 0, inv.currency, { showPlus: true })}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => openDeleteDialog(inv)}
-                              className="p-1.5 rounded-lg bg-white/[0.06] text-zinc-400"
-                            >
-                              <Icon name="trash" size={13} />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1595,6 +1701,14 @@
                         </span>
                       </div>
                     )}
+                    {(focusedInv.cumulativeFees || 0) > 0 && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-zinc-500">累計手續費 / 稅費</span>
+                        <span className="text-zinc-300 tabular-nums">
+                          -{Store.formatMoney(focusedInv.cumulativeFees, focusedInv.currency)}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-zinc-500">最後更新</span>
                       <span className="text-zinc-400 tabular-nums">{focusedInv.lastUpdated || '-'}</span>
@@ -1719,7 +1833,7 @@
               </div>
               <div>
                 <label className="text-[12px] text-zinc-400 block mb-1">
-                  {newInv.type === 'FIXED_DEPOSIT' ? '存入本金' : '投入成本'}
+                  {newInv.type === 'FIXED_DEPOSIT' ? '存入本金' : (entryMode === 'NEW_OPEN' ? '成交金額' : '投入成本')}
                 </label>
                 <NumericInput
                   size="sm"
@@ -1734,6 +1848,25 @@
                 />
               </div>
             </div>
+
+            {entryMode === 'NEW_OPEN' && newInv.type !== 'FIXED_DEPOSIT' && (
+              <div className="p-3 rounded-2xl bg-black/45 border border-white/[0.08] space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-[12px] text-zinc-300 font-medium">手續費 / 佣金 ({newInv.currency})</label>
+                  <span className="text-[11px] text-zinc-400 tabular-nums">
+                    總扣款 {Store.formatMoney(Store.round2(Number(newInv.principal || 0) + Number(newInv.fee || 0)), newInv.currency)}
+                  </span>
+                </div>
+                <NumericInput
+                  size="sm"
+                  value={newInv.fee}
+                  currency={newInv.currency}
+                  label="輸入手續費／佣金（計入成本並由交割戶扣除）"
+                  quickAdds={[0.35, 1, 2, 5]}
+                  onChange={(val) => setNewInv((p) => Object.assign({}, p, { fee: val }))}
+                />
+              </div>
+            )}
 
             {/* Linked Bank/Broker Account + Real-Time Balance Guard */}
             <div className={`p-3 rounded-2xl border space-y-2 ${
@@ -1957,8 +2090,23 @@
                   )}
                 </>
               ) : (
-                <div className="text-[13px] text-zinc-300 leading-relaxed">
-                  此部位已結清歸檔，刪除後將永久移除此歸檔紀錄（不影響目前帳戶餘額）。
+                <div className="space-y-3">
+                  <div className="text-[13px] text-zinc-300 leading-relaxed">
+                    若僅想讓列表更清爽，建議使用<strong className="text-white">「封存隱藏」</strong>——列表不再顯示，但「報表」頁仍保留其歷史收益統計。若按下下方紅色永久刪除，將會從歷年投資統計中徹底移除。
+                  </div>
+                  {!deleteTarget.hiddenFromArchive && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        Store.setInvestmentArchiveHidden(deleteTarget.id, true);
+                        setDeleteTarget(null);
+                        showToast(`已封存隱藏「${deleteTarget.name}」（仍計入報表統計）`);
+                      }}
+                      className="w-full py-3 rounded-2xl bg-white/[0.10] border border-white/15 text-white text-[14px] font-semibold"
+                    >
+                      改為封存隱藏（推薦・不影響統計）
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -2186,7 +2334,7 @@
             <div className="space-y-4">
               <div>
                 <label className="text-[12px] text-zinc-400 block mb-1.5">
-                  {cashEventMode === 'TOPUP' ? '本次投入金額' : cashEventMode === 'DIVIDEND' ? '實收配息金額' : '實收賣出金額'} ({focusedInv.currency})
+                  {cashEventMode === 'TOPUP' ? '成交買入金額' : cashEventMode === 'DIVIDEND' ? '配息毛額' : '成交賣出金額'} ({focusedInv.currency})
                 </label>
                 <NumericInput
                   size="lg"
@@ -2197,6 +2345,29 @@
                   className="!text-emerald-400"
                 />
               </div>
+
+              {focusedInv.type !== 'FIXED_DEPOSIT' && (
+                <div className="p-3 rounded-2xl bg-black/45 border border-white/[0.08] space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-[12px] text-zinc-300 font-medium">
+                      {cashEventMode === 'DIVIDEND' ? '預扣稅 / 手續費' : '手續費 / 佣金'} ({focusedInv.currency})
+                    </label>
+                    <span className="text-[11.5px] font-semibold tabular-nums text-emerald-300">
+                      {cashEventMode === 'TOPUP'
+                        ? `總扣款 ${Store.formatMoney(Store.round2(Number(cashDraft.amount || 0) + Number(cashDraft.fee || 0)), focusedInv.currency)}`
+                        : `實收淨額 ${Store.formatMoney(Math.max(0, Store.round2(Number(cashDraft.amount || 0) - Number(cashDraft.fee || 0))), focusedInv.currency)}`}
+                    </span>
+                  </div>
+                  <NumericInput
+                    size="sm"
+                    value={cashDraft.fee}
+                    currency={focusedInv.currency}
+                    label={cashEventMode === 'DIVIDEND' ? '輸入預扣稅／手續費' : '輸入交易手續費／佣金'}
+                    quickAdds={cashEventMode === 'DIVIDEND' ? [1, 5, 10, 15] : [0.35, 1, 2, 5]}
+                    onChange={(val) => setCashDraft((p) => Object.assign({}, p, { fee: val }))}
+                  />
+                </div>
+              )}
 
               {(cashEventMode === 'TOPUP' || cashEventMode === 'SELL') && focusedInv.type === 'STOCK_ETF' && (
                 <div>
@@ -2358,6 +2529,18 @@
                       onChange={(val) => setDcaConfigDraft((p) => Object.assign({}, p, { amount: val }))}
                     />
                   </div>
+
+                  <div>
+                    <label className="text-[12px] text-zinc-400 block mb-1.5">每期預設手續費 ({focusedInv.currency})</label>
+                    <NumericInput
+                      size="sm"
+                      value={dcaConfigDraft.defaultFee}
+                      currency={focusedInv.currency}
+                      label="設定每次定投預設手續費"
+                      quickAdds={[0.35, 1, 2]}
+                      onChange={(val) => setDcaConfigDraft((p) => Object.assign({}, p, { defaultFee: val }))}
+                    />
+                  </div>
                 </>
               )}
             </div>
@@ -2389,12 +2572,12 @@
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[12px] text-zinc-400 block mb-1.5">實付金額 ({dcaExecTarget.currency})</label>
+                  <label className="text-[12px] text-zinc-400 block mb-1.5">成交金額 ({dcaExecTarget.currency})</label>
                   <NumericInput
                     size="md"
                     value={dcaExecDraft.amount}
                     currency={dcaExecTarget.currency}
-                    label="本次定投實付金額"
+                    label="本次定投成交金額"
                     onChange={(val) => setDcaExecDraft((p) => Object.assign({}, p, { amount: val }))}
                   />
                 </div>
@@ -2407,6 +2590,23 @@
                     onChange={(val) => setDcaExecDraft((p) => Object.assign({}, p, { shares: val }))}
                   />
                 </div>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-black/45 border border-white/[0.08] space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-[12px] text-zinc-300 font-medium">手續費 / 佣金 ({dcaExecTarget.currency})</label>
+                  <span className="text-[11.5px] font-semibold text-sky-300 tabular-nums">
+                    總扣款 {Store.formatMoney(Store.round2(Number(dcaExecDraft.amount || 0) + Number(dcaExecDraft.fee || 0)), dcaExecTarget.currency)}
+                  </span>
+                </div>
+                <NumericInput
+                  size="sm"
+                  value={dcaExecDraft.fee}
+                  currency={dcaExecTarget.currency}
+                  label="本次定投手續費"
+                  quickAdds={[0.35, 1, 2]}
+                  onChange={(val) => setDcaExecDraft((p) => Object.assign({}, p, { fee: val }))}
+                />
               </div>
 
               <div className={`p-3 rounded-2xl border space-y-2.5 ${
@@ -2613,11 +2813,11 @@
                                   <span className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold shrink-0 ${
                                     d.action === 'CREATE'
                                       ? 'bg-sky-500/20 text-sky-300'
-                                      : d.action === 'CLOSE'
+                                      : (d.action === 'CLOSE' || d.action === 'LEDGER_SETTLEMENT')
                                       ? 'bg-amber-500/20 text-amber-300'
                                       : 'bg-emerald-500/20 text-emerald-300'
                                   }`}>
-                                    {d.action === 'CREATE' ? '新增' : d.action === 'CLOSE' ? '清倉' : '更新'}
+                                    {d.action === 'CREATE' ? '新增' : d.action === 'CLOSE' ? '清倉' : d.action === 'LEDGER_SETTLEMENT' ? '結算入流水' : '更新'}
                                   </span>
                                   <span className="font-bold text-white shrink-0">{d.ticker || d.name}</span>
                                   {d.ticker && d.name !== d.ticker && (
@@ -2625,7 +2825,7 @@
                                   )}
                                 </div>
                                 <span className="font-bold text-white shrink-0">
-                                  {d.action === 'CLOSE'
+                                  {(d.action === 'CLOSE' || d.action === 'LEDGER_SETTLEMENT')
                                     ? `已實現 ${Store.formatMoney(d.realizedPnl || 0, d.currency, { showPlus: true })}`
                                     : Store.formatMoney(d.after.marketValue, d.currency)}
                                 </span>

@@ -95,132 +95,6 @@
     );
   }
 
-  // ---- Reports View ----
-  function ReportsView({ state }) {
-    const Store = window.WealthStore;
-    const metrics = useMemo(() => Store.getSummaryMetrics(state), [state]);
-    const thisMonth = Store.todayISO().slice(0, 7);
-
-    const monthStats = useMemo(() => {
-      let inc = 0;
-      let exp = 0;
-      state.transactions.forEach((tx) => {
-        if (!tx.date || !tx.date.startsWith(thisMonth)) return;
-        if (tx.type === 'INCOME') inc += Store.convertToBase(tx.amount, tx.currency, state);
-        if (tx.type === 'EXPENSE') exp += Store.convertToBase(tx.amount, tx.currency, state);
-      });
-      const net = Store.round2(inc - exp);
-      const savingsRate = inc > 0 ? Math.round((net / inc) * 100) : 0;
-      return { inc: Store.round2(inc), exp: Store.round2(exp), net, savingsRate };
-    }, [state, thisMonth]);
-
-    const poolBreakdown = useMemo(() => {
-      const totals = {};
-      state.pools.forEach((p) => { totals[p.id] = 0; });
-      state.accounts.forEach((a) => {
-        (a.balances || []).forEach((b) => {
-          const val = Store.convertToBase(b.amount, b.currency, state);
-          const pid = b.poolId || (state.pools[0] && state.pools[0].id) || 'pool_liquid';
-          totals[pid] = Store.round2((totals[pid] || 0) + val);
-        });
-      });
-      const grand = Object.values(totals).reduce((s, v) => s + Math.max(0, v), 0) || 1;
-      return state.pools.map((p) => ({
-        id: p.id,
-        name: p.name,
-        color: p.color,
-        amount: totals[p.id] || 0,
-        pct: Math.round((Math.max(0, totals[p.id] || 0) / grand) * 100)
-      }));
-    }, [state]);
-
-    return (
-      <div className="space-y-4 pb-6">
-        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
-          <div>
-            <div className="flex items-center justify-between gap-2 mb-1">
-              <span className="text-[11px] text-zinc-400">總淨資產 ({state.meta.baseCurrency})</span>
-              {metrics.pendingReceivables > 0 && (
-                <span className="text-[11px] text-amber-300 tabular-nums whitespace-nowrap">
-                  待收 {Store.formatMoney(metrics.pendingReceivables, state.meta.baseCurrency)}
-                </span>
-              )}
-            </div>
-            <div className="text-[28px] font-bold text-white tabular-nums tracking-tight leading-tight break-all">
-              {Store.formatMoney(metrics.totalNetWorth, state.meta.baseCurrency)}
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3 pt-3 border-t border-white/[0.06] text-[12px]">
-            <div className="min-w-0">
-              <div className="text-zinc-500 text-[11px]">銀包活期</div>
-              <div className="text-emerald-400 font-semibold tabular-nums mt-0.5 whitespace-nowrap">
-                {Store.formatMoney(metrics.walletTotal, state.meta.baseCurrency)}
-              </div>
-            </div>
-            <div className="min-w-0 text-right">
-              <div className="text-zinc-500 text-[11px]">定存與投資</div>
-              <div className="text-zinc-200 font-semibold tabular-nums mt-0.5 whitespace-nowrap">
-                {Store.formatMoney(metrics.investmentsTotal, state.meta.baseCurrency)}
-              </div>
-            </div>
-            <div className="min-w-0">
-              <div className="text-zinc-500 text-[11px]">信用卡待繳</div>
-              <div className="text-rose-400 font-semibold tabular-nums mt-0.5 whitespace-nowrap">
-                {Store.formatMoney(metrics.cardDebt, state.meta.baseCurrency)}
-              </div>
-            </div>
-            <div className="min-w-0 text-right">
-              <div className="text-zinc-500 text-[11px]">待還借貸</div>
-              <div className="text-amber-300 font-semibold tabular-nums mt-0.5 whitespace-nowrap">
-                {Store.formatMoney(metrics.pendingPayables, state.meta.baseCurrency)}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-[14px] font-semibold text-white">本月純收支 ({thisMonth})</span>
-            <span className="text-[11px] text-zinc-400 tabular-nums">儲蓄率 {monthStats.savingsRate}%</span>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="p-3 rounded-xl bg-black/45 border border-white/[0.06]">
-              <div className="text-[11px] text-zinc-400">本月純收入</div>
-              <div className="text-[17px] font-bold text-emerald-400 tabular-nums mt-1">
-                {Store.formatMoney(monthStats.inc, state.meta.baseCurrency)}
-              </div>
-            </div>
-            <div className="p-3 rounded-xl bg-black/45 border border-white/[0.06]">
-              <div className="text-[11px] text-zinc-400">本月純支出</div>
-              <div className="text-[17px] font-bold text-white tabular-nums mt-1">
-                {Store.formatMoney(monthStats.exp, state.meta.baseCurrency)}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-2xl bg-[#111114] border border-white/[0.08] p-4 space-y-3">
-          <div className="text-[14px] font-semibold text-white">銀包資金池分佈</div>
-          <div className="space-y-3">
-            {poolBreakdown.map((p) => (
-              <div key={p.id} className="space-y-1">
-                <div className="flex items-center justify-between text-[12px]">
-                  <span className="text-zinc-300">{p.name}</span>
-                  <span className="text-white font-semibold tabular-nums">
-                    {Store.formatMoney(p.amount, state.meta.baseCurrency)} ({p.pct}%)
-                  </span>
-                </div>
-                <div className="h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
-                  <div className="h-full rounded-full" style={{ width: `${p.pct}%`, background: p.color }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   // ---- Settings Sub-Sheet A: Categories & Sub-Categories Full Manager ----
   function CategoryManagerSheet({ open, state, onClose, showToast }) {
     const { Icon, BottomSheet, SegmentedControl } = window.WealthUI;
@@ -959,6 +833,7 @@
     const { CreditCardsView } = window.WealthCards;
     const { LedgerView, TransactionEditorSheet } = window.WealthLedger;
     const { WealthView } = window.WealthInvest;
+    const { ReportsView } = window.WealthReports;
 
     const state = useWealthStore();
     const [activeTab, setActiveTab] = useState('LEDGER');
@@ -1104,7 +979,11 @@
         <main
           ref={mainScrollRef}
           {...(activeTab === 'ASSETS' && !isAssetDetailFocused ? swipeHandlers : {})}
-          className="app-scroll-main flex-1 overflow-y-auto px-4 pt-2.5 max-w-[480px] w-full mx-auto"
+          className={
+            activeTab === 'LEDGER'
+              ? 'flex-1 min-h-0 flex flex-col overflow-hidden px-4 pt-2.5 max-w-[480px] w-full mx-auto'
+              : 'app-scroll-main flex-1 overflow-y-auto px-4 pt-2.5 max-w-[480px] w-full mx-auto'
+          }
         >
           {pageTitle && (
             <div className="pt-0.5 pb-3 flex items-center justify-between">
@@ -1120,7 +999,7 @@
           )}
 
           {activeTab === 'LEDGER' && (
-            <div className="pt-0.5">
+            <div className="flex-1 min-h-0 flex flex-col pt-0.5">
               <LedgerView
                 state={state}
                 showToast={showToast}

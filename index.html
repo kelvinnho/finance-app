@@ -156,20 +156,21 @@
   <script crossorigin src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
 
   <!-- Core Store (Plain JS, Zero Babel Overhead) -->
-  <script src="./js/store.js?v=2.0-stage3-r2"></script>
+  <script src="./js/store.js?v=2.0-stage4-r1"></script>
 
   <!-- UI Primitives & Feature Modules -->
-  <script type="text/babel" data-presets="react" src="./js/ui.js?v=2.0-stage3-r2"></script>
-  <script type="text/babel" data-presets="react" src="./js/mod1_wallet.js?v=2.0-stage3-r2"></script>
-  <script type="text/babel" data-presets="react" src="./js/mod2_cards.js?v=2.0-stage3-r2"></script>
-  <script type="text/babel" data-presets="react" src="./js/mod3_ledger.js?v=2.0-stage3-r2"></script>
-  <script type="text/babel" data-presets="react" src="./js/mod4_wealth.js?v=2.0-stage3-r2"></script>
-  <script type="text/babel" data-presets="react" src="./js/app.js?v=2.0-stage3-r2"></script>
+  <script type="text/babel" data-presets="react" src="./js/ui.js?v=2.0-stage4-r1"></script>
+  <script type="text/babel" data-presets="react" src="./js/mod1_wallet.js?v=2.0-stage4-r1"></script>
+  <script type="text/babel" data-presets="react" src="./js/mod2_cards.js?v=2.0-stage4-r1"></script>
+  <script type="text/babel" data-presets="react" src="./js/mod3_ledger.js?v=2.0-stage4-r1"></script>
+  <script type="text/babel" data-presets="react" src="./js/mod4_wealth.js?v=2.0-stage4-r1"></script>
+  <script type="text/babel" data-presets="react" src="./js/mod5_reports.js?v=2.0-stage4-r1"></script>
+  <script type="text/babel" data-presets="react" src="./js/app.js?v=2.0-stage4-r1"></script>
 
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function() {
-        navigator.serviceWorker.register('./sw.js?v=2.0-stage3-r2').catch(function() {});
+        navigator.serviceWorker.register('./sw.js?v=2.0-stage4-r1').catch(function() {});
       });
     }
   </script>

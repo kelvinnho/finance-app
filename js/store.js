@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'wealth_pwa_state_v19';
-  const APP_VERSION = 'Stage 3 r2';
+  const APP_VERSION = 'Stage 4 r1';
   const SCHEMA_VERSION = '1.9';
 
   const CURRENCIES = [
@@ -477,7 +477,7 @@
           cumulativeDividends: 185,
           linkedAccountId: 'acc_broker',
           linkedBalanceId: 'bal_brk_usd',
-          dca: { enabled: true, frequency: 'MONTHLY', dayOfMonth: 25, amount: 500, lastExecutedDate: '2026-10-25' },
+          dca: { enabled: true, frequency: 'MONTHLY', dayOfMonth: 25, amount: 500, defaultFee: 1, lastExecutedDate: '2026-10-25' },
           dcaHistory: [],
           lastUpdated: today,
           note: '長期核心定投持倉'
@@ -883,8 +883,10 @@
           startDate: null,
           maturityDate: null,
           closedDate: null,
+          hiddenFromArchive: false,
           realizedPnl: 0,
           cumulativeDividends: 0,
+          cumulativeFees: 0,
           linkedAccountId: null,
           linkedBalanceId: null,
           dca: null,
@@ -1030,6 +1032,9 @@
         const dir = tx.flowDirection === 'IN' ? 1 : -1;
         adjustAccountOrCard(draft, 'ACCOUNT', tx.accountId, tx.balanceId, dir * sign * settled);
       }
+    } else if (tx.type === 'INVEST_SETTLEMENT') {
+      // One-time historical realized settlement record from broker statement:
+      // already reflected in broker ending cash, so zero balance mutation.
     }
   }
 
@@ -2044,6 +2049,7 @@
           name: existing.name || cp.name,
           currency: cp.currency,
           realizedPnl: cp.realizedPnl,
+          closedDate: cp.closedDate,
           before: {
             shares: existing.shares,
             costBasis: round2(existing.principal || 0),
@@ -2051,6 +2057,26 @@
           },
           after: { shares: 0, costBasis: 0, marketValue: 0 }
         });
+      } else {
+        const tk = String(cp.ticker || '').trim().toUpperCase();
+        const alreadyInLedger = (s.transactions || []).some(
+          (t) => t.type === 'INVEST_SETTLEMENT' &&
+            String(t.ticker || '').trim().toUpperCase() === tk &&
+            t.date === cp.closedDate
+        );
+        if (!alreadyInLedger) {
+          positionDiffs.push({
+            action: 'LEDGER_SETTLEMENT',
+            existingId: null,
+            ticker: cp.ticker,
+            name: cp.name,
+            currency: cp.currency,
+            realizedPnl: cp.realizedPnl,
+            closedDate: cp.closedDate,
+            before: null,
+            after: { shares: 0, costBasis: 0, marketValue: 0 }
+          });
+        }
       }
     });
 
@@ -2073,7 +2099,7 @@
       counts: {
         create: positionDiffs.filter((d) => d.action === 'CREATE').length,
         update: positionDiffs.filter((d) => d.action === 'UPDATE').length,
-        close: positionDiffs.filter((d) => d.action === 'CLOSE').length
+        close: positionDiffs.filter((d) => d.action === 'CLOSE' || d.action === 'LEDGER_SETTLEMENT').length
       }
     };
   }
@@ -3178,18 +3204,20 @@
       const options = opts || {};
       const today = todayISO();
       const type = normalizeBrokerInvType(payload.type || 'FIXED_DEPOSIT');
-      const principal = Math.max(0, round2(payload.principal || 0));
+      const rawPrincipal = Math.max(0, round2(payload.principal || 0));
+      const fee = type === 'FIXED_DEPOSIT' ? 0 : Math.max(0, round2(payload.fee || 0));
+      const costBasisTotal = options.deductFromBank ? round2(rawPrincipal + fee) : rawPrincipal;
       const initVal = type === 'FIXED_DEPOSIT'
-        ? principal
-        : Math.max(0, round2(payload.currentValue != null ? payload.currentValue : principal));
+        ? rawPrincipal
+        : Math.max(0, round2(payload.currentValue != null ? payload.currentValue : rawPrincipal));
 
       let fundingSource = null;
       let resolvedLinkedAccId = payload.linkedAccountId || null;
       let resolvedLinkedBalId = payload.linkedBalanceId || null;
 
-      // Plan A: When opening NEW from a bank/broker account, adjust bank balance directly
+      // Plan A: When opening NEW from a bank/broker account, adjust bank balance directly (principal + fee)
       // WITHOUT cluttering daily ledger transactions. Store fundingSource for safe refund on delete.
-      if (options.deductFromBank && principal > 0 && (options.fromAccountId || resolvedLinkedAccId)) {
+      if (options.deductFromBank && costBasisTotal > 0 && (options.fromAccountId || resolvedLinkedAccId)) {
         const fromAccId = options.fromAccountId || resolvedLinkedAccId;
         const fromBalId = options.fromBalanceId || resolvedLinkedBalId;
         const fromAcc = draft.accounts.find((a) => a.id === fromAccId);
@@ -3198,7 +3226,7 @@
             || fromAcc.balances.find((b) => b.currency === (payload.currency || draft.meta.baseCurrency))
             || fromAcc.balances[0];
           if (fromBal) {
-            const deductAmt = convertBetweenCurrencies(principal, payload.currency || draft.meta.baseCurrency, fromBal.currency, draft);
+            const deductAmt = convertBetweenCurrencies(costBasisTotal, payload.currency || draft.meta.baseCurrency, fromBal.currency, draft);
             adjustAccountOrCard(draft, 'ACCOUNT', fromAcc.id, fromBal.id, -deductAmt);
             resolvedLinkedAccId = fromAcc.id;
             resolvedLinkedBalId = fromBal.id;
@@ -3222,7 +3250,7 @@
         entryMode: options.deductFromBank ? 'NEW_OPEN' : 'EXISTING',
         fundingSource,
         currency: payload.currency || draft.meta.baseCurrency,
-        principal,
+        principal: costBasisTotal,
         currentValue: initVal,
         shares: payload.shares != null && Number(payload.shares) > 0 ? round2(payload.shares) : null,
         apr: payload.apr != null && Number(payload.apr) > 0 ? round2(payload.apr) : null,
@@ -3232,6 +3260,7 @@
         closedDate: null,
         realizedPnl: 0,
         cumulativeDividends: 0,
+        cumulativeFees: fee,
         linkedAccountId: resolvedLinkedAccId,
         linkedBalanceId: resolvedLinkedBalId,
         dca: payload.dca || null,
@@ -3272,6 +3301,16 @@
       if (patch.note != null) inv.note = String(patch.note).trim();
       if (patch.status != null) inv.status = patch.status;
       inv.lastUpdated = todayISO();
+      state = draft;
+      notify();
+      return inv;
+    },
+
+    setInvestmentArchiveHidden(invId, hidden) {
+      const draft = cloneState();
+      const inv = draft.investments.find((x) => x.id === invId);
+      if (!inv) return null;
+      inv.hiddenFromArchive = Boolean(hidden);
       state = draft;
       notify();
       return inv;
@@ -3339,16 +3378,19 @@
       const inv = draft.investments.find((x) => x.id === invId);
       if (!inv) return null;
       const addAmt = Math.max(0, round2(payload.addAmount || 0));
+      const fee = Math.max(0, round2(payload.fee || 0));
       if (addAmt <= 0) return null;
 
-      inv.principal = round2((inv.principal || 0) + addAmt);
+      const totalCost = round2(addAmt + fee);
+      inv.principal = round2((inv.principal || 0) + totalCost);
       inv.currentValue = round2((inv.currentValue != null ? inv.currentValue : inv.principal) + addAmt);
+      inv.cumulativeFees = round2((inv.cumulativeFees || 0) + fee);
       if (payload.addShares && Number(payload.addShares) > 0) {
         inv.shares = round2((inv.shares || 0) + Number(payload.addShares));
       }
       inv.lastUpdated = todayISO();
 
-      // Plan A: Deduct from bank/broker cash directly without polluting daily ledger
+      // Plan A: Deduct (addAmount + fee) from bank/broker cash directly without polluting daily ledger
       if (payload.deductFromBank && (payload.fromAccountId || inv.linkedAccountId)) {
         const fromAccId = payload.fromAccountId || inv.linkedAccountId;
         const fromBalId = payload.fromBalanceId || inv.linkedBalanceId;
@@ -3358,7 +3400,7 @@
             || fromAcc.balances.find((b) => b.currency === inv.currency)
             || fromAcc.balances[0];
           if (fromBal) {
-            const deductAmt = convertBetweenCurrencies(addAmt, inv.currency, fromBal.currency, draft);
+            const deductAmt = convertBetweenCurrencies(totalCost, inv.currency, fromBal.currency, draft);
             adjustAccountOrCard(draft, 'ACCOUNT', fromAcc.id, fromBal.id, -deductAmt);
             if (inv.fundingSource && inv.fundingSource.accountId === fromAcc.id && inv.fundingSource.balanceId === fromBal.id) {
               inv.fundingSource.deductedAmount = round2((inv.fundingSource.deductedAmount || 0) + deductAmt);
@@ -3377,16 +3419,19 @@
       const inv = draft.investments.find((x) => x.id === invId);
       if (!inv) return null;
       const amt = Math.max(0, round2(payload.amount || (inv.dca && inv.dca.amount) || 0));
+      const fee = Math.max(0, round2(payload.fee != null ? payload.fee : ((inv.dca && inv.dca.defaultFee) || 0)));
       if (amt <= 0) return null;
       const execDate = payload.date || todayISO();
       const addShares = payload.shares != null && Number(payload.shares) > 0 ? round2(payload.shares) : 0;
+      const totalCost = round2(amt + fee);
 
-      inv.principal = round2((inv.principal || 0) + amt);
+      inv.principal = round2((inv.principal || 0) + totalCost);
       inv.currentValue = round2((inv.currentValue != null ? inv.currentValue : inv.principal) + amt);
+      inv.cumulativeFees = round2((inv.cumulativeFees || 0) + fee);
       if (addShares > 0) {
         inv.shares = round2((inv.shares || 0) + addShares);
       }
-      inv.dca = Object.assign({ enabled: true, frequency: 'MONTHLY', dayOfMonth: 15, amount: amt }, inv.dca || {}, {
+      inv.dca = Object.assign({ enabled: true, frequency: 'MONTHLY', dayOfMonth: 15, amount: amt, defaultFee: fee }, inv.dca || {}, {
         lastExecutedDate: execDate
       });
       inv.dcaHistory = Array.isArray(inv.dcaHistory) ? inv.dcaHistory : [];
@@ -3394,12 +3439,13 @@
         id: uid('dca'),
         date: execDate,
         amount: amt,
+        fee,
         shares: addShares > 0 ? addShares : null,
         note: (payload.note || '').trim()
       });
       inv.lastUpdated = execDate;
 
-      // Plan A: Deduct broker cash directly (no daily expense clutter)
+      // Plan A: Deduct (amount + fee) from broker cash directly (no daily expense clutter)
       if (payload.deductFromBank !== false && (payload.fromAccountId || inv.linkedAccountId)) {
         const fromAccId = payload.fromAccountId || inv.linkedAccountId;
         const fromBalId = payload.fromBalanceId || inv.linkedBalanceId;
@@ -3409,7 +3455,7 @@
             || fromAcc.balances.find((b) => b.currency === inv.currency)
             || fromAcc.balances[0];
           if (fromBal) {
-            const deductAmt = convertBetweenCurrencies(amt, inv.currency, fromBal.currency, draft);
+            const deductAmt = convertBetweenCurrencies(totalCost, inv.currency, fromBal.currency, draft);
             adjustAccountOrCard(draft, 'ACCOUNT', fromAcc.id, fromBal.id, -deductAmt);
           }
         }
@@ -3426,6 +3472,7 @@
       const inv = draft.investments.find((x) => x.id === invId);
       if (!inv) return null;
       const amt = Math.max(0, round2(payload.amount || 0));
+      const fee = Math.max(0, round2(payload.fee || 0));
       if (amt <= 0) return null;
       const today = todayISO();
       const time = nowTimeHM();
@@ -3442,17 +3489,22 @@
       };
 
       if (payload.mode === 'DIVIDEND') {
-        inv.cumulativeDividends = round2((inv.cumulativeDividends || 0) + amt);
+        const netDiv = Math.max(0, round2(amt - fee));
+        inv.cumulativeDividends = round2((inv.cumulativeDividends || 0) + netDiv);
+        inv.cumulativeFees = round2((inv.cumulativeFees || 0) + fee);
         inv.lastUpdated = today;
         const dest = payload.creditToBank !== false ? resolveDest() : null;
-        if (dest) {
-          const creditAmt = convertBetweenCurrencies(amt, inv.currency, dest.bal.currency, draft);
+        if (dest && netDiv > 0) {
+          const creditAmt = convertBetweenCurrencies(netDiv, inv.currency, dest.bal.currency, draft);
           const isDeposit = inv.type === 'FIXED_DEPOSIT' || inv.type === 'TBILL';
+          const feeDetail = fee > 0
+            ? `（毛額 ${formatMoney(amt, inv.currency, { privacy: false })}，稅費 -${formatMoney(fee, inv.currency, { privacy: false })}）`
+            : '';
           const tx = {
             id: uid('tx_div'),
             type: 'INCOME',
             title: `${isDeposit ? '利息入帳' : '股息入帳'}：${inv.name}`,
-            amount: amt,
+            amount: netDiv,
             currency: inv.currency,
             settledAmount: creditAmt,
             settledCurrency: dest.bal.currency,
@@ -3465,13 +3517,14 @@
             poolId: 'pool_invest',
             date: today,
             time,
-            note: payload.note || `來自 ${inv.name} 之配息收益`
+            note: (payload.note ? payload.note + ' ' : `來自 ${inv.name} 之配息收益`) + feeDetail
           };
           applyTransactionEffect(draft, tx, 1);
           draft.transactions.unshift(tx);
         }
       } else {
-        // Plan A: SELL / Redemption credits broker/bank cash directly without polluting daily ledger
+        // Plan A: SELL / Redemption credits net proceeds (amount - fee) directly to broker/bank cash
+        const netProceeds = Math.max(0, round2(amt - fee));
         const isFull = Boolean(payload.fullClose);
         const costReduce = isFull
           ? round2(inv.principal || 0)
@@ -3481,8 +3534,9 @@
                   ? Math.min(round2(inv.principal || 0), round2((inv.principal || 0) * (amt / inv.currentValue)))
                   : Math.min(round2(inv.principal || 0), amt)));
 
-        const realizedGain = round2(amt - costReduce);
+        const realizedGain = round2(netProceeds - costReduce);
         inv.realizedPnl = round2((inv.realizedPnl || 0) + realizedGain);
+        inv.cumulativeFees = round2((inv.cumulativeFees || 0) + fee);
 
         if (isFull) {
           inv.principal = 0;
@@ -3504,8 +3558,8 @@
         inv.lastUpdated = today;
 
         const dest = payload.creditToBank !== false ? resolveDest() : null;
-        if (dest) {
-          const creditAmt = convertBetweenCurrencies(amt, inv.currency, dest.bal.currency, draft);
+        if (dest && netProceeds > 0) {
+          const creditAmt = convertBetweenCurrencies(netProceeds, inv.currency, dest.bal.currency, draft);
           adjustAccountOrCard(draft, 'ACCOUNT', dest.acc.id, dest.bal.id, creditAmt);
         }
       }
@@ -3712,6 +3766,7 @@
               closedDate: null,
               realizedPnl: 0,
               cumulativeDividends: 0,
+              cumulativeFees: 0,
               linkedAccountId: brokerAccId,
               linkedBalanceId: balId,
               dca: null,
@@ -3734,6 +3789,41 @@
             existing.realizedPnl = round2((existing.realizedPnl || 0) + (cp.realizedPnl || 0));
             existing.lastUpdated = syncDate;
             closedCnt++;
+          } else {
+            const tk = String(cp.ticker || '').trim().toUpperCase();
+            const closedD = cp.closedDate || syncDate;
+            const cur = cp.currency || 'USD';
+            const pnl = round2(cp.realizedPnl || 0);
+            const alreadyInLedger = draft.transactions.some(
+              (t) => t.type === 'INVEST_SETTLEMENT' &&
+                String(t.ticker || '').trim().toUpperCase() === tk &&
+                t.date === closedD
+            );
+            if (!alreadyInLedger) {
+              draft.transactions.unshift({
+                id: uid('tx_invsettle'),
+                type: 'INVEST_SETTLEMENT',
+                title: `股票結算損益：${tk || cp.name}`,
+                ticker: tk,
+                broker: parsed.broker,
+                amount: Math.abs(pnl),
+                realizedPnl: pnl,
+                currency: cur,
+                settledAmount: Math.abs(pnl),
+                settledCurrency: cur,
+                accountKind: 'ACCOUNT',
+                accountId: brokerAccId,
+                balanceId: resolveBrokerBalId(cur),
+                categoryId: null,
+                subCategoryId: null,
+                subCategoryName: '',
+                poolId: 'pool_invest',
+                date: closedD,
+                time: '23:59',
+                note: `${cp.name || tk} 期內清倉一次性結算（已含於期末券商現金，不重複異動餘額）`
+              });
+              closedCnt++;
+            }
           }
         });
       }
