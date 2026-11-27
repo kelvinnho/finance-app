@@ -965,8 +965,6 @@
       ? null
       : activeTab === 'ASSETS'
       ? '資產'
-      : activeTab === 'REPORTS'
-      ? '報表'
       : activeTab === 'SETTINGS'
       ? '設定'
       : null;
@@ -980,7 +978,7 @@
           ref={mainScrollRef}
           {...(activeTab === 'ASSETS' && !isAssetDetailFocused ? swipeHandlers : {})}
           className={
-            activeTab === 'LEDGER'
+            activeTab === 'LEDGER' || activeTab === 'REPORTS'
               ? 'flex-1 min-h-0 flex flex-col overflow-hidden px-4 pt-2.5 max-w-[480px] w-full mx-auto'
               : 'app-scroll-main flex-1 overflow-y-auto px-4 pt-2.5 max-w-[480px] w-full mx-auto'
           }
@@ -1055,7 +1053,11 @@
             </div>
           )}
 
-          {activeTab === 'REPORTS' && <ReportsView state={state} />}
+          {activeTab === 'REPORTS' && (
+            <div className="flex-1 min-h-0 flex flex-col pt-0.5">
+              <ReportsView state={state} />
+            </div>
+          )}
           {activeTab === 'SETTINGS' && <SettingsView state={state} showToast={showToast} />}
         </main>
 
